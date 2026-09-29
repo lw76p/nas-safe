@@ -43,14 +43,16 @@ class CommandNotFound(StorageError):
 
 @dataclass
 class Volume:
-    """一个可快照的存储单元（btrfs 子卷 / ZFS 数据集）。"""
+    """一个可快照的存储单元（btrfs 子卷 / ZFS 数据集 / QNAP 卷）。"""
     name: str                 # 展示名
-    mountpoint: str           # 挂载点
-    fs_type: str              # 'btrfs' | 'zfs'
+    mountpoint: str           # 挂载点（QNAP 下为数字卷 ID）
+    fs_type: str              # 'btrfs' | 'zfs' | 'qnap'
     uuid: Optional[str] = None
     device: Optional[str] = None
     snapshot_dir: Optional[str] = None   # 快照存放目录
     snapshots: list = field(default_factory=list)
+    volume_id: Optional[str] = None      # QNAP 数字卷 ID（如 "2"）
+    backend: str = "fs"                 # 'fs' | 'qnap'
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -66,6 +68,10 @@ class Snapshot:
     size_bytes: Optional[int] = None
     readonly: bool = True
     description: str = ""
+    fs_type: str = ""                 # 'btrfs' | 'zfs' | 'qnap'
+    snapshot_id: Optional[str] = None  # QNAP 数字快照 ID（如 "10001"）
+    vital: bool = False                # QNAP 锁定标记（永久保留）
+    status: Optional[str] = None       # QNAP 状态（Ready / Removing...）
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -80,6 +86,7 @@ class SystemProfile:
     has_btrfs_cmd: bool = False
     has_zfs_cmd: bool = False
     has_httm: bool = False            # 单文件取回后端
+    has_qcli: bool = False            # 威联通 QTS 官方快照 CLI 可用
     is_container: bool = False
     has_systemd: bool = False
     kernel: str = ""
@@ -216,6 +223,7 @@ def probe_system() -> SystemProfile:
         has_btrfs_cmd=which("btrfs") is not None,
         has_zfs_cmd=which("zfs") is not None,
         has_httm=which("httm") is not None,
+        has_qcli=which("qcli") is not None,
         is_container=_is_container(),
         has_systemd=os.path.isdir("/run/systemd/system"),
     )
@@ -239,6 +247,12 @@ def probe_system() -> SystemProfile:
     if not profile.has_httm:
         profile.warnings.append(
             "未检测到 httm，单文件取回将使用内置的降级方案（直接浏览快照目录）。"
+        )
+    if profile.has_qcli and not profile.has_btrfs_cmd and not profile.has_zfs_cmd:
+        profile.fs_available.append("qnap")
+        profile.warnings.append(
+            "检测到 QNAP qcli，已启用官方块级快照接口（LVM 瘦快照）。"
+            "创建快照默认永久锁定(vital=1)，勒索软件无法催删。"
         )
     if not profile.is_container and not profile.has_systemd:
         profile.warnings.append("未检测到 systemd，定时任务将使用内置调度器。")
@@ -495,7 +509,7 @@ def list_zfs_holds(snapshot_full_name: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def list_all_volumes() -> list[Volume]:
-    """枚举所有可快照的存储单元（btrfs + zfs）。"""
+    """枚举所有可快照的存储单元（btrfs + zfs + qnap）。"""
     volumes: list[Volume] = []
     if which("btrfs"):
         try:
@@ -507,6 +521,11 @@ def list_all_volumes() -> list[Volume]:
             volumes.extend(list_zfs_datasets())
         except StorageError:
             pass
+    if which("qcli"):
+        try:
+            volumes.extend(list_qnap_volumes())
+        except StorageError:
+            pass
     return volumes
 
 
@@ -516,4 +535,90 @@ def list_all_snapshots(volume: Volume) -> list[Snapshot]:
         return list_btrfs_snapshots(volume.mountpoint)
     if volume.fs_type == "zfs":
         return list_zfs_snapshots(volume.name)
+    if volume.fs_type == "qnap":
+        return list_qnap_snapshots(volume.volume_id or volume.mountpoint)
     raise StorageError(f"不支持的文件系统: {volume.fs_type}")
+
+
+# ---------------------------------------------------------------------------
+# QNAP（威联通）适配 —— 通过官方 qcli_volumesnapshot CLI
+# ---------------------------------------------------------------------------
+
+def list_qnap_volumes() -> list[Volume]:
+    """把 QNAP 卷包装成统一的 Volume 结构。"""
+    from qnap import list_volumes as _qv
+    out: list[Volume] = []
+    for v in _qv():
+        out.append(Volume(
+            name=v.alias or f"volume{v.volume_id}",
+            mountpoint=v.volume_id,      # 用数字 ID 作为查找键
+            fs_type="qnap",
+            volume_id=v.volume_id,
+            backend="qnap",
+            device=f"qnap:{v.volume_id}",
+        ))
+    return out
+
+
+def list_qnap_snapshots(volume_id: str) -> list[Snapshot]:
+    """把 QNAP 快照包装成统一的 Snapshot 结构。"""
+    from qnap import list_snapshots as _qs
+    out: list[Snapshot] = []
+    for s in _qs(volume_id):
+        out.append(Snapshot(
+            name=s.name,
+            volume=volume_id,
+            created_at=s.created_at,
+            snapshot_id=s.snapshot_id,
+            vital=s.vital,
+            status=s.status,
+            readonly=True,
+            fs_type="qnap",
+            path=None,    # QNAP 快照经 mount 接口浏览，非直接文件系统路径
+        ))
+    return out
+
+
+def create_snapshot(volume: Volume, name: str, vital: bool = True) -> Snapshot:
+    """统一创建快照入口，按 fs_type 分派。
+
+    QNAP 分支默认 vital=1（永久锁定）—— 防勒索的核心保障。
+    """
+    if volume.fs_type == "btrfs":
+        snap_dir = volume.snapshot_dir or os.path.join(volume.mountpoint, ".nassafe", "snapshots")
+        snap = create_btrfs_snapshot(volume.mountpoint, snap_dir, name)
+        snap.fs_type = "btrfs"
+        return snap
+    if volume.fs_type == "zfs":
+        snap = create_zfs_snapshot(volume.name, name)
+        snap.fs_type = "zfs"
+        return snap
+    if volume.fs_type == "qnap":
+        from qnap import create_snapshot as _qc
+        s = _qc(volume.volume_id or volume.mountpoint, name, vital=vital)
+        return Snapshot(
+            name=s.name,
+            volume=volume.volume_id or volume.mountpoint,
+            created_at=s.created_at,
+            snapshot_id=s.snapshot_id,
+            vital=s.vital,
+            status=s.status,
+            readonly=True,
+            fs_type="qnap",
+        )
+    raise StorageError(f"不支持的文件系统: {volume.fs_type}")
+
+
+def delete_snapshot(snapshot: Snapshot) -> None:
+    """统一删除快照入口，按类型分派。绝不包含回滚(revert)操作。"""
+    if snapshot.fs_type == "qnap" and snapshot.snapshot_id:
+        from qnap import delete_snapshot as _qd
+        _qd(snapshot.snapshot_id)
+        return
+    if snapshot.fs_type == "btrfs":
+        delete_btrfs_snapshot(snapshot.path)
+        return
+    if snapshot.fs_type == "zfs":
+        run(["zfs", "destroy", snapshot.path], timeout=120)
+        return
+    raise StorageError(f"无法删除该类型快照: {snapshot.fs_type}")

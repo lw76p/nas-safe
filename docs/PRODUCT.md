@@ -63,7 +63,7 @@
 | **OMV (OpenMediaVault)** | btrfs / ZFS | Debian 底子，直接调命令 | **P0** |
 | **绿联 UGOS Pro** | **建池时二选一：ext4 / Btrfs** | SSH 开放程度待实测；快照仅 btrfs 存储空间支持 | **P1** |
 | **群晖 DSM（开 SSH）** | ext4 默认 / Btrfs 看型号 | btrfs 机型可走命令；ext4 机型走 API | **P1** |
-| **威联通 QTS** | **ext4 + 块级存储池快照**（非 btrfs；QuTS Hero 才是 ZFS） | **B 类官方 Snapshot API**（见 docs/QNAP-REALITY.md 真机实测） | **P1** |
+| **威联通 QTS** | **ext4 + 块级存储池快照**（非 btrfs；QuTS Hero 才是 ZFS） | **B 类·官方 `qcli_volumesnapshot` CLI**（已落地 `server/qnap.py`，SSH 真机验证通过，见 docs/QNAP-REALITY.md） | **P1 · 已适配** |
 
 ### 暂不支持
 
@@ -76,7 +76,7 @@
 适配层分级：
 
 - **A 类·干净环境**（飞牛、裸 Linux、TrueNAS、Unraid、OMV）→ 直接调 `btrfs` / `zfs` 命令
-- **B 类·Web API / 块级快照**（群晖 DSM、威联通 QTS）→ 调官方 API。注意 **QTS 标准版是 ext4 + 块级存储池快照，没有 btrfs 命令**，实测见 docs/QNAP-REALITY.md
+- **B 类·官方快照 CLI / API**（群晖 DSM、威联通 QTS）→ 威联通经官方 `qcli_volumesnapshot` CLI（底层 LVM 瘦快照，已落地 `server/qnap.py` 并通过 SSH 真机验证）；群晖 ext4 机型走官方 API。注意 **QTS 标准版是 ext4 + 块级存储池快照，没有 btrfs 命令**，实测见 docs/QNAP-REALITY.md
 - **C 类·封闭系统** → 暂不支持
 
 ### 绿联的两个关键未知量（需实测）
@@ -118,7 +118,7 @@
 
 ### v3.0 — 高级能力
 
-- 更多品牌适配（群晖、威联通）
+- 更多品牌适配（**威联通 ✅ 已适配**，群晖待做）
 - AI 功能（人话翻译、自然语言搜文件、规则建议）
 - 勒索行为检测（扩展名突变 / 熵值升高 / 大量重命名 → 自动紧急快照 + 告警）
 - 攻击复盘报告（企业版杀手锏）
@@ -397,7 +397,7 @@ DeployEasy / HMP 可以闭源（它们不碰用户全盘数据），但防勒索
 ## 十三、下一步行动
 
 1. ✅ 本文档定稿
-2. ✅ **威联通 QTS 真机实测**（NAS MCP API 探测，TS-873A / QTS 5.2.9 / ext4 块级快照）→ 结论见 docs/QNAP-REALITY.md；**绿联 SSH 待实测**
+2. ✅ **威联通 QTS 适配层落地**（SSH 真机验证：创建+锁定+删除闭环，`server/qnap.py` + 30 项测试全绿）→ 结论见 docs/QNAP-REALITY.md；**绿联 SSH 待实测**
 3. ⬜ 飞牛版 MVP：
    - `docker-compose.yml`（一条命令拉起）
    - 后端：探测 + 列快照 + 挂载浏览 + 导出单文件 + 拍快照 + 回滚

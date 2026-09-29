@@ -240,13 +240,8 @@ def do_create_snapshot(volume_id: str, description: str = "") -> dict:
 
     name = f"snap-{now_stamp()}"
 
-    if target.fs_type == "btrfs":
-        snap_dir = target.snapshot_dir or os.path.join(target.mountpoint, ".nassafe", "snapshots")
-        snap = storage.create_btrfs_snapshot(target.mountpoint, snap_dir, name)
-    elif target.fs_type == "zfs":
-        snap = storage.create_zfs_snapshot(target.name, name)
-    else:
-        raise StorageError(f"不支持的文件系统: {target.fs_type}")
+    # 统一入口按 fs_type 分派（含 QNAP）。QNAP 默认 vital=1 永久锁定。
+    snap = storage.create_snapshot(target, name, vital=True)
 
     return {
         "ok": True,

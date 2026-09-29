@@ -135,7 +135,7 @@ sh scripts/probe.sh
 | OMV | ✅ 支持 | Debian 底子 |
 | **绿联 UGOS Pro** | ⚠️ 实测中 | btrfs 池可用；ext4 池无法快照 |
 | 群晖 DSM（开 SSH） | ⚠️ 实测中 | 需 SSH + btrfs 存储池 |
-| 威联通 QTS（开 SSH） | ⚠️ 实测中 | 同上 |
+| **威联通 QTS（开 SSH）** | ✅ **已适配** | ext4 + 块级快照，走官方 `qcli_volumesnapshot` CLI（真机验证） |
 | 极空间等封闭系统 | ❌ 不支持 | 无 SSH、无 btrfs、无开放接口 |
 
 ### 关于绿联
