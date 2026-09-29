@@ -150,10 +150,63 @@
       <input id="watchPaths" class="text-input" placeholder="监控路径（逗号分隔，留空则用当前选中的卷）">
       <button class="btn ghost" id="integrityBtn">深度校验快照 (v2)</button>
       <button class="btn ghost" id="behaviorBtn">扫描勒索行为 (v3)</button>
+      <button class="btn ghost" id="aiInterpretBtn">AI 解读报告</button>
     </div>
     <div id="monitorResults" class="monitor-results">
       <p class="muted">点击上方按钮运行主动防御检测（深度校验会在创建快照时建立内容基线，越早开始保护越有效）。</p>
     </div>
+  </section>
+
+  <!-- 功能区四：通知与 AI 设置 -->
+  <section class="panel zone zone-monitor" id="settingsPanel">
+    <div class="panel-head">
+      <div class="zone-head">
+        <span class="zone-ico">⚙</span>
+        <div>
+          <h2>通知与 AI 设置</h2>
+          <p class="sub">告警自动推送到微信服务号 / 群机器人；AI 把报告翻译成大白话</p>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="sub-h">通知通道</h3>
+    <label class="chk-inline"><input type="checkbox" id="notifyEnabled"> 启用通知（开启后告警与变动自动推送）</label>
+    <div class="set-row">
+      <span class="set-label">通道类型</span>
+      <select id="notifyType" class="sel-input">
+        <option value="wechat_service_account">微信服务号（核心卖点）</option>
+        <option value="webhook">群机器人 Webhook（企微/飞书/钉钉）</option>
+        <option value="bark">Bark</option>
+        <option value="ntfy">ntfy</option>
+        <option value="email">邮件 SMTP</option>
+      </select>
+    </div>
+    <div id="notifyFields"></div>
+    <div class="set-actions">
+      <button class="btn ghost" id="notifyTestBtn">发送测试</button>
+      <button class="btn primary" id="notifySaveBtn">保存通知设置</button>
+    </div>
+
+    <h3 class="sub-h">AI 解读</h3>
+    <label class="chk-inline"><input type="checkbox" id="aiEnabled"> 启用 AI 解读</label>
+    <div class="set-row">
+      <span class="set-label">供应商</span>
+      <select id="aiProvider" class="sel-input">
+        <option value="deepseek">DeepSeek（云端，推荐）</option>
+        <option value="openai">OpenAI（云端）</option>
+        <option value="qwen">通义千问（云端）</option>
+        <option value="zhipu">智谱 GLM（云端）</option>
+        <option value="ollama">本地 Ollama（一键本地 AI，免密钥）</option>
+      </select>
+    </div>
+    <div class="set-row" id="aiKeyRow">
+      <span class="set-label">API Key</span>
+      <input id="aiKey" class="text-input" placeholder="云端供应商填这里；本地 Ollama 留空">
+    </div>
+    <div class="set-actions">
+      <button class="btn primary" id="aiSaveBtn">保存 AI 设置</button>
+    </div>
+    <p class="muted" style="margin-top:12px">密钥仅保存在本机 state 目录，不会进入代码仓库；未配置时相关功能自动隐藏，核心防勒索不受影响。</p>
   </section>
 </main>
 

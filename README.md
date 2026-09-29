@@ -251,6 +251,12 @@ zfs snapshot pool/data@snap-20260929-163000
 | GET | `/api/alerts` | 篡改告警列表（受保护快照消失/解锁即告警；加 `?integrity=1` 并入 v2 内容完整性深度校验） |
 | GET | `/api/integrity` | v2 内容完整性深度校验：比对受保护快照的清单签名与抽样内容哈希，发现被增删/替换 |
 | GET | `/api/behavior?paths=/a&paths=/b` | v3 勒索行为检测：扫描生产目录的扩展名突变 / 熵值骤升 / 批量改名，可疑时给出告警与建议 |
+| GET | `/api/notify/config` | 通知配置（密钥脱敏返回） |
+| POST | `/api/notify/config` | 保存通知配置（微信服务号 / 群机器人 Webhook / Bark / ntfy / 邮件） |
+| POST | `/api/notify/test` | 测试单个通知通道是否可用 |
+| GET | `/api/ai/config` | AI 配置（含供应商列表与 ready 状态） |
+| POST | `/api/ai/config` | 保存 AI 配置（DeepSeek / OpenAI / 通义 / 智谱 / 本地 Ollama） |
+| POST | `/api/ai/interpret` | 把体检 / 告警报告文本交给 AI 翻译成大白话 + 处置建议 |
 | POST | `/api/snapshot/restore` | 取回文件（需 `confirm: true`；btrfs/zfs 用 `snapshot_path`，QNAP 用 `snapshot_id+volume_id+relative_file+destination`） |
 
 ### 运行测试
@@ -274,6 +280,20 @@ python3 server/test_qnap.py     # 威联通：含真机集成测试（需设 NAS
 **v2.0 路线** —— 异地不可变副本、多设备统一看板、AI 解读体检报告
 
 > 注：v2 内容完整性校验与 v3 勒索行为检测已落地核心逻辑与单测（详见 `server/integrity.py`、`server/behavior.py`、`server/test_integrity.py`、`server/test_behavior.py`）。内容完整性深度校验较重，默认不并入 30s 巡检；通过 `GET /api/integrity` 或 `NASSAFE_INTEGRITY_CHECK=1` 开启。Web 监控面板提供「自动持续监控」开关：开启后按选定间隔（5/10/30 分钟）自动跑 v2 深度校验，可选附带 v3 勒索行为扫描，结果实时并入顶栏横幅；开关状态用 localStorage 持久化，刷新页面后仍保持监控中。
+
+### 通知与 AI（已落地核心，配置即用）
+
+**多渠道告警通知**（`server/notify.py`，仅标准库、零第三方依赖）：
+- 通道：微信服务号模板消息（B 类核心卖点）、企业微信/飞书/钉钉群机器人 Webhook（A 类零门槛）、Bark、ntfy、邮件 SMTP
+- 后端每 60s（可调 `NASSAFE_NOTIFY_INTERVAL`）扫描受保护快照告警（含 v2 完整性），**去重**后自动推送到已启用通道；创建快照等"相关变动"也实时推送
+- 配置存于 state 目录 `notify.json`，**绝不进仓库**；未启用时为空操作，核心防勒索零影响
+
+**AI 解读**（`server/ai.py`，仅标准库、零第三方依赖）：
+- 供应商：DeepSeek / OpenAI / 通义千问 / 智谱 GLM（均 OpenAI 兼容接口）+ **本地 Ollama 一键本地 AI**（免密钥）
+- 定位是"翻译官 + 提案人"：把体检/告警/系统数据翻成中文大白话并给处置建议，不做"是否勒索"的判定（那由规则引擎更准）
+- 配置存于 state 目录 `ai.json`；未启用 / 无密钥时按钮自动隐藏，核心功能零影响
+
+详见 `server/test_notify_ai.py`（优雅降级单测）。
 
 ---
 

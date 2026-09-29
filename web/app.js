@@ -764,6 +764,172 @@ function renderMonitorResults(payload, kind) {
   box.innerHTML = html;
 }
 
+/* ------------------------- 通知与 AI 设置 ------------------------- */
+
+// 通知通道字段模板：按类型动态生成表单。
+let notifyDraft = {};
+
+const NOTIFY_FIELDS = {
+  wechat_service_account: [
+    { key: "appid", label: "AppID" },
+    { key: "appsecret", label: "AppSecret", secret: true },
+    { key: "template_id", label: "模板 ID" },
+    { key: "openid", label: "接收者 OpenID" },
+  ],
+  webhook: [{ key: "url", label: "Webhook URL" }],
+  bark: [
+    { key: "key", label: "Bark Key / 完整 URL" },
+    { key: "base", label: "服务地址（默认 https://api.day.app）" },
+  ],
+  ntfy: [
+    { key: "topic", label: "ntfy Topic" },
+    { key: "base", label: "服务地址（默认 https://ntfy.sh）" },
+  ],
+  email: [
+    { key: "host", label: "SMTP 主机" },
+    { key: "port", label: "端口（默认 465）" },
+    { key: "user", label: "账号" },
+    { key: "pass", label: "密码", secret: true },
+    { key: "to", label: "收件人（默认同账号）" },
+  ],
+};
+
+function renderNotifyFields(type) {
+  const fields = NOTIFY_FIELDS[type] || [];
+  $("notifyFields").innerHTML = fields
+    .map(
+      (f) => `
+      <div class="set-row">
+        <span class="set-label">${f.label}</span>
+        <input id="nf_${f.key}" class="text-input"
+          type="${f.secret ? "password" : "text"}"
+          value="${escapeAttr(notifyDraft[f.key] || "")}"
+          placeholder="${f.secret ? "敏感信息，仅保存在本地" : ""}">
+      </div>`
+    )
+    .join("");
+}
+
+function gatherNotifyChannel() {
+  const type = $("notifyType").value;
+  const ch = { type };
+  for (const f of NOTIFY_FIELDS[type] || []) {
+    const v = ($("nf_" + f.key).value || "").trim();
+    if (v) ch[f.key] = v;
+  }
+  return ch;
+}
+
+async function saveNotify() {
+  const cfg = { enabled: $("notifyEnabled").checked, channels: [gatherNotifyChannel()] };
+  try {
+    await api("/api/notify/config", { method: "POST", body: JSON.stringify(cfg) });
+    toast("通知设置已保存", "ok");
+  } catch (e) {
+    toast("保存失败：" + e.message, "err");
+  }
+}
+
+async function testNotify() {
+  const ch = gatherNotifyChannel();
+  try {
+    const data = await api("/api/notify/test", { method: "POST", body: JSON.stringify({ channel: ch }) });
+    if (data.ok) toast("测试消息已发送，请查看接收端", "ok");
+    else toast("发送失败：" + (data.msg || data.error || "未知"), "err");
+  } catch (e) {
+    toast("测试失败：" + e.message, "err");
+  }
+}
+
+async function saveAI() {
+  const cfg = {
+    enabled: $("aiEnabled").checked,
+    provider: $("aiProvider").value,
+    api_key: ($("aiKey").value || "").trim(),
+  };
+  try {
+    const data = await api("/api/ai/config", { method: "POST", body: JSON.stringify(cfg) });
+    toast(
+      data.ready ? "AI 设置已保存，可用" : "AI 设置已保存（未配置密钥，相关功能将隐藏）",
+      "ok"
+    );
+  } catch (e) {
+    toast("保存失败：" + e.message, "err");
+  }
+}
+
+async function loadSettings() {
+  try {
+    const nc = await api("/api/notify/config");
+    const cfg = nc.config || {};
+    $("notifyEnabled").checked = !!cfg.enabled;
+    const ch = (cfg.channels || [])[0] || {};
+    if (ch.type) {
+      $("notifyType").value = ch.type;
+      notifyDraft = Object.assign({}, ch);
+    }
+    renderNotifyFields($("notifyType").value);
+  } catch (e) { /* 忽略 */ }
+
+  try {
+    const ac = await api("/api/ai/config");
+    const cfg = ac.config || {};
+    $("aiEnabled").checked = !!cfg.enabled;
+    if (cfg.provider) $("aiProvider").value = cfg.provider;
+    // api_key 脱敏为 ***，不回填
+  } catch (e) { /* 忽略 */ }
+}
+
+// 把报告（存储单元 + 告警 + 系统）交给 AI 翻译成大白话 + 处置建议。
+async function aiInterpret() {
+  const btn = $("aiInterpretBtn");
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span>解读中`;
+  let text = "";
+  try {
+    const [vols, alerts, sys] = await Promise.all([
+      api("/api/volumes"),
+      api("/api/alerts?integrity=1"),
+      api("/api/system"),
+    ]);
+    const lines = ["【存储单元】"];
+    (vols.volumes || []).forEach((v) =>
+      lines.push(`- ${v.name} (${v.fs_type})：${v.snapshot_count} 张快照，最近 ${v.latest_snapshot || "无"}`)
+    );
+    lines.push("【告警】");
+    const al = alerts.alerts || [];
+    if (!al.length) lines.push("- 无");
+    al.forEach((a) => lines.push(`- [${a.level}] ${a.title}：${a.detail}`));
+    const s = sys.system;
+    lines.push("【系统】");
+    lines.push(`- ${s.os_name} 内核 ${s.kernel} 容器内=${s.is_container} 可用文件系统=${s.fs_available.join(",") || "无"}`);
+    text = lines.join("\n");
+  } catch (e) {
+    toast("无法收集数据：" + e.message, "err");
+    btn.disabled = false;
+    btn.textContent = "AI 解读报告";
+    return;
+  }
+
+  try {
+    const data = await api("/api/ai/interpret", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+    openModal(
+      "AI 解读报告",
+      `<div style="white-space:pre-wrap;line-height:1.75;font-size:13.5px;color:var(--text)">${escapeHtml(data.text)}</div>`,
+      `<button class="btn ghost" data-act="close">关闭</button>`,
+      {}
+    );
+  } catch (e) {
+    toast("AI 解读失败：" + e.message, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "AI 解读报告";
+  }
+}
+
 /* ------------------------- 事件绑定 ------------------------- */
 
 $("refreshBtn").onclick = async () => {
@@ -783,6 +949,18 @@ $("snapBtn").onclick = createSnapshot;
 
 $("integrityBtn").onclick = runIntegrityCheck;
 $("behaviorBtn").onclick = runBehaviorScan;
+$("aiInterpretBtn").onclick = aiInterpret;
+
+$("notifyType").onchange = () => renderNotifyFields($("notifyType").value);
+$("notifySaveBtn").onclick = saveNotify;
+$("notifyTestBtn").onclick = testNotify;
+$("aiSaveBtn").onclick = saveAI;
+// 输入即暂存到 draft，切换通道类型时不丢已填内容
+$("notifyFields").addEventListener("input", (e) => {
+  if (e.target.id && e.target.id.startsWith("nf_")) {
+    notifyDraft[e.target.id.slice(3)] = e.target.value;
+  }
+});
 
 function persistAutoMonitor() {
   localStorage.setItem("nassafe.autoMonitor", state.autoMonitor ? "1" : "0");
@@ -825,6 +1003,9 @@ boot();
 
 // 自动监控状态恢复：刷新页面后按上次设置恢复（localStorage 持久化）
 restoreAutoMonitor();
+
+// 加载已保存的通知 / AI 设置到面板
+loadSettings();
 
 // 篡改检测告警轮询：每 30s 拉一次 /api/alerts，发现异常则顶栏告警
 pollAlerts();

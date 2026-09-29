@@ -14,6 +14,12 @@ NAS Safe — 后端 API 服务
   GET  /api/alerts                篡改告警列表（受保护快照消失/解锁即告警；?integrity=1 并入 v2 内容完整性校验）
   GET  /api/integrity             受保护快照内容完整性深度校验（v2）
   GET  /api/behavior?paths=...    勒索行为检测（v3）：扫描生产目录的扩展名突变/熵值骤升/批量改名
+  GET  /api/notify/config         通知配置（脱敏）
+  POST /api/notify/config         保存通知配置
+  POST /api/notify/test           测试单个通道
+  GET  /api/ai/config             AI 配置（含供应商列表与 ready 状态）
+  POST /api/ai/config             保存 AI 配置
+  POST /api/ai/interpret          把报告文本交给 AI 解读
   GET  /api/health                健康检查
 
 安全约定：
@@ -45,6 +51,8 @@ from storage import (  # noqa: E402
 
 import integrity  # noqa: E402  v2 内容完整性校验
 import behavior   # noqa: E402  v3 勒索行为检测
+import notify     # noqa: E402  多渠道告警通知（微信服务号/Webhook/Bark/ntfy/邮件）
+import ai         # noqa: E402  AI 解读（多云供应商 + 本地 Ollama）
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
@@ -96,6 +104,26 @@ def dir_size(path: str, limit_seconds: float = 3.0) -> int:
             except OSError:
                 continue
     return total
+
+
+# ---------------------------------------------------------------------------
+# 配置脱敏（GET 接口返回配置时隐藏密钥）
+# ---------------------------------------------------------------------------
+
+_SECRET_FIELDS = {"appsecret", "secret", "pass", "api_key"}
+
+
+def _mask_notify_cfg(cfg: dict) -> dict:
+    out = dict(cfg)
+    chs = []
+    for ch in cfg.get("channels", []):
+        c = dict(ch)
+        for k in _SECRET_FIELDS:
+            if c.get(k):
+                c[k] = "***"
+        chs.append(c)
+    out["channels"] = chs
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +267,15 @@ def do_create_snapshot(volume_id: str, description: str = "") -> dict:
     # 统一入口按 fs_type 分派（含 QNAP）。QNAP 默认 vital=1 永久锁定。
     snap = storage.create_snapshot(target, name, vital=True)
 
+    # 后台推送"快照已创建"变动（不阻塞创建响应；未配置通道则空操作）
+    try:
+        import threading
+        ev = [{"title": "已创建受保护快照", "detail": f"{name}（{target.name}）"}]
+        t = threading.Thread(target=lambda: notify.dispatch([], ev), daemon=True)
+        t.start()
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         "ok": True,
         "snapshot": {**snap.to_dict(), "description": description},
@@ -364,6 +401,22 @@ class Handler(BaseHTTPRequestHandler):
                 if not paths:
                     raise StorageError("缺少 paths 参数（可传多个 paths=...）")
                 self._send_json(behavior.detect_behavior(paths))
+            elif route == "/api/notify/config":
+                self._send_json({
+                    "ok": True,
+                    "config": _mask_notify_cfg(notify.load_config()),
+                })
+            elif route == "/api/ai/config":
+                cfg = ai.load_config()
+                if cfg.get("api_key"):
+                    cfg = dict(cfg)
+                    cfg["api_key"] = "***"
+                self._send_json({
+                    "ok": True,
+                    "config": cfg,
+                    "ready": ai.is_ready(),
+                    "providers": list(ai.PROVIDERS.keys()),
+                })
             elif route == "/api/system":
                 self._send_json(build_system_info())
             elif route == "/api/volumes":
@@ -442,6 +495,42 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     self._send_json(do_restore_file(snapshot_path, relative_file, destination))
 
+            elif route == "/api/notify/config":
+                # 保存通知配置（channels 列表 + enabled）
+                cfg = payload
+                if not isinstance(cfg, dict):
+                    raise StorageError("配置格式错误")
+                cfg.setdefault("enabled", False)
+                cfg.setdefault("channels", [])
+                notify.save_config(cfg)
+                self._send_json({"ok": True, "config": _mask_notify_cfg(notify.load_config())})
+
+            elif route == "/api/notify/test":
+                channel = payload.get("channel")
+                if not isinstance(channel, dict) or not channel.get("type"):
+                    raise StorageError("缺少 channel 配置")
+                self._send_json({"ok": True, **notify.send_test(channel)})
+
+            elif route == "/api/ai/config":
+                cfg = payload
+                if not isinstance(cfg, dict):
+                    raise StorageError("配置格式错误")
+                cfg.setdefault("enabled", False)
+                ai.save_config(cfg)
+                self._send_json({"ok": True, "ready": ai.is_ready(), "config": ai.load_config()})
+
+            elif route == "/api/ai/interpret":
+                text = (payload.get("text") or "").strip()
+                if not text:
+                    raise StorageError("缺少 text 参数")
+                result, err = ai.interpret(text)
+                if err:
+                    self._send_json({"ok": False, "error": err}, 400)
+                elif result is None:
+                    self._send_json({"ok": False, "error": "AI 未启用或未配置密钥", "ready": False}, 400)
+                else:
+                    self._send_json({"ok": True, "text": result})
+
             else:
                 self._send_json({"ok": False, "error": f"未知接口: {route}"}, 404)
 
@@ -469,6 +558,11 @@ def main() -> None:
     print("=" * 58)
 
     server = ThreadingHTTPServer((HOST, PORT), Handler)
+    # 后台自动推送线程：定期扫描新告警/变动并分发到已配置通道
+    try:
+        notify.start_notifier(int(os.environ.get("NASSAFE_NOTIFY_INTERVAL", "60")))
+    except Exception:  # noqa: BLE001
+        pass
     try:
         server.serve_forever()
     except KeyboardInterrupt:
