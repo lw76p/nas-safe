@@ -13,6 +13,8 @@ const state = {
   restoreDir: localStorage.getItem("nassafe.restoreDir") || "",
   tamperAlerts: [],   // v1 基线对比法（30s 轮询）
   deepAlerts: [],     // v2 内容完整性 + v3 勒索行为（主动巡检后写入）
+  autoMonitor: false, // 自动持续监控开关
+  autoMonitorTimer: null,
 };
 
 // 快照是否为威联通（QNAP）远程后端：这类快照没有本地实体路径，
@@ -561,7 +563,7 @@ async function pollAlerts() {
 /* ------------------------- v2 内容完整性深度校验 ------------------------- */
 
 // 对受保护快照的实际内容做哈希/清单比对：文件被增删、改名或内容被替换都会告警。
-async function runIntegrityCheck() {
+async function runIntegrityCheck(silent = false) {
   const btn = $("integrityBtn");
   btn.disabled = true;
   btn.innerHTML = `<span class="spinner"></span>校验中`;
@@ -575,10 +577,12 @@ async function runIntegrityCheck() {
     }
     renderMonitorResults(results, "integrity");
     renderBanners();
-    if (results.length) {
-      toast(`发现 ${results.length} 处快照内容异常`, "err");
-    } else {
-      toast("受保护快照内容完整，未被篡改", "ok");
+    if (!silent) {
+      if (results.length) {
+        toast(`发现 ${results.length} 处快照内容异常`, "err");
+      } else {
+        toast("受保护快照内容完整，未被篡改", "ok");
+      }
     }
   } catch (err) {
     toast("校验失败：" + err.message, "err");
@@ -593,7 +597,7 @@ async function runIntegrityCheck() {
 // 扫描生产（实时）目录：扩展名突变 / 熵值骤升 / 批量改名三类信号。
 // 注意：需要服务器能本地访问这些目录（btrfs/zfs 本地模式）；QNAP 远程管理模式
 // 下服务器在管理机，NAS 目录未挂载，会提示路径不可达。
-async function runBehaviorScan() {
+async function runBehaviorScan(silent = false) {
   const btn = $("behaviorBtn");
   let paths = ($("watchPaths").value || "")
     .split(",")
@@ -620,10 +624,12 @@ async function runBehaviorScan() {
     }
     renderMonitorResults(data, "behavior");
     renderBanners();
-    if (data.suspicious) {
-      toast("⚠ 检测到疑似勒索行为！", "err");
-    } else {
-      toast("未检测到明显勒索行为", "ok");
+    if (!silent) {
+      if (data.suspicious) {
+        toast("⚠ 检测到疑似勒索行为！", "err");
+      } else {
+        toast("未检测到明显勒索行为", "ok");
+      }
     }
   } catch (err) {
     toast("扫描失败：" + err.message, "err");
@@ -631,6 +637,31 @@ async function runBehaviorScan() {
     btn.disabled = false;
     btn.textContent = "扫描勒索行为 (v3)";
   }
+}
+
+/* ------------------------- 自动持续监控 ------------------------- */
+
+// 开启后按选定间隔自动跑 v2 深度校验（默认每 5 分钟）；可选附带 v3 勒索行为扫描。
+// 自动模式下静默成功提示（只更新结果区与顶栏横幅），避免每 5 分钟弹一次 toast 打扰用户；
+// 失败仍提示，便于第一时间发现监控链路异常。
+function startAutoMonitor() {
+  stopAutoMonitor();
+  const ms = parseInt($("autoInterval").value, 10) || 300000;
+  runIntegrityCheck(true);
+  if ($("autoBehavior").checked) runBehaviorScan(true);
+  state.autoMonitorTimer = setInterval(() => {
+    runIntegrityCheck(true);
+    if ($("autoBehavior").checked) runBehaviorScan(true);
+  }, ms);
+  state.autoMonitor = true;
+}
+
+function stopAutoMonitor() {
+  if (state.autoMonitorTimer) {
+    clearInterval(state.autoMonitorTimer);
+    state.autoMonitorTimer = null;
+  }
+  state.autoMonitor = false;
 }
 
 /* ------------------------- 监控结果渲染 ------------------------- */
@@ -703,6 +734,19 @@ $("snapBtn").onclick = createSnapshot;
 
 $("integrityBtn").onclick = runIntegrityCheck;
 $("behaviorBtn").onclick = runBehaviorScan;
+
+$("autoMonitor").onchange = (e) => {
+  if (e.target.checked) {
+    startAutoMonitor();
+    toast("已开启自动持续监控", "ok");
+  } else {
+    stopAutoMonitor();
+    toast("已关闭自动监控", "");
+  }
+};
+$("autoInterval").onchange = () => {
+  if (state.autoMonitor) startAutoMonitor(); // 间隔变更后重启计时以生效
+};
 
 $("browseBtn").onclick = () => {
   const latest = state.snapshots[state.snapshots.length - 1];
