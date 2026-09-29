@@ -13,6 +13,11 @@
 
 set -u
 
+# 文件系统统计计数（后续章节会复用）
+btrfs_count=0
+zfs_count=0
+ext4_count=0
+
 echo "=============================================================="
 echo "  NAS Safe — 系统探测报告"
 echo "  生成时间：$(date '+%Y-%m-%d %H:%M:%S')"
@@ -61,6 +66,14 @@ if [ "$BRAND" = "未知" ]; then
     *) BRAND="未知 (ID=${ID:-?})" ;;
   esac
 fi
+
+# 绿联某些版本/机型没有 /etc/ugos-release，但 /proc/mounts 里会有 /dev/mapper/ug_* 设备或 /volumeN 挂载点
+if [ "$BRAND" = "未知" ] || [ "$BRAND" = "未知 (ID=${ID:-?})" ] || [ "$BRAND" = "裸 Linux (${ID})" ] 2>/dev/null; then
+  if [ -r /proc/mounts ] && awk '$1 ~ /\/dev\/mapper\/ug_/ || $2 ~ /^\/volume[0-9]+$/ {found=1} END {exit !found}' /proc/mounts; then
+    BRAND="绿联 UGOS Pro"
+  fi
+fi
+
 echo "  判定品牌    : ${BRAND}"
 
 # ---------------------------------------------------------------
@@ -220,14 +233,32 @@ df -h 2>/dev/null | awk 'NR==1 || $1 ~ /^\/dev/' | sed 's/^/  /'
 echo ""
 echo "【10】适配建议（给开发者 / 测试者）"
 echo "--------------------------------------------------------------"
-case "$BRAND" in
-  绿联*)   echo "  绿联 UGOS Pro：数据盘为 btrfs 即可走 btrfs 子卷方案；ext4 池暂不可用（需重建为 btrfs）。" ;;
-  飞牛*)   echo "  飞牛 fnOS：Debian + btrfs，SSH 默认开放，适配最顺。" ;;
-  群晖*)   echo "  群晖 DSM：需开 SSH，且存储池须为 btrfs。" ;;
-  威联通*) echo "  威联通 QTS：ext4 块级快照，走 qcli_volumesnapshot（本工具已真机验证）。" ;;
-  OMV|Unraid|裸*) echo "  通用 Linux：直接调 btrfs / zfs 即可。" ;;
-  *)       echo "  未知系统：请把本报告发回给开发者判断。" ;;
-esac
+
+if [ "$btrfs_count" -gt 0 ] || [ "$zfs_count" -gt 0 ]; then
+  case "$BRAND" in
+    绿联*)   echo "  绿联 UGOS Pro：检测到 btrfs 数据盘，可适配 NAS Safe（btrfs 子卷方案）。" ;;
+    飞牛*)   echo "  飞牛 fnOS：Debian + btrfs，SSH 默认开放，适配最顺。" ;;
+    群晖*)   echo "  群晖 DSM：已检测到 btrfs/zfs 存储池，可适配（需开 SSH）。" ;;
+    威联通*) echo "  威联通 QTS：ext4 块级快照，走 qcli_volumesnapshot（本工具已真机验证）。" ;;
+    OMV|Unraid|裸*) echo "  通用 Linux：已检测到 btrfs/zfs 文件系统，直接调 btrfs/zfs 命令即可。" ;;
+    *)       echo "  未知系统：已检测到 btrfs/zfs，具备适配基础，请把报告发回给开发者判断。" ;;
+  esac
+else
+  case "$BRAND" in
+    绿联*)   echo "  绿联 UGOS Pro：当前数据盘全为 ext4，NAS Safe 快照功能暂不可用。绿联建存储池时可选 btrfs，需重建存储池（会清空数据，请提前备份）。" ;;
+    飞牛*)   echo "  飞牛 fnOS：当前数据盘全为 ext4。飞牛默认使用 btrfs，若你看到的是 ext4，可能是特殊安装或虚拟机，建议检查存储池设置。" ;;
+    群晖*)   echo "  群晖 DSM：当前无 btrfs/zfs 存储池，需重建存储池为 btrfs（会清空数据，请提前备份）。" ;;
+    威联通*) echo "  威联通 QTS：ext4 块级快照可用，直接走 qcli_volumesnapshot（本工具已真机验证）。" ;;
+    OMV|Unraid|裸*) echo "  通用 Linux：当前只有 ext4 文件系统，NAS Safe 快照功能暂不可用。需重建存储池为 btrfs 或 zfs（会清空数据，请提前备份）。" ;;
+    *)       echo "  未知系统：当前只有 ext4 文件系统，NAS Safe 快照功能暂不可用。请把本报告发回给开发者判断。" ;;
+  esac
+  if command -v btrfs >/dev/null 2>&1 && [ "$btrfs_count" -eq 0 ]; then
+    echo "  注：btrfs-progs 已安装，但系统中没有 btrfs 文件系统挂载，所以 btrfs 命令暂时用不上。"
+  fi
+  if command -v zfs >/dev/null 2>&1 && [ "$zfs_count" -eq 0 ]; then
+    echo "  注：zfs 命令已存在，但系统中没有 zfs 文件系统挂载。"
+  fi
+fi
 
 echo ""
 echo "=============================================================="
