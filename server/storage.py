@@ -530,6 +530,15 @@ def list_all_volumes() -> list[Volume]:
             volumes.extend(list_qnap_volumes())
         except StorageError:
             pass
+    # 远程管理场景：default_client 已指向远程 QNAP（NASSAFE_QNAP_HOST /
+    # NASSAFE_HOST 配置了非本机地址），此时本机未必装有 qcli，但仍需把
+    # QNAP 卷纳入管理。以 client.host 是否非空作为判断依据。
+    try:
+        from qnap import default_client
+        if default_client().host:
+            volumes.extend(list_qnap_volumes())
+    except StorageError:
+        pass
     return volumes
 
 
@@ -695,7 +704,7 @@ def browse_snapshot(snapshot: Snapshot, subpath: str = "") -> dict:
                     "entries": _browse_local_dir(full),
                 }
             raw = client.list_dir(
-                snapshot.volume_id or snapshot.volume,
+                getattr(snapshot, "volume_id", None) or snapshot.volume,
                 snapshot.snapshot_id,
                 subpath,
             )
@@ -742,7 +751,7 @@ def restore_from_snapshot(snapshot: Snapshot, rel_path: str, dest: str) -> dict:
         client = default_client()
         try:
             restored_to = client.restore_file(
-                snapshot.volume_id or snapshot.volume,
+                getattr(snapshot, "volume_id", None) or snapshot.volume,
                 snapshot.snapshot_id,
                 rel_path,
                 dest,

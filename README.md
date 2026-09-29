@@ -135,7 +135,7 @@ sh scripts/probe.sh
 | OMV | ✅ 支持 | Debian 底子 |
 | **绿联 UGOS Pro** | ⚠️ 实测中 | btrfs 池可用；ext4 池无法快照 |
 | 群晖 DSM（开 SSH） | ⚠️ 实测中 | 需 SSH + btrfs 存储池 |
-| **威联通 QTS（开 SSH）** | ✅ **已适配** | ext4 + 块级快照，走官方 `qcli_volumesnapshot` CLI；创建/锁定/删除 + 浏览/取回全闭环真机验证 |
+| **威联通 QTS（开 SSH）** | ✅ **已适配** | ext4 + 块级快照，走官方 `qcli_volumesnapshot` CLI；创建/锁定/删除 + 浏览/取回全闭环真机验证（含 Web UI） |
 | 极空间等封闭系统 | ❌ 不支持 | 无 SSH、无 btrfs、无开放接口 |
 
 ### 关于绿联
@@ -146,6 +146,27 @@ sh scripts/probe.sh
 - 选 **ext4** → **无法使用快照**，需要重建存储池
 
 **NAS Safe 会主动检测并提示这一点** —— 绿联自己的界面不会告诉你"你选错了文件系统"。
+
+---
+
+### 远程管理 NAS（高级）
+
+默认情况下 NAS Safe 装在 NAS 本机运行，直接读取宿主机的快照。
+如果你的 NAS 不方便装服务（比如威联通 QTS 只想用 SSH 管理），也可以把服务装在**另一台电脑/服务器**上，远程管理 NAS：
+
+```bash
+# 监听地址（默认 0.0.0.0；只想本机访问可设 127.0.0.1）
+export NASSAFE_BIND_HOST=0.0.0.0
+# 指向你的 NAS（SSH 凭据）
+export NASSAFE_QNAP_HOST=192.168.8.62
+export NASSAFE_QNAP_USER=admin
+export NASSAFE_QNAP_PASS='你的密码'
+python3 server/app.py
+```
+
+- 浏览器打开 `http://运行服务的那台机器:8848` 即可像在 NAS 本机一样浏览、取回文件
+- 取回的文件会保存到**运行服务的这台机器**上（不是 NAS 上），路径在取回时弹窗确认
+- Windows 开发机照样能跑：远程路径一律按 Linux 处理，不受本机系统影响
 
 ---
 
@@ -198,17 +219,17 @@ zfs snapshot pool/data@snap-20260929-163000
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/system` | 系统能力画像 |
-| GET | `/api/volumes` | 存储单元列表 |
+| GET | `/api/volumes` | 存储单元列表（含 QNAP 远程卷） |
 | GET | `/api/snapshots?volume=<路径>` | 快照列表 |
-| GET | `/api/browse?path=<路径>` | 浏览快照内文件 |
+| GET | `/api/browse?path=<路径>` 或 `?snapshot_id=<ID>&volume_id=<ID>&subpath=<路径>` | 浏览快照内文件（btrfs/zfs 用 `path`；威联通 QNAP 用后者） |
 | POST | `/api/snapshot/create` | 创建快照 |
-| POST | `/api/snapshot/restore` | 取回文件（需 `confirm: true`） |
+| POST | `/api/snapshot/restore` | 取回文件（需 `confirm: true`；btrfs/zfs 用 `snapshot_path`，QNAP 用 `snapshot_id+volume_id+relative_file+destination`） |
 
 ### 运行测试
 
 ```bash
 python3 server/test_e2e.py      # 通用：路径注入防护、越权防护、取回逻辑、格式化、品牌识别
-python3 server/test_qnap.py     # 威联通：含真机集成测试（需设 NASSAFE_HOST/NASSAFE_USER/NASSAFE_PASS 指向真机）
+python3 server/test_qnap.py     # 威联通：含真机集成测试（需设 NASSAFE_QNAP_HOST/NASSAFE_QNAP_USER/NASSAFE_QNAP_PASS 指向真机）
 ```
 
 覆盖：路径注入防护、越权防护、取回逻辑、格式化、品牌识别，以及威联通 QTS 的

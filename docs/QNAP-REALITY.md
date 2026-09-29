@@ -49,7 +49,7 @@ PRODUCT.md 原写"威联通 QTS / QuTS Hero：✅（btrfs 型号 / ZFS）"，表
 ## 四、适配方案（B 类·QNAP）—— 已实证 ✅
 
 > 2026-09-29 通过 **SSH（admin 账号）+ 官方 `qcli_volumesnapshot` CLI** 在真机完整验证，
-> 适配层已落地为 `server/qnap.py`（30 项测试，含真机集成测试全绿）。
+> 适配层已落地为 `server/qnap.py`（43 项测试，含真机集成测试全绿）。
 
 QNAP 没有走 btrfs，也不是 REST API，而是**官方 CLI `qcli_volumesnapshot`**（底层 LVM 瘦快照）。
 nas-safe 直接调用该 CLI，无需 btrfs/zfs 命令。
@@ -104,6 +104,38 @@ B 段集成测试：创建→浏览→读取→取回→删除轮询，全绿）
 
 > 注：早期设想的 `qcli_volumesnapshot -m`（mountsnapshotfolder / SMB 共享）**不需要**——
 > QTS 已自动只读挂载，直接遍历即可，少一条依赖、少一个权限面。
+
+## 五之二、Web UI 接入与后端修复（2026-09-29 续）
+
+完成第五段的 CLI 能力后，进一步把浏览/取回接到 Web UI（前端 `web/app.js`），并在真机
+端到端验证中暴露并修复了若干后端缺陷：
+
+### 前端（Web UI）接入
+- `openSnapshotDetail` / `openBrowser` / `restoreFile` 增加 QNAP 分支判定（`snap.backend==="qnap"`）：
+  - 浏览用 `?snapshot_id=&volume_id=&subpath=` 而非本地 `?path=`
+  - 条目 `path` 为相对路径，面包屑与"返回上级"按相对路径累加
+  - 取回用 `snapshot_id+volume_id+relative_file+destination`，destination 首次弹窗确认并记忆到 localStorage
+- 修复"QNAP 快照 `path` 为空导致浏览按钮被 disabled"的判定（`canBrowse` 同时接受 `backend==="qnap"`）。
+
+### 后端修复（均经真机 HTTP 端到端验证）
+1. **`list_all_volumes` 漏列远程 QNAP 卷**：原逻辑只在本地有 `qcli` 命令时列 QNAP 卷，但
+   "远程管理 NAS"模式下 server 不在 QTS 宿主、`qcli` 不存在 → 卷列表为空。改为：当
+   `default_client().host` 非空（指向远程 QNAP）时也纳入 QNAP 卷。
+2. **`Snapshot` 无 `volume_id` 属性导致 500**：`storage.browse_snapshot` /
+   `restore_from_snapshot` 误用 `snapshot.volume_id`，而该字段只存在于 `Volume`。
+   改为 `getattr(snapshot, "volume_id", None) or snapshot.volume`。
+3. **`restore_file` 目的地处理三处错误（真·安全 bug）**：
+   - 目录预建原本在 SSH 模式跑到**远程 NAS** 去 `mkdir -p`，但文件实际写到**本地管理机**
+     → 本地父目录不存在而失败。修正：destination 始终是"运行 server 的这台机器"的本地路径，目录统一在本地预建。
+   - 已存在判断原本在 SSH 模式到**远程** `test -e`，远程没有该路径恒判不存在 → **静默覆盖**同名文件，
+     违背"绝不覆盖"承诺。修正：统一用本地 `os.path.exists` 判断。
+   - `os.path.isdir(dest)` 在首次恢复（目录尚不存在）时把 destination 误当文件 → 文件写成无扩展名的
+     `nassafe_restored`。修正：destination 一律视为"恢复目录"，文件落到 `dest/<原文件名>`。
+
+### 部署注意：监听地址与 NAS 地址分离
+`app.py` 监听地址曾复用 `NASSAFE_HOST`，设成 NAS IP 后 server 尝试绑定到不属于本机的地址而启动失败。
+新增专用变量 `NASSAFE_BIND_HOST`（默认 `0.0.0.0`）控制监听；`NASSAFE_QNAP_HOST/USER/PASS`
+（或兼容旧名 `NASSAFE_HOST/USER/PASS`）专供 `default_client` 指向 NAS。详见 README「远程管理 NAS」一节。
 
 ## 六、同步给 GitHub 的提醒
 

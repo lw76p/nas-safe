@@ -10,7 +10,14 @@ const state = {
   browseSnapshot: null,
   browsePath: null,
   browseStack: [],
+  restoreDir: localStorage.getItem("nassafe.restoreDir") || "",
 };
+
+// 快照是否为威联通（QNAP）远程后端：这类快照没有本地实体路径，
+// 浏览/取回必须走 snapshot_id + volume_id 通道。
+function isQnapSnap(snap) {
+  return snap && (snap.backend === "qnap" || snap.fs_type === "qnap");
+}
 
 /* ------------------------- 网络 ------------------------- */
 
@@ -193,13 +200,18 @@ async function loadSnapshots() {
 /* ------------------------- 快照详情 ------------------------- */
 
 function openSnapshotDetail(snap) {
+  const qnap = isQnapSnap(snap);
+  const pathLabel = qnap
+    ? (snap.mount_path || `卷#${snap.volume_id} / 快照#${snap.snapshot_id}`)
+    : (snap.path || "-");
   const body = `
     <div class="kv">
       <div class="kv-row"><span class="kv-k">快照名</span><span class="kv-v">${escapeHtml(snap.name)}</span></div>
       <div class="kv-row"><span class="kv-k">创建时间</span><span class="kv-v">${escapeHtml(snap.created_at || "未知")}</span></div>
       <div class="kv-row"><span class="kv-k">占用空间</span><span class="kv-v">${escapeHtml(snap.size_human || "计算中")}</span></div>
       <div class="kv-row"><span class="kv-k">只读保护</span><span class="kv-v">${snap.readonly ? "已启用（无法被修改）" : "未启用"}</span></div>
-      <div class="kv-row"><span class="kv-k">实体路径</span><span class="kv-v">${escapeHtml(snap.path || "-")}</span></div>
+      <div class="kv-row"><span class="kv-k">${qnap ? "快照定位" : "实体路径"}</span><span class="kv-v">${escapeHtml(pathLabel)}</span></div>
+      ${qnap ? `<div class="kv-row"><span class="kv-k">防勒索锁</span><span class="kv-v">${snap.vital ? "已永久锁定（不会被自动清理）" : "未锁定"}</span></div>` : ""}
     </div>
     <div class="notice">
       这份快照是只读的，勒索软件无法修改其中的数据。<br>
@@ -207,7 +219,7 @@ function openSnapshotDetail(snap) {
     </div>
   `;
 
-  const canBrowse = snap.path && snap.path.startsWith("/");
+  const canBrowse = qnap || (snap.path && snap.path.startsWith("/"));
   const foot = `
     <button class="btn ghost" data-act="close">关闭</button>
     <button class="btn primary" data-act="browse" ${canBrowse ? "" : "disabled"}>
@@ -218,7 +230,8 @@ function openSnapshotDetail(snap) {
   openModal(`快照详情`, body, foot, {
     browse: () => {
       closeModal();
-      openBrowser(snap, snap.path);
+      // QNAP 快照无本地实体路径，从快照根（subpath 为空）开始浏览
+      openBrowser(snap, qnap ? "" : snap.path);
     },
   });
 }
@@ -226,6 +239,7 @@ function openSnapshotDetail(snap) {
 /* ------------------------- 文件浏览 ------------------------- */
 
 async function openBrowser(snap, path, pushStack = true) {
+  const qnap = isQnapSnap(snap);
   state.browseSnapshot = snap;
   if (pushStack) state.browseStack.push(path);
   state.browsePath = path;
@@ -238,20 +252,48 @@ async function openBrowser(snap, path, pushStack = true) {
   $("modalBody").innerHTML = `<p class="muted"><span class="spinner"></span>读取目录…</p>`;
 
   try {
-    const data = await api(`/api/browse?path=${encodeURIComponent(path)}`);
+    // QNAP 后端：按 snapshot_id + volume_id + subpath 浏览（path 为相对子路径）
+    // 本地 btrfs/zfs：按实体路径浏览
+    let data;
+    if (qnap) {
+      const vid = (state.activeVolume && state.activeVolume.volume_id) || snap.volume_id;
+      const sid = snap.snapshot_id;
+      const sub = path || "";
+      data = await api(
+        `/api/browse?snapshot_id=${encodeURIComponent(sid)}` +
+        `&volume_id=${encodeURIComponent(vid)}` +
+        `&subpath=${encodeURIComponent(sub)}`
+      );
+    } else {
+      data = await api(`/api/browse?path=${encodeURIComponent(path)}`);
+    }
 
-    const rows = data.entries.map((e) => `
+    // 面包屑 + 上级目录：QNAP 用累积的 subpath；本地用真实父目录
+    const crumb = qnap
+      ? (path ? "/" + path : "/ （快照根目录）")
+      : path;
+    let parentRow = "";
+    if (qnap) {
+      if (path) {
+        const up = path.split("/").slice(0, -1).join("/");
+        parentRow = `<div class="file-row" data-path="${escapeAttr(up)}" data-dir="true"><span class="file-icon dir"></span><span class="file-name">.. 返回上级</span><span class="file-size"></span></div>`;
+      }
+    } else if (data.parent && data.parent.includes(".nassafe")) {
+      parentRow = `<div class="file-row" data-path="${escapeAttr(data.parent)}" data-dir="true"><span class="file-icon dir"></span><span class="file-name">.. 返回上级</span><span class="file-size"></span></div>`;
+    }
+
+    const rows = (data.entries || []).map((e) => `
       <div class="file-row" data-path="${escapeAttr(e.path)}" data-dir="${e.is_dir}">
         <span class="file-icon ${e.is_dir ? "dir" : ""}"></span>
         <span class="file-name">${escapeHtml(e.name)}</span>
-        <span class="file-size">${e.is_dir ? "" : escapeHtml(e.size_human)}</span>
+        <span class="file-size">${e.is_dir ? "" : escapeHtml(e.size_human || "")}</span>
       </div>
     `).join("");
 
     $("modalBody").innerHTML = `
-      <div class="crumb">${escapeHtml(path)}</div>
+      <div class="crumb">${escapeHtml(crumb)}</div>
       <div id="fileList">
-        ${data.parent && data.parent.includes(".nassafe") ? `<div class="file-row" data-path="${escapeAttr(data.parent)}" data-dir="true"><span class="file-icon dir"></span><span class="file-name">.. 返回上级</span><span class="file-size"></span></div>` : ""}
+        ${parentRow}
         ${rows || `<p class="muted">这个目录是空的。</p>`}
       </div>
       <div class="notice">
@@ -275,43 +317,95 @@ async function openBrowser(snap, path, pushStack = true) {
 }
 
 async function restoreFile(snap, fullPath) {
-  // 相对路径 = 快照路径之后的剩余部分
-  const base = snap.path.replace(/\/+$/, "");
-  let rel = fullPath.startsWith(base) ? fullPath.slice(base.length) : fullPath;
-  rel = rel.replace(/^\/+/, "");
+  const qnap = isQnapSnap(snap);
+  let rel;
+  if (qnap) {
+    // QNAP 浏览返回的 entry.path 已是相对快照根的路径
+    rel = (fullPath || "").replace(/^\/+/, "");
+  } else {
+    const base = (snap.path || "").replace(/\/+$/, "");
+    rel = fullPath && fullPath.startsWith(base) ? fullPath.slice(base.length) : fullPath;
+    rel = (rel || "").replace(/^\/+/, "");
+  }
 
-  const destination = defaultRestoreDir();
-  if (!destination) {
-    toast("无法确定恢复目录，请检查配置", "err");
+  if (!rel) {
+    toast("无法确定要取回的文件", "err");
     return;
   }
 
-  if (!confirm(`确定要把这个文件取回到：\n${destination}\n\n不会覆盖同名文件（会自动加后缀）。`)) {
-    return;
-  }
+  // 解析恢复目录（首次会让用户确认/修改，并记忆）
+  const destination = await resolveRestoreDir(snap);
+  if (!destination) return;  // 用户取消
+
+  const body = qnap
+    ? {
+        snapshot_id: snap.snapshot_id,
+        volume_id: (state.activeVolume && state.activeVolume.volume_id) || snap.volume_id,
+        relative_file: rel,
+        destination,
+        confirm: true,
+      }
+    : {
+        snapshot_path: snap.path,
+        relative_file: rel,
+        destination,
+        confirm: true,
+      };
 
   try {
     toast("正在恢复…");
     const data = await api("/api/snapshot/restore", {
       method: "POST",
-      body: JSON.stringify({
-        snapshot_path: snap.path,
-        relative_file: rel,
-        destination,
-        confirm: true,
-      }),
+      body: JSON.stringify(body),
     });
-    toast(`已恢复：${data.restored_to}`, "ok");
+    toast(`已恢复到：${data.restored_to}`, "ok");
   } catch (err) {
     toast("恢复失败：" + err.message, "err");
   }
 }
 
-function defaultRestoreDir() {
-  // 恢复到快照所属存储单元下的 _restored 目录
-  const vol = state.activeVolume;
-  if (!vol) return null;
-  return vol.mountpoint.replace(/\/+$/, "") + "/_restored";
+// 恢复目录：首次取回时让用户确认/修改，之后记忆到 localStorage，不再询问。
+async function resolveRestoreDir(snap) {
+  const qnap = isQnapSnap(snap);
+  const fallback = qnap
+    ? "/share/我的文件/nassafe_restored"
+    : (state.activeVolume
+        ? state.activeVolume.mountpoint.replace(/\/+$/, "") + "/_restored"
+        : "/tmp/nassafe_restored");
+  if (state.restoreDir) return state.restoreDir;
+  return await askRestoreDestination(fallback);
+}
+
+function askRestoreDestination(suggest) {
+  return new Promise((resolve) => {
+    const body = `
+      <p class="muted">取回的文件会复制到这里（不会覆盖你当前的数据）。
+      该目录位于「运行 NAS Safe 的这台机器」上：若本服务装在 NAS 本机，就是 NAS 共享目录；
+      若装在其他电脑上远程管理 NAS，就是那台电脑上的目录。</p>
+      <input id="destInput" class="text-input"
+             value="${escapeAttr(suggest)}"
+             style="width:100%;box-sizing:border-box;padding:9px 10px;margin-top:10px;
+                    border:1px solid #e2e8f0;border-radius:8px;font-size:14px;">
+    `;
+    const foot = `
+      <button class="btn ghost" data-act="cancel">取消</button>
+      <button class="btn primary" data-act="ok">确定取回</button>
+    `;
+    openModal("选择恢复目录", body, foot, {
+      ok: () => {
+        const v = ($("destInput").value || "").trim();
+        if (v) {
+          state.restoreDir = v;
+          localStorage.setItem("nassafe.restoreDir", v);
+        }
+        closeModal();
+        resolve(v || null);
+      },
+      cancel: () => { closeModal(); resolve(null); },
+    });
+    // 点遮罩等同于取消，避免 Promise 泄漏
+    $("modalMask").onclick = () => { closeModal(); resolve(null); };
+  });
 }
 
 /* ------------------------- 创建快照 ------------------------- */
@@ -432,7 +526,7 @@ $("snapBtn").onclick = createSnapshot;
 
 $("browseBtn").onclick = () => {
   const latest = state.snapshots[state.snapshots.length - 1];
-  if (latest) openBrowser(latest, latest.path);
+  if (latest) openBrowser(latest, isQnapSnap(latest) ? "" : latest.path);
 };
 
 $("modalClose").onclick = closeModal;

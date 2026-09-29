@@ -437,10 +437,16 @@ class QnapClient:
             raise QnapError("非法相对路径")
         root = self.snapshot_mount_path(volume_id, snapshot_id)
         full = posixpath.normpath(posixpath.join(root, rel_path))
-        if os.path.isdir(dest):
-            dest_path = os.path.join(dest, posixpath.basename(full))
-        else:
-            dest_path = dest
+        # destination 一律视为「恢复目录」，文件落到 dest/<原文件名>。
+        # 注意：dest/root/full 都是远程（或宿主本地 Linux）路径，一律用
+        # posixpath 处理，避免开发机为 Windows 时 os.path 把 / 翻成 \\。
+        dest_path = posixpath.join(dest, posixpath.basename(full))
+        # 预建目标目录：小白取回时目标目录多半还不存在，必须自动创建。
+        # destination 始终是「运行 server 的这台机器」的本地路径 —— 本地
+        # 模式是 NAS 宿主自身；SSH 模式是把 NAS 文件取回到管理机，目录在本地预建。
+        os.makedirs(dest, exist_ok=True)
+        # 是否已存在：destination 永远是 server 本机路径，统一用本地判断即可
+        # （切勿在远端 test -e，远端没有这个路径会恒判不存在而静默覆盖）。
         if os.path.exists(dest_path):
             import time as _time
             base, ext = os.path.splitext(dest_path)

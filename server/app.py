@@ -40,7 +40,7 @@ from storage import (  # noqa: E402
     StorageError, CommandNotFound, Snapshot, Volume,
 )
 
-HOST = os.environ.get("NASSAFE_HOST", "0.0.0.0")
+HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
 WEB_DIR = os.environ.get("NASSAFE_WEB_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web"
@@ -154,6 +154,7 @@ def build_snapshot_list(volume_mountpoint: str) -> dict:
             size = dir_size(snap.path)
         items.append({
             **snap.to_dict(),
+            "volume_id": target.volume_id,
             "size_bytes": size if size is not None else snap.size_bytes,
             "size_human": human_size(size if size is not None else snap.size_bytes),
         })
