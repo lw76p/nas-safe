@@ -1,45 +1,45 @@
-/* NAS Safe — 样式表 v2
- * 设计方向：运维仪表盘 / 克制实用。三个功能区用协调配色区分：
- *   存储单元 = 蓝(storage) · 快照时间轴 = 靛紫(snapshot) · 实时监控 = 翠绿(monitor)
- *   防护/风险 = 琥珀/红。浅色底 + 卡片阴影 + 色条分区，一眼分清功能区。
+/* NAS Safe — 样式表 v3（深色仪表盘）
+ * 在 v2 三功能区配色基础上整体转深色：深底 + 深表面卡片 + 协调冷色系 +
+ * 高对比状态色。所有类名保持不变，仅调整变量与少量硬编码底色。
  */
 
 :root {
-  /* 基础中性色 */
-  --bg: #eef1f6;
-  --surface: #ffffff;
-  --border: #e5e9f0;
-  --border-strong: #cfd6e1;
-  --text: #1f2733;
-  --text-2: #5a6473;
-  --text-3: #8b95a3;
+  /* 基础中性色（深色） */
+  --bg: #0e131c;
+  --surface: #151b27;
+  --surface-2: #1a2230;          /* 行 hover / 输入 / 页脚等次级表面 */
+  --border: #232c3b;
+  --border-strong: #313c4f;
+  --text: #e7edf6;
+  --text-2: #a7b2c2;
+  --text-3: #6f7c8f;
 
-  /* 功能区主题色（协调冷色系 + 状态色） */
-  --z-storage: #3b82f6;
-  --z-storage-soft: #eaf1fe;
-  --z-snapshot: #7c6cf0;
-  --z-snapshot-soft: #efeefe;
-  --z-monitor: #10b981;
-  --z-monitor-soft: #e7f8f1;
-  --z-guard: #f59e0b;
-  --z-guard-soft: #fef4e2;
+  /* 功能区主题色（协调冷色系，深底上加亮） */
+  --z-storage: #4b95ff;
+  --z-storage-soft: rgba(75,149,255,.14);
+  --z-snapshot: #9b8cff;
+  --z-snapshot-soft: rgba(155,140,255,.16);
+  --z-monitor: #2fe0a0;
+  --z-monitor-soft: rgba(47,224,160,.13);
+  --z-guard: #ffb74d;
+  --z-guard-soft: rgba(255,183,77,.14);
 
-  /* 风险状态色 */
-  --green: #16a34a;
-  --green-bg: #e7f6ed;
-  --amber: #d97706;
-  --amber-bg: #fdf2da;
-  --red: #ef4444;
-  --red-bg: #fdeaea;
+  /* 风险状态色（深底上提亮，更醒目） */
+  --green: #34d399;
+  --green-bg: rgba(52,211,153,.15);
+  --amber: #fbbf24;
+  --amber-bg: rgba(251,191,36,.14);
+  --red: #f87171;
+  --red-bg: rgba(248,113,113,.15);
 
   --radius: 16px;
   --radius-sm: 10px;
   --radius-xs: 8px;
 
-  /* 阴影三级 */
-  --sh-1: 0 1px 2px rgba(20,30,50,.05), 0 1px 3px rgba(20,30,50,.04);
-  --sh-2: 0 6px 18px rgba(20,30,50,.07);
-  --sh-3: 0 18px 50px rgba(20,30,50,.12);
+  /* 阴影三级（深色下以黑影为主） */
+  --sh-1: 0 1px 2px rgba(0,0,0,.35);
+  --sh-2: 0 8px 24px rgba(0,0,0,.42);
+  --sh-3: 0 20px 60px rgba(0,0,0,.55);
 
   --ease: cubic-bezier(.16,1,.3,1);
   --font-display: "Sora", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -55,8 +55,8 @@
 body {
   font-family: var(--font-body);
   background:
-    radial-gradient(1200px 600px at 85% -10%, #e7ecf7 0%, rgba(231,236,247,0) 60%),
-    radial-gradient(900px 500px at 0% 0%, #eafaf3 0%, rgba(234,250,243,0) 55%),
+    radial-gradient(1200px 620px at 85% -12%, rgba(75,149,255,.12) 0%, rgba(75,149,255,0) 60%),
+    radial-gradient(900px 520px at 0% 0%, rgba(47,224,160,.10) 0%, rgba(47,224,160,0) 55%),
     var(--bg);
   background-attachment: fixed;
   color: var(--text);
@@ -73,7 +73,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   justify-content: space-between;
   align-items: center;
   padding: 15px 30px;
-  background: rgba(255,255,255,.82);
+  background: rgba(14,19,28,.78);
   backdrop-filter: saturate(160%) blur(10px);
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -87,7 +87,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   display: grid; place-items: center;
   color: #fff;
   background: linear-gradient(135deg, #6d5cf0, #4a8df0);
-  box-shadow: 0 4px 14px rgba(90,108,240,.35);
+  box-shadow: 0 4px 14px rgba(90,108,240,.4);
 }
 .logo svg { width: 22px; height: 22px; }
 .brand h1 { font-size: 18px; font-weight: 700; line-height: 1.1; }
@@ -204,15 +204,15 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .btn:active { transform: translateY(1px); }
 .btn.primary {
   background: linear-gradient(135deg, #6d5cf0, #4a8df0);
-  color: #fff; box-shadow: 0 4px 14px rgba(90,108,240,.32);
+  color: #fff; box-shadow: 0 4px 14px rgba(90,108,240,.4);
 }
-.btn.primary:hover { box-shadow: 0 6px 18px rgba(90,108,240,.42); }
+.btn.primary:hover { box-shadow: 0 6px 18px rgba(90,108,240,.5); }
 .btn.ghost {
   background: var(--surface);
   border-color: var(--border-strong);
   color: var(--text-2);
 }
-.btn.ghost:hover { background: #f5f7fb; border-color: var(--text-3); }
+.btn.ghost:hover { background: rgba(255,255,255,.05); border-color: var(--text-3); }
 .btn.danger { background: var(--red); color: #fff; }
 .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 
@@ -221,7 +221,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   font-size: 15px; color: var(--text-3);
   padding: 5px 8px; border-radius: 7px;
 }
-.icon-btn:hover { background: #f3f5f9; color: var(--text); }
+.icon-btn:hover { background: rgba(255,255,255,.06); color: var(--text); }
 
 /* ----------------------------- 风险横幅 ----------------------------- */
 .alert-banner {
@@ -229,10 +229,10 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   padding: 16px 20px;
   border-radius: var(--radius);
   background: var(--red-bg);
-  border: 1px solid #f5c6c6;
+  border: 1px solid rgba(248,113,113,.4);
   box-shadow: var(--sh-1);
 }
-.alert-banner.warn { background: var(--amber-bg); border-color: #f0dcb0; }
+.alert-banner.warn { background: var(--amber-bg); border-color: rgba(251,191,36,.4); }
 .alert-icon {
   width: 22px; height: 22px; flex: none; margin-top: 1px;
   border-radius: 50%;
@@ -246,7 +246,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   display: grid; place-items: center;
   color: #fff; font-size: 14px; font-weight: 700;
 }
-.alert-banner strong { display: block; margin-bottom: 3px; font-size: 14px; font-family: var(--font-display); }
+.alert-banner strong { display: block; margin-bottom: 3px; font-size: 14px; font-family: var(--font-display); color: var(--text); }
 .alert-banner p { font-size: 13px; color: var(--text-2); }
 
 /* ----------------------------- 卷列表 ----------------------------- */
@@ -263,7 +263,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .volume-card.active {
   border-color: var(--z-storage);
   background: var(--z-storage-soft);
-  box-shadow: 0 0 0 3px rgba(59,130,246,.16);
+  box-shadow: 0 0 0 3px rgba(75,149,255,.18);
 }
 .vol-fs {
   flex: none; font-size: 11px; font-weight: 600; letter-spacing: .4px;
@@ -286,7 +286,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 }
 .badge.ok { background: var(--green-bg); color: var(--green); }
 .badge.risk { background: var(--red-bg); color: var(--red); }
-.badge.none { background: #eef1f6; color: var(--text-3); }
+.badge.none { background: rgba(255,255,255,.06); color: var(--text-3); }
 
 /* ----------------------------- 时间轴 ----------------------------- */
 .timeline-wrap { position: relative; padding: 30px 8px 44px; overflow-x: auto; }
@@ -322,12 +322,13 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 
 /* ----------------------------- 模态框 ----------------------------- */
 .modal-root { position: fixed; inset: 0; z-index: 100; }
-.modal-mask { position: absolute; inset: 0; background: rgba(24,30,45,.45); backdrop-filter: blur(2px); }
+.modal-mask { position: absolute; inset: 0; background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
 .modal {
   position: relative; max-width: 620px; margin: 8vh auto;
   background: var(--surface); border-radius: var(--radius);
   max-height: 80vh; display: flex; flex-direction: column;
   overflow: hidden; box-shadow: var(--sh-3);
+  border: 1px solid var(--border);
 }
 .modal-head {
   display: flex; justify-content: space-between; align-items: center;
@@ -337,13 +338,13 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .modal-body { padding: 22px; overflow-y: auto; flex: 1; }
 .modal-foot {
   padding: 15px 22px; border-top: 1px solid var(--border);
-  display: flex; justify-content: flex-end; gap: 9px; background: #fafbfd;
+  display: flex; justify-content: flex-end; gap: 9px; background: #11161f;
 }
 
 /* ----------------------------- 文件浏览 ----------------------------- */
 .crumb {
   font-family: var(--font-mono); font-size: 12.5px; color: var(--text-2);
-  padding: 10px 13px; background: #f3f6fb; border-radius: var(--radius-xs);
+  padding: 10px 13px; background: var(--surface-2); border-radius: var(--radius-xs);
   margin-bottom: 12px; word-break: break-all;
 }
 .file-row {
@@ -351,7 +352,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 13px;
   transition: background .12s;
 }
-.file-row:hover { background: #f3f6fb; }
+.file-row:hover { background: var(--surface-2); }
 .file-icon { width: 16px; height: 16px; flex: none; border-radius: 3px; background: var(--text-3); }
 .file-icon.dir { background: var(--z-guard); }
 .file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -364,8 +365,8 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .kv-v { flex: 1; word-break: break-all; font-family: var(--font-mono); font-size: 12.5px; }
 .notice {
   padding: 13px 15px; border-radius: var(--radius-xs);
-  background: var(--amber-bg); font-size: 12.5px; color: #8a5a10;
-  margin-top: 14px; line-height: 1.6; border: 1px solid #f0dcb0;
+  background: var(--amber-bg); font-size: 12.5px; color: #f3c969;
+  margin-top: 14px; line-height: 1.6; border: 1px solid rgba(251,191,36,.3);
 }
 
 /* ----------------------------- 实时监控面板 ----------------------------- */
@@ -375,14 +376,15 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .text-input {
   flex: 1; min-width: 220px; padding: 10px 12px;
   border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
-  font: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+  font: inherit; font-size: 13px; color: var(--text); background: var(--surface-2);
 }
+.text-input::placeholder { color: var(--text-3); }
 .text-input:focus { outline: none; border-color: var(--z-monitor); box-shadow: 0 0 0 3px var(--z-monitor-soft); }
 
 .monitor-auto {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   padding: 13px 15px; margin-bottom: 14px;
-  background: var(--z-monitor-soft); border: 1px solid #cdeede; border-radius: var(--radius-xs);
+  background: var(--z-monitor-soft); border: 1px solid rgba(47,224,160,.3); border-radius: var(--radius-xs);
   font-size: 13px;
 }
 .switch { position: relative; display: inline-block; width: 42px; height: 23px; flex: none; }
@@ -393,14 +395,14 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 }
 .switch-track::before {
   content: ""; position: absolute; height: 17px; width: 17px; left: 3px; top: 3px;
-  background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 2px rgba(0,0,0,.2);
+  background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 2px rgba(0,0,0,.3);
 }
 .switch input:checked + .switch-track { background: var(--z-monitor); }
 .switch input:checked + .switch-track::before { transform: translateX(19px); }
 .auto-label { font-weight: 600; color: var(--text); }
 .sel-input {
   padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
-  font: inherit; font-size: 13px; background: var(--surface); color: var(--text);
+  font: inherit; font-size: 13px; background: var(--surface-2); color: var(--text);
 }
 .sel-input:focus { outline: none; border-color: var(--z-monitor); }
 .chk-inline { display: flex; align-items: center; gap: 6px; color: var(--text-2); cursor: pointer; }
@@ -414,9 +416,9 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .monitor-score.bad { background: var(--red-bg); color: var(--red); }
 .monitor-meta { font-size: 12px; color: var(--text-3); font-family: var(--font-mono); }
 .alert-card { padding: 13px 15px; border-radius: var(--radius-xs); border: 1px solid var(--border); background: var(--surface); }
-.alert-card.warn { background: var(--amber-bg); border-color: #f0dcb0; }
-.alert-card.crit { background: var(--red-bg); border-color: #f5c6c6; }
-.ac-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+.alert-card.warn { background: var(--amber-bg); border-color: rgba(251,191,36,.3); }
+.alert-card.crit { background: var(--red-bg); border-color: rgba(248,113,113,.3); }
+.ac-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; color: var(--text); }
 .ac-detail { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
 
 /* ----------------------------- Toast ----------------------------- */
@@ -426,7 +428,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   align-items: center; pointer-events: none;
 }
 .toast {
-  padding: 11px 20px; border-radius: 999px; background: #23272c; color: #fff;
+  padding: 11px 20px; border-radius: 999px; background: #2a3038; color: #fff;
   font-size: 13px; animation: toastIn .2s ease-out; max-width: 84vw; box-shadow: var(--sh-2);
 }
 .toast.err { background: var(--red); }
