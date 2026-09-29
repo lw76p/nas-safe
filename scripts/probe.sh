@@ -47,6 +47,22 @@ for f in /etc/fnos-release /etc/ugos-release /etc/synoinfo.conf \
   fi
 done
 
+# 品牌判定（用于快速分流社区测试报告）
+BRAND="未知"
+if [ -f /etc/ugos-release ]; then BRAND="绿联 UGOS Pro"; fi
+if [ -f /etc/fnos-release ]; then BRAND="飞牛 fnOS"; fi
+if [ -f /etc/synoinfo.conf ] || [ -f /etc.defaults/VERSION ]; then BRAND="群晖 DSM"; fi
+if [ -f /etc/config/uLinux.conf ]; then BRAND="威联通 QTS"; fi
+if [ -f /etc/openmediavault/config.xml ]; then BRAND="OMV"; fi
+if [ -f /etc/unraid-version ]; then BRAND="Unraid"; fi
+if [ "$BRAND" = "未知" ]; then
+  case "${ID:-}" in
+    debian|ubuntu|centos|fedora|arch|alpine) BRAND="裸 Linux (${ID})" ;;
+    *) BRAND="未知 (ID=${ID:-?})" ;;
+  esac
+fi
+echo "  判定品牌    : ${BRAND}"
+
 # ---------------------------------------------------------------
 echo ""
 echo "【2】运行环境"
@@ -201,6 +217,18 @@ echo "--------------------------------------------------------------"
 df -h 2>/dev/null | awk 'NR==1 || $1 ~ /^\/dev/' | sed 's/^/  /'
 
 # ---------------------------------------------------------------
+echo ""
+echo "【10】适配建议（给开发者 / 测试者）"
+echo "--------------------------------------------------------------"
+case "$BRAND" in
+  绿联*)   echo "  绿联 UGOS Pro：数据盘为 btrfs 即可走 btrfs 子卷方案；ext4 池暂不可用（需重建为 btrfs）。" ;;
+  飞牛*)   echo "  飞牛 fnOS：Debian + btrfs，SSH 默认开放，适配最顺。" ;;
+  群晖*)   echo "  群晖 DSM：需开 SSH，且存储池须为 btrfs。" ;;
+  威联通*) echo "  威联通 QTS：ext4 块级快照，走 qcli_volumesnapshot（本工具已真机验证）。" ;;
+  OMV|Unraid|裸*) echo "  通用 Linux：直接调 btrfs / zfs 即可。" ;;
+  *)       echo "  未知系统：请把本报告发回给开发者判断。" ;;
+esac
+
 echo ""
 echo "=============================================================="
 echo "  探测完成"
