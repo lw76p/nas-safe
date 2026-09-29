@@ -664,6 +664,19 @@ function stopAutoMonitor() {
   state.autoMonitor = false;
 }
 
+// 刷新页面后按 localStorage 恢复自动监控状态（关闭页面不会丢失监控中状态）
+function restoreAutoMonitor() {
+  const on = localStorage.getItem("nassafe.autoMonitor") === "1";
+  const iv = localStorage.getItem("nassafe.autoInterval");
+  const beh = localStorage.getItem("nassafe.autoBehavior") === "1";
+  if (iv) $("autoInterval").value = iv;
+  $("autoBehavior").checked = beh;
+  if (on) {
+    $("autoMonitor").checked = true;
+    startAutoMonitor();
+  }
+}
+
 /* ------------------------- 监控结果渲染 ------------------------- */
 
 function renderMonitorResults(payload, kind) {
@@ -735,6 +748,12 @@ $("snapBtn").onclick = createSnapshot;
 $("integrityBtn").onclick = runIntegrityCheck;
 $("behaviorBtn").onclick = runBehaviorScan;
 
+function persistAutoMonitor() {
+  localStorage.setItem("nassafe.autoMonitor", state.autoMonitor ? "1" : "0");
+  localStorage.setItem("nassafe.autoInterval", $("autoInterval").value);
+  localStorage.setItem("nassafe.autoBehavior", $("autoBehavior").checked ? "1" : "0");
+}
+
 $("autoMonitor").onchange = (e) => {
   if (e.target.checked) {
     startAutoMonitor();
@@ -743,9 +762,15 @@ $("autoMonitor").onchange = (e) => {
     stopAutoMonitor();
     toast("已关闭自动监控", "");
   }
+  persistAutoMonitor();
 };
 $("autoInterval").onchange = () => {
   if (state.autoMonitor) startAutoMonitor(); // 间隔变更后重启计时以生效
+  persistAutoMonitor();
+};
+$("autoBehavior").onchange = () => {
+  if (state.autoMonitor) startAutoMonitor(); // 勾选后立即生效
+  persistAutoMonitor();
 };
 
 $("browseBtn").onclick = () => {
@@ -760,6 +785,9 @@ document.addEventListener("keydown", (e) => {
 });
 
 boot();
+
+// 自动监控状态恢复：刷新页面后按上次设置恢复（localStorage 持久化）
+restoreAutoMonitor();
 
 // 篡改检测告警轮询：每 30s 拉一次 /api/alerts，发现异常则顶栏告警
 pollAlerts();

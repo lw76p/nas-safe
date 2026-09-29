@@ -273,7 +273,7 @@ python3 server/test_qnap.py     # 威联通：含真机集成测试（需设 NAS
 
 **v2.0 路线** —— 异地不可变副本、多设备统一看板、AI 解读体检报告
 
-> 注：v2 内容完整性校验与 v3 勒索行为检测已落地核心逻辑与单测（详见 `server/integrity.py`、`server/behavior.py`、`server/test_integrity.py`、`server/test_behavior.py`）。内容完整性深度校验较重，默认不并入 30s 巡检；通过 `GET /api/integrity` 或 `NASSAFE_INTEGRITY_CHECK=1` 开启。Web 监控面板提供「自动持续监控」开关：开启后按选定间隔（5/10/30 分钟）自动跑 v2 深度校验，可选附带 v3 勒索行为扫描，结果实时并入顶栏横幅。
+> 注：v2 内容完整性校验与 v3 勒索行为检测已落地核心逻辑与单测（详见 `server/integrity.py`、`server/behavior.py`、`server/test_integrity.py`、`server/test_behavior.py`）。内容完整性深度校验较重，默认不并入 30s 巡检；通过 `GET /api/integrity` 或 `NASSAFE_INTEGRITY_CHECK=1` 开启。Web 监控面板提供「自动持续监控」开关：开启后按选定间隔（5/10/30 分钟）自动跑 v2 深度校验，可选附带 v3 勒索行为扫描，结果实时并入顶栏横幅；开关状态用 localStorage 持久化，刷新页面后仍保持监控中。
 
 ---
 
