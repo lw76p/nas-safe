@@ -1,0 +1,54 @@
+# NAS Safe — Docker 部署
+#
+# 部署方式（在 NAS 上执行）：
+#   docker compose up -d
+#
+# 说明：
+#   - privileged 是必需的：快照操作需要访问宿主机的存储设备
+#   - 挂载宿主机根目录到 /host（只读元数据 + 读写快照目录）
+#   - 核心功能完全离线，不依赖任何外部服务
+
+services:
+  nassafe:
+    image: nassafe/nassafe:1.0.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nassafe
+    restart: unless-stopped
+
+    # 必需：快照操作需要特权访问块设备
+    privileged: true
+
+    ports:
+      - "8848:8848"
+
+    volumes:
+      # 挂载宿主机根目录，让容器内可以操作宿主机的 btrfs/zfs
+      - /:/host:rslave
+
+    environment:
+      # 界面监听地址与端口
+      NASSAFE_HOST: "0.0.0.0"
+      NASSAFE_PORT: "8848"
+      # 界面静态文件目录
+      NASSAFE_WEB_DIR: "/app/web"
+      # 时区，日志和快照时间戳按此显示
+      TZ: "Asia/Shanghai"
+      # 是否允许执行 btrfs/zfs 命令（设为 false 时进入只读演示模式）
+      NASSAFE_ALLOW_WRITE: "true"
+
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8848/api/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

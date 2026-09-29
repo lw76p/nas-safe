@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NAS Safe — 数据保险箱</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="logo"></div>
+    <div>
+      <h1>NAS Safe</h1>
+      <p class="sub" id="sysLine">正在检测系统…</p>
+    </div>
+  </div>
+  <div class="status" id="statusChip">
+    <span class="dot"></span><span id="statusText">连接中</span>
+  </div>
+</header>
+
+<main>
+  <section class="alert-banner" id="alertBanner" hidden>
+    <div class="alert-icon"></div>
+    <div>
+      <strong id="alertTitle">检测到风险</strong>
+      <p id="alertBody"></p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>存储单元</h2>
+      <button class="btn ghost" id="refreshBtn">刷新</button>
+    </div>
+    <div id="volumeList" class="volume-list">
+      <p class="muted">加载中…</p>
+    </div>
+  </section>
+
+  <section class="panel" id="timelinePanel" hidden>
+    <div class="panel-head">
+      <div>
+        <h2 id="tlTitle">快照时间轴</h2>
+        <p class="sub" id="tlSubtitle"></p>
+      </div>
+      <div class="panel-actions">
+        <button class="btn ghost" id="browseBtn" disabled>浏览文件</button>
+        <button class="btn primary" id="snapBtn">立即拍一张快照</button>
+      </div>
+    </div>
+
+    <div class="timeline-wrap">
+      <div class="timeline-line"></div>
+      <div class="timeline" id="timeline">
+        <p class="muted">该存储单元还没有快照。</p>
+      </div>
+    </div>
+
+    <div class="tl-hint">
+      <span class="hint-item"><i class="kp"></i>点击时间点查看详情</span>
+      <span class="hint-item"><i class="kp"></i>建议每小时自动快照</span>
+    </div>
+  </section>
+</main>
+
+<div class="modal-root" id="modalRoot" hidden>
+  <div class="modal-mask" id="modalMask"></div>
+  <div class="modal" id="modalBox">
+    <div class="modal-head">
+      <h3 id="modalTitle">标题</h3>
+      <button class="icon-btn" id="modalClose">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-foot" id="modalFoot"></div>
+  </div>
+</div>
+
+<div class="toast-root" id="toastRoot"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
