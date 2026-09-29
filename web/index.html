@@ -64,6 +64,23 @@
       <span class="hint-item"><i class="kp"></i>建议每小时自动快照</span>
     </div>
   </section>
+
+  <section class="panel" id="monitorPanel">
+    <div class="panel-head">
+      <div>
+        <h2>防勒索实时监控</h2>
+        <p class="sub">深度校验受保护快照内容是否被篡改（v2）+ 扫描本地目录的勒索行为迹象（v3）</p>
+      </div>
+    </div>
+    <div class="monitor-controls">
+      <input id="watchPaths" class="text-input" placeholder="监控路径（逗号分隔，留空则用当前选中的卷）">
+      <button class="btn ghost" id="integrityBtn">深度校验快照 (v2)</button>
+      <button class="btn ghost" id="behaviorBtn">扫描勒索行为 (v3)</button>
+    </div>
+    <div id="monitorResults" class="monitor-results">
+      <p class="muted">点击上方按钮运行主动防御检测（深度校验会在创建快照时建立内容基线，越早开始保护越有效）。</p>
+    </div>
+  </section>
 </main>
 
 <div class="modal-root" id="modalRoot" hidden>

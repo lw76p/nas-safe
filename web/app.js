@@ -11,6 +11,8 @@ const state = {
   browsePath: null,
   browseStack: [],
   restoreDir: localStorage.getItem("nassafe.restoreDir") || "",
+  tamperAlerts: [],   // v1 基线对比法（30s 轮询）
+  deepAlerts: [],     // v2 内容完整性 + v3 勒索行为（主动巡检后写入）
 };
 
 // 快照是否为威联通（QNAP）远程后端：这类快照没有本地实体路径，
@@ -146,9 +148,14 @@ async function loadVolumes() {
 async function selectVolume(vol, keepSnapshot) {
   state.activeVolume = vol;
   $("timelinePanel").hidden = false;
+  $("monitorPanel").hidden = false;
   $("tlTitle").textContent = `快照时间轴 — ${vol.name}`;
   $("tlSubtitle").textContent = vol.mountpoint;
   $("browseBtn").disabled = true;
+  // 默认把当前卷的挂载点填入勒索行为监控路径
+  if ($("watchPaths").value.trim() === "") {
+    $("watchPaths").value = vol.mountpoint;
+  }
 
   document.querySelectorAll(".volume-card").forEach((c) => c.classList.remove("active"));
   await loadSnapshots();
@@ -507,31 +514,174 @@ function escapeAttr(s) {
   return escapeHtml(s).replace(/"/g, "&quot;");
 }
 
-/* ------------------------- 篡改检测告警轮询 ------------------------- */
+/* ------------------------- 告警聚合与轮询 ------------------------- */
+
+// 顶栏横幅聚合三类告警：
+//   v1 基线对比法（state.tamperAlerts，30s 轮询，廉价）
+//   v2 内容完整性（state.deepAlerts 中 source=integrity）
+//   v3 勒索行为检测（state.deepAlerts 中 source=behavior）
+// 任一命中即顶栏展示；critical 用红色，其余用黄色。
+function renderBanners() {
+  const all = [...state.tamperAlerts, ...state.deepAlerts].filter(
+    (a) => a && (a.level === "critical" || a.level === "warn")
+  );
+  if (!all.length) {
+    const wasActive = state.tamperActive || state.deepActive;
+    if (wasActive) {
+      $("alertBanner").hidden = true;
+      state.tamperActive = false;
+      state.deepActive = false;
+    }
+    return;
+  }
+  const critical = all.some((a) => a.level === "critical");
+  const title = critical ? "⚠ 检测到勒索风险" : "快照保护状态异常";
+  const body = all
+    .map((a) => "• " + (a.title || "风险") + (a.detail ? "：" + a.detail : ""))
+    .join("；");
+  showBanner(critical ? "error" : "warn", title, body);
+  state.tamperActive = state.tamperAlerts.length > 0;
+  state.deepActive = state.deepAlerts.length > 0;
+}
 
 // 受保护快照（被 NAS Safe 锁定的）一旦消失或被解锁，后端 /api/alerts 会告警。
 // 这里定时拉取并顶栏展示，命中「快照被删的那一刻立刻告警」的核心卖点。
 async function pollAlerts() {
   try {
     const data = await api("/api/alerts");
-    const alerts = (data.alerts || []).filter(
+    state.tamperAlerts = (data.alerts || []).filter(
       (a) => a.level === "critical" || a.level === "warn"
     );
-    if (alerts.length) {
-      const critical = alerts.some((a) => a.level === "critical");
-      const title = critical ? "⚠ 检测到快照被篡改风险" : "快照保护状态异常";
-      const body = alerts
-        .map((a) => "• " + a.title + "：" + a.detail)
-        .join("；");
-      showBanner(critical ? "error" : "warn", title, body);
-      state.tamperActive = true;
-    } else if (state.tamperActive) {
-      $("alertBanner").hidden = true;
-      state.tamperActive = false;
-    }
+    renderBanners();
   } catch (e) {
     // 服务不可达时静默，不打扰用户
   }
+}
+
+/* ------------------------- v2 内容完整性深度校验 ------------------------- */
+
+// 对受保护快照的实际内容做哈希/清单比对：文件被增删、改名或内容被替换都会告警。
+async function runIntegrityCheck() {
+  const btn = $("integrityBtn");
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span>校验中`;
+  try {
+    const data = await api("/api/integrity");
+    const results = data.results || [];
+    // 用 source 标记区分，覆盖上一次的 v2 结论
+    state.deepAlerts = state.deepAlerts.filter((a) => a.source !== "integrity");
+    for (const r of results) {
+      state.deepAlerts.push({ ...r, source: "integrity" });
+    }
+    renderMonitorResults(results, "integrity");
+    renderBanners();
+    if (results.length) {
+      toast(`发现 ${results.length} 处快照内容异常`, "err");
+    } else {
+      toast("受保护快照内容完整，未被篡改", "ok");
+    }
+  } catch (err) {
+    toast("校验失败：" + err.message, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "深度校验快照 (v2)";
+  }
+}
+
+/* ------------------------- v3 勒索行为检测 ------------------------- */
+
+// 扫描生产（实时）目录：扩展名突变 / 熵值骤升 / 批量改名三类信号。
+// 注意：需要服务器能本地访问这些目录（btrfs/zfs 本地模式）；QNAP 远程管理模式
+// 下服务器在管理机，NAS 目录未挂载，会提示路径不可达。
+async function runBehaviorScan() {
+  const btn = $("behaviorBtn");
+  let paths = ($("watchPaths").value || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!paths.length && state.activeVolume) paths = [state.activeVolume.mountpoint];
+  if (!paths.length) {
+    toast("请先选择一个卷，或在上方填写监控路径", "err");
+    return;
+  }
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span>扫描中`;
+  try {
+    const qs = paths.map((p) => "paths=" + encodeURIComponent(p)).join("&");
+    const data = await api("/api/behavior?" + qs);
+    state.deepAlerts = state.deepAlerts.filter((a) => a.source !== "behavior");
+    for (const s of data.signals || []) {
+      state.deepAlerts.push({
+        level: s.level,
+        title: "勒索行为：" + s.type,
+        detail: s.summary,
+        source: "behavior",
+      });
+    }
+    renderMonitorResults(data, "behavior");
+    renderBanners();
+    if (data.suspicious) {
+      toast("⚠ 检测到疑似勒索行为！", "err");
+    } else {
+      toast("未检测到明显勒索行为", "ok");
+    }
+  } catch (err) {
+    toast("扫描失败：" + err.message, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "扫描勒索行为 (v3)";
+  }
+}
+
+/* ------------------------- 监控结果渲染 ------------------------- */
+
+function renderMonitorResults(payload, kind) {
+  const box = $("monitorResults");
+  if (kind === "integrity") {
+    const rs = payload || [];
+    if (!rs.length) {
+      box.innerHTML = `<p class="muted">✅ 所有带内容基线的受保护快照均完整，未检测到内容被篡改。</p>`;
+      return;
+    }
+    box.innerHTML = rs
+      .map(
+        (r) => `
+        <div class="alert-card warn">
+          <div class="ac-title">${escapeHtml(r.title || "快照内容异常")}</div>
+          <div class="ac-detail">${escapeHtml(r.detail || "")}</div>
+        </div>`
+      )
+      .join("");
+    return;
+  }
+
+  // behavior
+  const d = payload || {};
+  const suspicious = !!d.suspicious;
+  const signals = d.signals || [];
+  let html = `
+    <div class="monitor-score ${suspicious ? "bad" : "good"}">
+      风险评分：${d.score != null ? d.score : 0} / 100
+      ${suspicious ? "⚠ 可疑" : "✅ 正常"}
+    </div>`;
+  const total = d.total_files || 0;
+  html += `<div class="monitor-meta">扫描文件 ${total} 个 · 勒索扩展名 ${d.ransom_files || 0} · 高熵 ${d.high_entropy_files || 0}</div>`;
+
+  if (!signals.length) {
+    html += `<p class="muted">${escapeHtml(d.recommendation || "未检测到明显勒索行为，继续保持监控。")}</p>`;
+  } else {
+    html += signals
+      .map(
+        (s) => `
+        <div class="alert-card ${s.level === "critical" ? "crit" : "warn"}">
+          <div class="ac-title">${escapeHtml(s.type)} · ${s.level === "critical" ? "严重" : "警告"}</div>
+          <div class="ac-detail">${escapeHtml(s.summary || "")}</div>
+        </div>`
+      )
+      .join("");
+    html += `<div class="notice">${escapeHtml(d.recommendation || "")}</div>`;
+  }
+  box.innerHTML = html;
 }
 
 /* ------------------------- 事件绑定 ------------------------- */
@@ -550,6 +700,9 @@ $("refreshBtn").onclick = async () => {
 };
 
 $("snapBtn").onclick = createSnapshot;
+
+$("integrityBtn").onclick = runIntegrityCheck;
+$("behaviorBtn").onclick = runBehaviorScan;
 
 $("browseBtn").onclick = () => {
   const latest = state.snapshots[state.snapshots.length - 1];

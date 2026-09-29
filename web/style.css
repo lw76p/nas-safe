@@ -376,6 +376,58 @@ main {
 }
 
 .muted { color: var(--text-3); font-size: 13px; }
+
+/* ---------- 实时监控面板 ---------- */
+.monitor-controls {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.text-input {
+  flex: 1;
+  min-width: 220px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+}
+.text-input:focus { outline: none; border-color: var(--purple); }
+
+.monitor-results { display: flex; flex-direction: column; gap: 10px; }
+
+.monitor-score {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.monitor-score.good { background: var(--green-bg); color: var(--green); }
+.monitor-score.bad { background: var(--red-bg); color: var(--red); }
+
+.monitor-meta {
+  font-size: 12px;
+  color: var(--text-3);
+  font-family: "SF Mono", Consolas, monospace;
+}
+
+.alert-card {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.alert-card.warn { background: var(--amber-bg); border-color: #f0dcb0; }
+.alert-card.crit { background: var(--red-bg); border-color: #f5c6c6; }
+.ac-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+.ac-detail { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
+
 .spinner {
   display: inline-block;
   width: 13px; height: 13px;
