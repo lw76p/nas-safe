@@ -143,6 +143,41 @@ async function loadVolumes() {
     card.onclick = () => selectVolume(vol);
     box.appendChild(card);
   }
+
+  updateOverview();
+}
+
+/* ------------------------- 一眼概览卡 ------------------------- */
+
+// 顶部概览：把关键状态浓缩成 4 张彩色卡，进页面一眼看清全局。
+function updateOverview() {
+  const vols = state.volumes || [];
+  const units = vols.length;
+  const snaps = vols.reduce((n, v) => n + (v.snapshot_count || 0), 0);
+  const unprotected = vols.filter((v) => !v.protected).length;
+
+  $("ovUnits").textContent = units || "0";
+  $("ovSnaps").textContent = snaps || "0";
+
+  const guard = $("ovGuard");
+  if (!units) {
+    guard.textContent = "—"; guard.className = "ov-num";
+  } else if (unprotected) {
+    guard.textContent = `${unprotected} 个待保护`;
+    guard.className = "ov-num is-bad";
+  } else {
+    guard.textContent = "健康";
+    guard.className = "ov-num is-ok";
+  }
+
+  const mon = $("ovMonitor");
+  if (state.autoMonitor) {
+    mon.textContent = "运行中";
+    mon.className = "ov-num is-ok";
+  } else {
+    mon.textContent = "未开启";
+    mon.className = "ov-num";
+  }
 }
 
 /* ------------------------- 时间轴 ------------------------- */
@@ -675,6 +710,7 @@ function restoreAutoMonitor() {
     $("autoMonitor").checked = true;
     startAutoMonitor();
   }
+  updateOverview();
 }
 
 /* ------------------------- 监控结果渲染 ------------------------- */
@@ -763,6 +799,7 @@ $("autoMonitor").onchange = (e) => {
     toast("已关闭自动监控", "");
   }
   persistAutoMonitor();
+  updateOverview();
 };
 $("autoInterval").onchange = () => {
   if (state.autoMonitor) startAutoMonitor(); // 间隔变更后重启计时以生效

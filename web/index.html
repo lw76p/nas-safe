@@ -4,13 +4,25 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NAS Safe — 数据保险箱</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
 <header class="topbar">
   <div class="brand">
-    <div class="logo"></div>
+    <div class="logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none">
+        <path d="M12 2.5 4 5.5v5.2c0 4.7 3.3 8.1 8 10.8 4.7-2.7 8-6.1 8-10.8V5.5L12 2.5Z"
+              fill="currentColor" opacity=".18"/>
+        <path d="M12 2.5 4 5.5v5.2c0 4.7 3.3 8.1 8 10.8 4.7-2.7 8-6.1 8-10.8V5.5L12 2.5Z"
+              stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="m8.8 12 2.2 2.2 4.2-4.4" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
     <div>
       <h1>NAS Safe</h1>
       <p class="sub" id="sysLine">正在检测系统…</p>
@@ -21,7 +33,9 @@
   </div>
 </header>
 
-<main>
+<main class="layout">
+
+  <!-- 顶栏式风险横幅（命中即红色/琥珀色顶置） -->
   <section class="alert-banner" id="alertBanner" hidden>
     <div class="alert-icon"></div>
     <div>
@@ -30,9 +44,48 @@
     </div>
   </section>
 
-  <section class="panel">
+  <!-- 一眼概览 -->
+  <section class="overview" id="overview">
+    <div class="ov-card zone-storage">
+      <span class="ov-ico">▦</span>
+      <div class="ov-body">
+        <div class="ov-num" id="ovUnits">—</div>
+        <div class="ov-label">存储单元</div>
+      </div>
+    </div>
+    <div class="ov-card zone-snapshot">
+      <span class="ov-ico">◷</span>
+      <div class="ov-body">
+        <div class="ov-num" id="ovSnaps">—</div>
+        <div class="ov-label">受保护快照</div>
+      </div>
+    </div>
+    <div class="ov-card zone-guard">
+      <span class="ov-ico">⛨</span>
+      <div class="ov-body">
+        <div class="ov-num" id="ovGuard">—</div>
+        <div class="ov-label">防护状态</div>
+      </div>
+    </div>
+    <div class="ov-card zone-monitor">
+      <span class="ov-ico">◉</span>
+      <div class="ov-body">
+        <div class="ov-num" id="ovMonitor">—</div>
+        <div class="ov-label">持续监控</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 功能区一：存储单元 -->
+  <section class="panel zone zone-storage" id="storageZone">
     <div class="panel-head">
-      <h2>存储单元</h2>
+      <div class="zone-head">
+        <span class="zone-ico">▦</span>
+        <div>
+          <h2>存储单元</h2>
+          <p class="sub">选择要保护的 NAS 存储池，开启快照锁</p>
+        </div>
+      </div>
       <button class="btn ghost" id="refreshBtn">刷新</button>
     </div>
     <div id="volumeList" class="volume-list">
@@ -40,11 +93,15 @@
     </div>
   </section>
 
-  <section class="panel" id="timelinePanel" hidden>
+  <!-- 功能区二：快照时间轴 -->
+  <section class="panel zone zone-snapshot" id="timelinePanel" hidden>
     <div class="panel-head">
-      <div>
-        <h2 id="tlTitle">快照时间轴</h2>
-        <p class="sub" id="tlSubtitle"></p>
+      <div class="zone-head">
+        <span class="zone-ico">◷</span>
+        <div>
+          <h2 id="tlTitle">快照时间轴</h2>
+          <p class="sub" id="tlSubtitle"></p>
+        </div>
       </div>
       <div class="panel-actions">
         <button class="btn ghost" id="browseBtn" disabled>浏览文件</button>
@@ -65,11 +122,15 @@
     </div>
   </section>
 
-  <section class="panel" id="monitorPanel">
+  <!-- 功能区三：防勒索实时监控 -->
+  <section class="panel zone zone-monitor" id="monitorPanel">
     <div class="panel-head">
-      <div>
-        <h2>防勒索实时监控</h2>
-        <p class="sub">深度校验受保护快照内容是否被篡改（v2）+ 扫描本地目录的勒索行为迹象（v3）</p>
+      <div class="zone-head">
+        <span class="zone-ico">◉</span>
+        <div>
+          <h2>防勒索实时监控</h2>
+          <p class="sub">深度校验受保护快照内容是否被篡改（v2）+ 扫描目录勒索行为迹象（v3）</p>
+        </div>
       </div>
     </div>
     <div class="monitor-auto">
