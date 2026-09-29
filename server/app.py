@@ -11,6 +11,9 @@ NAS Safe — 后端 API 服务
   GET  /api/browse?path=...       浏览快照内的文件（只读）
   POST /api/snapshot/create       创建快照
   POST /api/snapshot/restore      从快照取回文件
+  GET  /api/alerts                篡改告警列表（受保护快照消失/解锁即告警；?integrity=1 并入 v2 内容完整性校验）
+  GET  /api/integrity             受保护快照内容完整性深度校验（v2）
+  GET  /api/behavior?paths=...    勒索行为检测（v3）：扫描生产目录的扩展名突变/熵值骤升/批量改名
   GET  /api/health                健康检查
 
 安全约定：
@@ -39,6 +42,9 @@ import storage  # noqa: E402
 from storage import (  # noqa: E402
     StorageError, CommandNotFound, Snapshot, Volume,
 )
+
+import integrity  # noqa: E402  v2 内容完整性校验
+import behavior   # noqa: E402  v3 勒索行为检测
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
@@ -81,7 +87,7 @@ def dir_size(path: str, limit_seconds: float = 3.0) -> int:
     import time
     start = time.monotonic()
     total = 0
-    for root, _dirs, files in os.walk(path):
+    for root, _dirnames, files in os.walk(path):
         if time.monotonic() - start > limit_seconds:
             break
         for name in files:
@@ -341,11 +347,23 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/health":
                 self._send_json({"ok": True, "time": iso_now()})
             elif route == "/api/alerts":
+                include_integrity = (query.get("integrity") or ["0"])[0] == "1"
                 self._send_json({
                     "ok": True,
-                    "alerts": storage.scan_tamper(),
+                    "alerts": storage.scan_tamper(include_integrity=include_integrity),
                     "scanned_at": iso_now(),
                 })
+            elif route == "/api/integrity":
+                self._send_json({
+                    "ok": True,
+                    "results": integrity.scan_integrity(),
+                    "scanned_at": iso_now(),
+                })
+            elif route == "/api/behavior":
+                paths = [unquote(p) for p in (query.get("paths") or []) if p]
+                if not paths:
+                    raise StorageError("缺少 paths 参数（可传多个 paths=...）")
+                self._send_json(behavior.detect_behavior(paths))
             elif route == "/api/system":
                 self._send_json(build_system_info())
             elif route == "/api/volumes":

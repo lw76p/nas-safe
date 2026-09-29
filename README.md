@@ -246,7 +246,9 @@ zfs snapshot pool/data@snap-20260929-163000
 | GET | `/api/snapshots?volume=<路径>` | 快照列表 |
 | GET | `/api/browse?path=<路径>` 或 `?snapshot_id=<ID>&volume_id=<ID>&subpath=<路径>` | 浏览快照内文件（btrfs/zfs 用 `path`；威联通 QNAP 用后者） |
 | POST | `/api/snapshot/create` | 创建快照（自动登记为受保护） |
-| GET | `/api/alerts` | 篡改告警列表（受保护快照消失/解锁即告警） |
+| GET | `/api/alerts` | 篡改告警列表（受保护快照消失/解锁即告警；加 `?integrity=1` 并入 v2 内容完整性深度校验） |
+| GET | `/api/integrity` | v2 内容完整性深度校验：比对受保护快照的清单签名与抽样内容哈希，发现被增删/替换 |
+| GET | `/api/behavior?paths=/a&paths=/b` | v3 勒索行为检测：扫描生产目录的扩展名突变 / 熵值骤升 / 批量改名，可疑时给出告警与建议 |
 | POST | `/api/snapshot/restore` | 取回文件（需 `confirm: true`；btrfs/zfs 用 `snapshot_path`，QNAP 用 `snapshot_id+volume_id+relative_file+destination`） |
 
 ### 运行测试
@@ -265,9 +267,11 @@ python3 server/test_qnap.py     # 威联通：含真机集成测试（需设 NAS
 
 **v1.0（当前）** —— 时间轴、单文件取回、跨系统适配、快照锁定 + 篡改告警（受保护快照消失/解锁即顶栏告警）
 
-**v1.x** —— 自动快照策略、重复文件扫描
+**v1.x（已落地）** —— 快照锁定（创建即 vital 永久锁 + 受保护基线登记）；篡改检测（v1 基线对比法 + **v2 内容完整性深度校验**：对本地可读快照建立清单签名与抽样内容哈希，内容被改即告警）；**v3 勒索行为检测 MVP**（扫描生产目录的扩展名突变 / 熵值骤升 / 批量改名，可疑即告警并建议紧急快照）
 
-**v2.0** —— 异地不可变副本、多设备统一看板、AI 解读体检报告
+**v2.0 路线** —— 异地不可变副本、多设备统一看板、AI 解读体检报告
+
+> 注：v2 内容完整性校验与 v3 勒索行为检测已落地核心逻辑与单测（详见 `server/integrity.py`、`server/behavior.py`、`server/test_integrity.py`、`server/test_behavior.py`）。内容完整性深度校验较重，默认不并入 30s 巡检；通过 `GET /api/integrity` 或 `NASSAFE_INTEGRITY_CHECK=1` 开启。
 
 ---
 

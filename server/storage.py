@@ -855,7 +855,7 @@ def register_protected(snap: "Snapshot") -> None:
     key = snapshot_key(snap)
     if any(e.get("key") == key for e in entries):
         return
-    entries.append({
+    entry = {
         "key": key,
         "fs_type": snap.fs_type,
         "volume": snap.volume,
@@ -864,7 +864,14 @@ def register_protected(snap: "Snapshot") -> None:
         "vital": bool(snap.vital),
         "readonly": bool(snap.readonly),
         "registered_at": _iso_now(),
-    })
+    }
+    # v2 内容完整性：对本地可读的快照登记时顺便建立完整性基线（best-effort）
+    try:
+        from integrity import build_manifest_for_snapshot
+        entry["integrity"] = build_manifest_for_snapshot(snap)
+    except Exception:
+        entry["integrity"] = None
+    entries.append(entry)
     save_protected(data)
 
 
@@ -881,13 +888,20 @@ def is_protected(key: str) -> bool:
     return any(e.get("key") == key for e in load_protected().get("entries", []))
 
 
-def scan_tamper() -> list:
+def scan_tamper(include_integrity: bool | None = None) -> list:
     """巡检所有卷的快照，对比受保护基线，产出篡改告警列表。
 
     返回 list[dict]，空列表表示一切正常。
     对 list_all_volumes / list_all_snapshots 抛异常的情况优雅降级（跳过），
     不因巡检失败而崩掉接口。
+
+    include_integrity：是否并入 v2 内容完整性深度校验。默认跟随环境变量
+    NASSAFE_INTEGRITY_CHECK（=1 时并入默认 /api/alerts 巡检）；显式传参可
+    在「深度校验」按钮等场景强制开启。深度校验会遍历快照内容，较重，默认关。
     """
+    if include_integrity is None:
+        include_integrity = os.environ.get("NASSAFE_INTEGRITY_CHECK") == "1"
+
     alerts: list = []
     try:
         volumes = list_all_volumes()
@@ -947,5 +961,11 @@ def scan_tamper() -> list:
                 "key": key,
                 "detected_at": _iso_now(),
             })
+    if include_integrity:
+        try:
+            from integrity import scan_integrity
+            alerts.extend(scan_integrity())
+        except Exception:
+            pass
     return alerts
 
