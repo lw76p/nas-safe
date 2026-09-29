@@ -135,7 +135,7 @@ sh scripts/probe.sh
 | OMV | ✅ 支持 | Debian 底子 |
 | **绿联 UGOS Pro** | ⚠️ 实测中 | btrfs 池可用；ext4 池无法快照 |
 | 群晖 DSM（开 SSH） | ⚠️ 实测中 | 需 SSH + btrfs 存储池 |
-| **威联通 QTS（开 SSH）** | ✅ **已适配** | ext4 + 块级快照，走官方 `qcli_volumesnapshot` CLI（真机验证） |
+| **威联通 QTS（开 SSH）** | ✅ **已适配** | ext4 + 块级快照，走官方 `qcli_volumesnapshot` CLI；创建/锁定/删除 + 浏览/取回全闭环真机验证 |
 | 极空间等封闭系统 | ❌ 不支持 | 无 SSH、无 btrfs、无开放接口 |
 
 ### 关于绿联
@@ -177,6 +177,10 @@ zfs snapshot pool/data@snap-20260929-163000
 
 快照存放位置：`<存储单元>/.nassafe/snapshots/`
 
+> **威联通 QTS（ext4）特例**：不走 btrfs/zfs，而是官方 `qcli_volumesnapshot` CLI（底层 LVM 瘦快照）。
+> 快照创建后系统会**自动只读挂载**在宿主机的 `/mnt/snapshot/<卷ID>/<快照ID>/`，nas-safe 直接遍历该挂载点
+> 完成浏览/取回，与 btrfs/zfs 复用同一套逻辑。详见 [docs/QNAP-REALITY.md](docs/QNAP-REALITY.md)。
+
 ### 架构
 
 ```
@@ -203,10 +207,12 @@ zfs snapshot pool/data@snap-20260929-163000
 ### 运行测试
 
 ```bash
-python3 server/test_e2e.py
+python3 server/test_e2e.py      # 通用：路径注入防护、越权防护、取回逻辑、格式化、品牌识别
+python3 server/test_qnap.py     # 威联通：含真机集成测试（需设 NASSAFE_HOST/NASSAFE_USER/NASSAFE_PASS 指向真机）
 ```
 
-覆盖：路径注入防护、越权防护、取回逻辑、格式化、品牌识别。
+覆盖：路径注入防护、越权防护、取回逻辑、格式化、品牌识别，以及威联通 QTS 的
+创建/锁定/删除 + 浏览/读取/取回全链路（真机集成测试会自我清理，创建后删除并轮询确认）。
 
 ---
 

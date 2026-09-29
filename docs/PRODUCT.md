@@ -63,7 +63,7 @@
 | **OMV (OpenMediaVault)** | btrfs / ZFS | Debian 底子，直接调命令 | **P0** |
 | **绿联 UGOS Pro** | **建池时二选一：ext4 / Btrfs** | SSH 开放程度待实测；快照仅 btrfs 存储空间支持 | **P1** |
 | **群晖 DSM（开 SSH）** | ext4 默认 / Btrfs 看型号 | btrfs 机型可走命令；ext4 机型走 API | **P1** |
-| **威联通 QTS** | **ext4 + 块级存储池快照**（非 btrfs；QuTS Hero 才是 ZFS） | **B 类·官方 `qcli_volumesnapshot` CLI**（已落地 `server/qnap.py`，SSH 真机验证通过，见 docs/QNAP-REALITY.md） | **P1 · 已适配** |
+| **威联通 QTS** | **ext4 + 块级存储池快照**（非 btrfs；QuTS Hero 才是 ZFS） | **B 类·官方 `qcli_volumesnapshot` CLI**（已落地 `server/qnap.py`，SSH 真机验证通过：创建+锁定+删除+浏览/取回 全闭环，见 docs/QNAP-REALITY.md） | **P1 · 已适配** |
 
 ### 暂不支持
 
@@ -397,7 +397,7 @@ DeployEasy / HMP 可以闭源（它们不碰用户全盘数据），但防勒索
 ## 十三、下一步行动
 
 1. ✅ 本文档定稿
-2. ✅ **威联通 QTS 适配层落地**（SSH 真机验证：创建+锁定+删除闭环，`server/qnap.py` + 30 项测试全绿）→ 结论见 docs/QNAP-REALITY.md；**绿联 SSH 待实测**
+2. ✅ **威联通 QTS 适配层落地**（SSH 真机验证：创建+锁定+删除+浏览/取回 全闭环，`server/qnap.py` 集成测试全绿）→ 结论见 docs/QNAP-REALITY.md；**绿联 SSH 待实测**
 3. ⬜ 飞牛版 MVP：
    - `docker-compose.yml`（一条命令拉起）
    - 后端：探测 + 列快照 + 挂载浏览 + 导出单文件 + 拍快照 + 回滚

@@ -175,14 +175,10 @@ def _ensure_within(base: str, target: str) -> None:
 
 
 def build_browse(path: str) -> dict:
-    """浏览快照目录内的文件。强制限定在 .nassafe/snapshots 下。
+    """浏览快照目录内的文件（本地文件系统路径模式）。
 
-    安全校验顺序很重要：
-      1. 先检查是否属于快照目录（业务规则）
-      2. 再做路径格式与注入校验（安全兜底）
-
-    这样在开发机（Windows）上也能正常测试业务逻辑，
-    而 Linux 生产环境依然受到完整的路径校验保护。
+    安全白名单：仅允许浏览我们管理的快照目录（btrfs 的 .nassafe 目录，
+    或 QNAP 的只读挂载点 /mnt/snapshot）。
     """
     if not isinstance(path, str) or not path:
         raise StorageError("缺少路径参数")
@@ -190,41 +186,30 @@ def build_browse(path: str) -> dict:
     if "\x00" in path or ".." in path.split("/") or ".." in path.split("\\"):
         raise StorageError(f"路径包含非法字符: {path}")
 
-    # 只允许浏览我们管理的快照目录
-    if ".nassafe" not in path:
+    # 安全白名单：仅允许浏览快照目录
+    if ".nassafe" not in path and not path.startswith("/mnt/snapshot"):
         raise StorageError("出于安全考虑，仅允许浏览快照目录")
 
-    # POSIX 生产环境的严格校验
     if os.name == "posix":
         storage._validate_path(path)
 
     if not os.path.isdir(path):
         raise StorageError(f"目录不存在: {path}")
 
-    entries = []
-    try:
-        for name in sorted(os.listdir(path)):
-            if name.startswith("."):
-                continue
-            full = os.path.join(path, name)
-            try:
-                st = os.stat(full)
-            except OSError:
-                continue
-            is_dir = os.path.isdir(full)
-            entries.append({
-                "name": name,
-                "path": full,
-                "is_dir": is_dir,
-                "size": None if is_dir else st.st_size,
-                "size_human": "" if is_dir else human_size(st.st_size),
-                "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
-            })
-    except PermissionError as exc:
-        raise StorageError(f"无权限读取目录: {path}") from exc
-
     parent = os.path.dirname(path.rstrip("/")) or None
-    return {"ok": True, "path": path, "parent": parent, "entries": entries}
+    # 核心列举逻辑统一在 storage._browse_local_dir，便于审计
+    return {"ok": True, "path": path, "parent": parent,
+            "entries": storage._browse_local_dir(path)}
+
+
+def find_snapshot(volume_id: str, snapshot_id: str) -> "storage.Snapshot":
+    """按 volume_id + snapshot_id 定位统一 Snapshot 对象。"""
+    for vol in storage.list_all_volumes():
+        if (vol.volume_id or vol.mountpoint) == volume_id:
+            for snap in storage.list_all_snapshots(vol):
+                if snap.snapshot_id == snapshot_id:
+                    return snap
+    raise StorageError(f"未找到快照: {volume_id}/{snapshot_id}")
 
 
 def do_create_snapshot(volume_id: str, description: str = "") -> dict:
@@ -360,10 +345,18 @@ class Handler(BaseHTTPRequestHandler):
                     raise StorageError("缺少 volume 参数")
                 self._send_json(build_snapshot_list(unquote(volume)))
             elif route == "/api/browse":
-                path = (query.get("path") or [""])[0]
-                if not path:
-                    raise StorageError("缺少 path 参数")
-                self._send_json(build_browse(unquote(path)))
+                sid = (query.get("snapshot_id") or [""])[0]
+                vid = (query.get("volume_id") or [""])[0]
+                subpath = (query.get("subpath") or [""])[0]
+                if sid and vid:
+                    # QNAP / 远程后端：按 snapshot_id 分派到统一浏览入口
+                    snap = find_snapshot(vid, sid)
+                    self._send_json(storage.browse_snapshot(snap, subpath))
+                else:
+                    path = (query.get("path") or [""])[0]
+                    if not path:
+                        raise StorageError("缺少 path 或 snapshot_id 参数")
+                    self._send_json(build_browse(unquote(path)))
             elif route.startswith("/api/"):
                 self._send_json({"ok": False, "error": f"未知接口: {route}"}, 404)
             else:
@@ -400,12 +393,25 @@ class Handler(BaseHTTPRequestHandler):
                         "error": "写操作需要 confirm=true 确认参数",
                     }, 400)
                     return
-                snapshot_path = (payload.get("snapshot_path") or "").strip()
+                sid = (payload.get("snapshot_id") or "").strip()
+                vid = (payload.get("volume_id") or "").strip()
                 relative_file = (payload.get("relative_file") or "").strip()
                 destination = (payload.get("destination") or "").strip()
-                if not all([snapshot_path, relative_file, destination]):
-                    raise StorageError("缺少 snapshot_path / relative_file / destination 参数")
-                self._send_json(do_restore_file(snapshot_path, relative_file, destination))
+                if sid and vid:
+                    # QNAP / 远程后端：按 snapshot_id 取回单文件
+                    if not all([relative_file, destination]):
+                        raise StorageError("缺少 relative_file / destination 参数")
+                    snap = find_snapshot(vid, sid)
+                    self._send_json(storage.restore_from_snapshot(snap, relative_file, destination))
+                else:
+                    # 本地 btrfs/zfs 模式：基于快照目录路径
+                    snapshot_path = (payload.get("snapshot_path") or "").strip()
+                    if not all([snapshot_path, relative_file, destination]):
+                        raise StorageError(
+                            "缺少参数：QNAP 模式需 snapshot_id+volume_id+relative_file+destination；"
+                            "本地模式需 snapshot_path+relative_file+destination"
+                        )
+                    self._send_json(do_restore_file(snapshot_path, relative_file, destination))
 
             else:
                 self._send_json({"ok": False, "error": f"未知接口: {route}"}, 404)

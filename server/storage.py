@@ -21,6 +21,8 @@ import os
 import re
 import shutil
 import subprocess
+import datetime
+import time
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
@@ -72,6 +74,8 @@ class Snapshot:
     snapshot_id: Optional[str] = None  # QNAP 数字快照 ID（如 "10001"）
     vital: bool = False                # QNAP 锁定标记（永久保留）
     status: Optional[str] = None       # QNAP 状态（Ready / Removing...）
+    mount_path: Optional[str] = None   # QNAP 快照只读挂载点（本地模式用）
+    backend: str = "fs"                # 'fs' | 'qnap'
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -574,7 +578,9 @@ def list_qnap_snapshots(volume_id: str) -> list[Snapshot]:
             status=s.status,
             readonly=True,
             fs_type="qnap",
+            backend="qnap",
             path=None,    # QNAP 快照经 mount 接口浏览，非直接文件系统路径
+            mount_path=f"/mnt/snapshot/{volume_id}/{s.snapshot_id}",
         ))
     return out
 
@@ -622,3 +628,154 @@ def delete_snapshot(snapshot: Snapshot) -> None:
         run(["zfs", "destroy", snapshot.path], timeout=120)
         return
     raise StorageError(f"无法删除该类型快照: {snapshot.fs_type}")
+
+
+# ---------------------------------------------------------------------------
+# 快照浏览 / 单文件取回
+# ---------------------------------------------------------------------------
+
+def human_size(num_bytes: Optional[int]) -> str:
+    """把字节数转成人类可读字符串。"""
+    if num_bytes is None:
+        return ""
+    value = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
+        if value < 1024 or unit == "PB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} PB"
+
+
+def _browse_local_dir(path: str) -> list[dict]:
+    """列举本地目录内容（提取自原 app.build_browse 核心逻辑）。
+
+    返回 entries 列表，每项含 name/path/is_dir/size/size_human/mtime。
+    安全校验（白名单、注入检查）由调用方负责。
+    """
+    entries: list[dict] = []
+    for name in sorted(os.listdir(path)):
+        if name.startswith("."):
+            continue
+        full = os.path.join(path, name)
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        is_dir = os.path.isdir(full)
+        entries.append({
+            "name": name,
+            "path": full,
+            "is_dir": is_dir,
+            "size": None if is_dir else st.st_size,
+            "size_human": "" if is_dir else human_size(st.st_size),
+            "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+        })
+    return entries
+
+
+def browse_snapshot(snapshot: Snapshot, subpath: str = "") -> dict:
+    """统一浏览快照内文件。按 backend 分派。
+
+    - qnap + 本地模式（server 跑在 QTS 宿主且能直接访问挂载点）：直接列目录
+    - qnap + SSH 模式（远程管理）：经 qcli/list 解析
+    - fs（btrfs/zfs）：直接列快照目录
+    """
+    if getattr(snapshot, "backend", "fs") == "qnap" or snapshot.fs_type == "qnap":
+        from qnap import default_client, SNAP_MOUNT_ROOT
+        client = default_client()
+        try:
+            if (client.mode == "local"
+                    and snapshot.mount_path
+                    and os.path.isdir(snapshot.mount_path)):
+                root = snapshot.mount_path
+                full = os.path.normpath(os.path.join(root, subpath)) if subpath else root
+                return {
+                    "ok": True, "backend": "qnap", "local": True,
+                    "path": full, "subpath": subpath,
+                    "entries": _browse_local_dir(full),
+                }
+            raw = client.list_dir(
+                snapshot.volume_id or snapshot.volume,
+                snapshot.snapshot_id,
+                subpath,
+            )
+            entries = []
+            for e in raw:
+                rel = (subpath.rstrip("/") + "/" + e["name"]).lstrip("/")
+                entries.append({
+                    "name": e["name"],
+                    "path": rel,
+                    "is_dir": e["is_dir"],
+                    "size": e["size"],
+                    "size_human": human_size(e["size"]) if e["size"] else "",
+                    "mtime": None,
+                })
+            return {
+                "ok": True, "backend": "qnap", "local": False,
+                "subpath": subpath, "entries": entries,
+            }
+        finally:
+            client.close()
+
+    # fs 分支
+    root = snapshot.path or snapshot.mount_path
+    if not root:
+        raise StorageError("快照缺少可浏览的本地路径")
+    full = os.path.normpath(os.path.join(root, subpath)) if subpath else root
+    return {
+        "ok": True, "backend": "fs", "local": True,
+        "path": full, "subpath": subpath,
+        "entries": _browse_local_dir(full),
+    }
+
+
+def restore_from_snapshot(snapshot: Snapshot, rel_path: str, dest: str) -> dict:
+    """统一取回快照内单文件。绝不包含回滚操作。
+
+    返回 {ok, restored_to, message}。
+    """
+    if ".." in rel_path.split("/"):
+        raise StorageError("相对路径非法")
+
+    if getattr(snapshot, "backend", "fs") == "qnap" or snapshot.fs_type == "qnap":
+        from qnap import default_client
+        client = default_client()
+        try:
+            restored_to = client.restore_file(
+                snapshot.volume_id or snapshot.volume,
+                snapshot.snapshot_id,
+                rel_path,
+                dest,
+            )
+        finally:
+            client.close()
+        return {
+            "ok": True,
+            "restored_to": restored_to,
+            "message": f"已从快照取回：{restored_to}",
+        }
+
+    # fs 分支：本地直接复制，绝不覆盖已存在文件
+    source = os.path.join(snapshot.path or "", rel_path.lstrip("/"))
+    source_real = os.path.realpath(source)
+    snap_real = os.path.realpath(snapshot.path or "")
+    if not (source_real == snap_real or source_real.startswith(snap_real + os.sep)):
+        raise StorageError("路径越权：源文件必须在快照目录内")
+    if not os.path.exists(source_real):
+        raise StorageError(f"快照中不存在该文件: {rel_path}")
+
+    dest_path = os.path.join(dest, os.path.basename(source_real)) if os.path.isdir(dest) else dest
+    if os.path.exists(dest_path):
+        base, ext = os.path.splitext(dest_path)
+        dest_path = f"{base}.restored-{int(time.time())}{ext}"
+    os.makedirs(dest, exist_ok=True)
+    if os.path.isdir(source_real):
+        shutil.copytree(source_real, dest_path)
+    else:
+        shutil.copy2(source_real, dest_path)
+    return {
+        "ok": True,
+        "restored_to": dest_path,
+        "message": f"已恢复到：{dest_path}",
+    }
+

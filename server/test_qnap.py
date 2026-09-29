@@ -17,6 +17,8 @@ import os
 import re
 import sys
 import time
+import tempfile
+import shutil as shutil
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -189,12 +191,64 @@ def test_local_mode_no_qcli():
         check("无 qcli 抛 QnapError", True)
 
 
+def test_parse_ls_entry():
+    print("\n【A7】ls -la 行解析（快照浏览）")
+    d = qnap._parse_ls_entry(
+        "drwxr-xr-x 28 admin administrators 4096 Sep 29 18:30 CACHEDEV2_DATA")
+    check("目录行 is_dir=True", d is not None and d["is_dir"] is True)
+    check("目录行 size=4096", d is not None and d["size"] == 4096)
+    f = qnap._parse_ls_entry(
+        "-rw-r--r--  1 admin administrators  123 Sep 29 18:30 note.txt")
+    check("文件行 is_dir=False", f is not None and f["is_dir"] is False)
+    check("文件行 size=123", f is not None and f["size"] == 123)
+    check("文件行 name=note.txt", f is not None and f["name"] == "note.txt")
+    dot = qnap._parse_ls_entry(
+        "drwxr-xr-x 35 admin administrators 1120 Sep 28 16:28 .")
+    check("跳过 . 条目", dot is None)
+    sp = qnap._parse_ls_entry(
+        "-rw-r--r--  1 admin administrators  200 Sep 29 18:30 My Movie.mp4")
+    check("文件名含空格解析正确", sp is not None and sp["name"] == "My Movie.mp4")
+
+
+def test_local_browse_and_restore():
+    print("\n【A8】本地模式 list_dir / read_file / restore_file")
+    if qnap.default_client().mode != "local":
+        check("本地模式判断", True, "（跳过：当前为远程模式）")
+        return
+    tmp = tempfile.mkdtemp()
+    try:
+        root = os.path.join(tmp, "vol1", "10001")
+        os.makedirs(os.path.join(root, "subdir"))
+        with open(os.path.join(root, "hello.txt"), "w", encoding="utf-8") as fh:
+            fh.write("hello world")
+        old = qnap.SNAP_MOUNT_ROOT
+        qnap.SNAP_MOUNT_ROOT = tmp
+        try:
+            c = QnapClient(host=None)
+            entries = c.list_dir("vol1", "10001", "")
+            names = {e["name"] for e in entries}
+            check("列出含 hello.txt", "hello.txt" in names)
+            check("列出含 subdir 且 is_dir",
+                  any(e["name"] == "subdir" and e["is_dir"] for e in entries))
+            data = c.read_file("vol1", "10001", "hello.txt", max_bytes=None)
+            check("read_file 内容正确", data == b"hello world")
+            dest = tempfile.mkdtemp()
+            restored = c.restore_file("vol1", "10001", "hello.txt", dest)
+            check("restore 文件存在", os.path.exists(restored))
+            with open(restored, encoding="utf-8") as fh:
+                check("restore 内容正确", fh.read() == "hello world")
+        finally:
+            qnap.SNAP_MOUNT_ROOT = old
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # B. 真机集成测试（需 NASSAFE_HOST + NASSAFE_PASS）
 # ---------------------------------------------------------------------------
 
 def test_live_integration():
-    print("\n【B】真机集成测试（NAS 192.168.8.62）")
+    print("\n【B】真机集成测试（NAS 192.168.8.62）：创建->浏览->读取->取回->删除")
     host = os.environ.get("NASSAFE_HOST")
     password = os.environ.get("NASSAFE_PASS")
     if not (host and password):
@@ -203,51 +257,101 @@ def test_live_integration():
 
     user = os.environ.get("NASSAFE_QNAP_USER") or os.environ.get("NASSAFE_USER") or "admin"
     client = QnapClient(host=host, user=user, password=password)
+    created = []   # [(vid, sid, name)]
 
-    # 1) 列出卷
     try:
         vols = client.list_volumes()
         check("真机列出卷成功", len(vols) >= 1, f"得到 {len(vols)} 个")
-    except QnapError as e:
-        check("真机列出卷成功", False, str(e))
-        client.close()
-        return
 
-    # 用系统盘(volumeID=1) 做低风险验证
-    vid = "1"
-    name = "nassafe_ci_%s" % __import__("time").strftime("%Y%m%d%H%M%S")
+        # 用数据盘(volumeID=2) 做浏览验证（含真实文件）
+        vid = "2"
+        name = "nassafe_ci_%s" % time.strftime("%Y%m%d%H%M%S")
 
-    # 2) 创建并锁定
-    try:
+        # 创建并锁定
         s = client.create_snapshot(vid, name, vital=True)
-        check("真机创建快照成功", s.snapshot_id is not None and s.snapshot_id != "")
+        check("真机创建快照成功", bool(s.snapshot_id))
         check("真机快照 vital=True（已锁定）", s.vital is True)
-    except QnapError as e:
-        check("真机创建快照成功", False, str(e))
-        client.close()
-        return
+        created.append((vid, s.snapshot_id, name))
 
-    # 3) 列出确认
-    snaps = client.list_snapshots(vid)
-    found = [x for x in snaps if x.name == name]
-    check("真机列出包含新快照", len(found) == 1)
+        snaps = client.list_snapshots(vid)
+        check("真机列出包含新快照", any(x.name == name for x in snaps))
 
-    # 4) 删除并确认清除（QTS 删除是异步后台操作，需轮询等待回收完成）
-    try:
-        client.delete_snapshot(s.snapshot_id)
-        removed = False
-        for _ in range(20):           # 最多等约 100 秒（QTS 异步回收可能较慢）
-            after = client.list_snapshots(vid)
-            still = [x for x in after if x.name == name]
-            if not still:
-                removed = True
+        # 浏览：列出顶层目录
+        top = client.list_dir(vid, s.snapshot_id, "")
+        check("真机浏览顶层非空", len(top) > 0)
+        check("真机顶层含目录", any(e["is_dir"] for e in top))
+
+        # 深度优先找一个含真实文件的路径（优先浅层），用于读取/取回验证。
+        # 数据盘目录树极深，全局 BFS 会在跨顶层目录平铺展开时耗尽列举预算
+        # 而仍未触及文件；改为 DFS：逐个顶层目录一路钻到底，命中第一个文件
+        # 即返回，调用次数极少。再给全局 200 次列举 / 深度 8 的上限兜底。
+        found = None   # (rel_path, size)
+        top_dirs = [d["name"] for d in top if d["is_dir"]]
+        calls = 0
+        MAX_CALLS = 200
+        MAX_DEPTH = 8
+
+        def dfs(rel: str, depth: int) -> None:
+            nonlocal calls, found
+            if found or calls >= MAX_CALLS or depth > MAX_DEPTH:
+                return
+            try:
+                sub = client.list_dir(vid, s.snapshot_id, rel)
+                calls += 1
+            except QnapError:
+                return
+            for e in sub:
+                entry_rel = e["name"] if not rel else rel + "/" + e["name"]
+                if e["is_dir"]:
+                    if depth < MAX_DEPTH:
+                        dfs(entry_rel, depth + 1)
+                else:
+                    found = (entry_rel, e["size"] or 0)
+                    return
+                if found:
+                    return
+
+        for d in top_dirs:
+            dfs(d, 1)
+            if found:
                 break
-            time.sleep(5)
-        check("真机删除后快照清除（含异步回收）", removed)
+        check("真机递归浏览找到可读文件", found is not None,
+              f"（快照根下未找到非目录条目，已列举 {calls} 次）")
+        if found:
+            rel, fsize = found
+            data = client.read_file(vid, s.snapshot_id, rel, max_bytes=200)
+            check("真机读取文件(字节非空)", isinstance(data, bytes) and len(data) > 0)
+            # 仅对小文件取回到沙箱临时目录，避免拉取超大视频占带宽
+            if fsize <= 5 * 1024 * 1024:
+                dest = tempfile.mkdtemp()
+                restored = client.restore_file(vid, s.snapshot_id, rel, dest)
+                check("真机取回文件成功(大小>0)",
+                      os.path.exists(restored) and os.path.getsize(restored) > 0)
+            else:
+                check("真机取回跳过(大文件)", True, "（仅验证读取）")
     except QnapError as e:
-        check("真机删除快照", False, str(e))
-
-    client.close()
+        check("真机集成流程", False, str(e))
+    finally:
+        # 清理：删除所有创建过的快照并轮询确认清除
+        for (vid, sid, name) in created:
+            try:
+                client.delete_snapshot(sid)
+            except QnapError:
+                pass
+        for (vid, sid, name) in created:
+            removed = False
+            for _ in range(20):     # 最多约 100s（QTS 异步回收可能较慢）
+                try:
+                    after = client.list_snapshots(vid)
+                except QnapError:
+                    after = []
+                if not any(x.name == name for x in after) and \
+                   not any(x.snapshot_id == sid for x in after):
+                    removed = True
+                    break
+                time.sleep(5)
+            check(f"真机删除后清除 {sid}", removed)
+        client.close()
 
 
 if __name__ == "__main__":
@@ -261,6 +365,8 @@ if __name__ == "__main__":
     test_error_parsing()
     test_fake_client_flow()
     test_local_mode_no_qcli()
+    test_parse_ls_entry()
+    test_local_browse_and_restore()
     test_live_integration()
 
     print("\n" + "=" * 58)

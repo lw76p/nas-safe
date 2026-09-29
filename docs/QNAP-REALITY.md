@@ -83,11 +83,27 @@ nas-safe 直接调用该 CLI，无需 btrfs/zfs 命令。
 - 命令以列表参数 + `shell=False` 调用（本地模式）；SSH 模式对参数做 `shlex` 转义，密码安全传递。
 - paramiko 仅在 SSH 模式懒加载，保持核心零强制第三方依赖。
 
-## 五、文件取回 / 浏览（后续）
+## 五、文件取回 / 浏览（已真机验证 ✅）
 
-- QNAP 块级快照可通过 `qcli_volumesnapshot -m`（mountsnapshotfolder）挂载后只读浏览 + 复制单文件，
-  对应 nas-safe 的 `build_browse` / `do_restore_file` 逻辑（与 btrfs/zfs 一致，路径白名单复用）。
-- 容器在 QTS 以 privileged 运行时能否访问宿主机快照挂载目录，需后续在 QNAP 真机验证（本阶段先完成创建/锁定/删除闭环）。
+QNAP 块级快照创建后，**系统会自动以只读方式挂载在宿主机的 `/mnt/snapshot/<卷ID>/<快照ID>/`**，
+无需任何 `-m` 挂载命令。nas-safe 直接遍历该挂载点即可浏览目录树、读取、取回单文件，
+与 btrfs/zfs 完全复用同一套 `build_browse` / `do_restore_file` 路径白名单逻辑。
+
+2026-09-29 真机验证通过（`server/qnap.py` 的 `list_dir` / `read_file` / `restore_file`，
+B 段集成测试：创建→浏览→读取→取回→删除轮询，全绿）：
+
+1. **只读挂载点自动就绪**：`/mnt/snapshot/2/<SID>/` 列出顶层 16 个真实目录（工作/影视/软件/…）。
+2. **浏览路径构造必须用 `posixpath`，不能用 `os.path`**（关键坑）：
+   开发机若在 Windows，`os.path.join/normpath` 会把 Linux 远程路径的 `/` 翻成 `\`
+   （变成 `\mnt\snapshot\...`），导致 SSH 上的 `ls` 找不到目录、静默返回空、浏览全失败。
+   **所有"远程挂载路径"一律用 `posixpath` 拼接**（跨平台恒为 `/`），本地 `dest` 仍用 `os.path`。
+3. **过滤规则**：跳过 `.` 开头的系统/隐藏虚拟目录（如 `.@wfm`、`.@__lock__工作`、`.@__thumb`、
+   `.streams`、`.DS_Store`）与符号链接（跟随会乱码报错，真实目标会单独列出）。
+4. **取回绝不覆盖**：`restore_file` 若目标已存在，自动加 `.restored-<时间戳>` 后缀。
+5. **删除是异步回收**：取回验证后删除快照，仍需轮询 ~20-60s 确认 `Removing...` 消失。
+
+> 注：早期设想的 `qcli_volumesnapshot -m`（mountsnapshotfolder / SMB 共享）**不需要**——
+> QTS 已自动只读挂载，直接遍历即可，少一条依赖、少一个权限面。
 
 ## 六、同步给 GitHub 的提醒
 

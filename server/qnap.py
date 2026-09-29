@@ -26,6 +26,7 @@ NAS Safe — 威联通 QTS 官方快照适配层（B 类档位）
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import shlex
 import subprocess
@@ -169,11 +170,45 @@ def parse_delete_ok(text: str) -> bool:
     raise QnapError(f"无法解析删除结果: {text.strip()}")
 
 
+def _parse_ls_entry(line: str) -> Optional[dict]:
+    """解析 `ls -la` 单行输出。
+
+    标准 GNU ls 行示例：
+      drwxr-xr-x 28 admin administrators 4096 Sep 29 18:30 CACHEDEV2_DATA
+      -rw-r--r--  1 admin administrators  123 Sep 29 18:30 note.txt
+
+    用 split(None, 8) 把前 8 段按空白切开，剩余（含空格的文件名）整体为第 9 段。
+    第 5 段是字节大小（数字），最后一段是名称。
+    """
+    line = line.rstrip("\n")
+    if not line:
+        return None
+    perms = line[:10]
+    ftype = perms[0] if perms else "?"
+    parts = line.split(None, 8)
+    if len(parts) < 9:
+        return None
+    name = parts[8]
+    if name in (".", ".."):
+        return None
+    is_dir = (ftype == "d")
+    try:
+        size = int(parts[4])
+    except ValueError:
+        size = None
+    return {"name": name, "is_dir": is_dir, "size": size, "is_symlink": ftype == "l"}
+
+
 # ---------------------------------------------------------------------------
 # 客户端（本地 / SSH 两种执行方式）
 # ---------------------------------------------------------------------------
 
 _LOCAL_QCLI = "qcli"
+
+# QNAP 快照创建后由系统自动以只读方式挂载在此根目录下：
+#   /mnt/snapshot/<卷ID>/<快照ID>/
+# 这正是浏览快照文件树的入口（无需额外 -m 挂载命令）。
+SNAP_MOUNT_ROOT = "/mnt/snapshot"
 
 
 class QnapClient:
@@ -195,6 +230,7 @@ class QnapClient:
         self.password = password
         self.timeout = timeout
         self._ssh = None
+        self._sftp_client = None
         self.mode = "local" if not host else "ssh"
 
     # -- 执行 ----------------------------------------------------------
@@ -299,6 +335,144 @@ class QnapClient:
         # 注意：QTS 的删除是异步后台回收，命令返回 ok 后快照会短暂处于
         # "Removing..." 状态，数秒到数十秒后才彻底消失。调用方需轮询确认。
 
+    # -- 浏览 / 取回 ----------------------------------------------------
+    # QNAP 快照创建后由系统自动只读挂载在 /mnt/snapshot/<卷>/<快照ID>/，
+    # 无需额外的 -m 挂载命令即可浏览文件树。
+
+    def snapshot_mount_path(self, volume_id: str, snapshot_id: str) -> str:
+        return f"{SNAP_MOUNT_ROOT}/{volume_id}/{snapshot_id}"
+
+    def list_dir(self, volume_id: str, snapshot_id: str, subpath: str = "") -> list[dict]:
+        """列出快照内某子目录的内容。
+
+        返回 entries 列表，每项 {name, is_dir, size}。本地模式直接 os.listdir，
+        SSH 模式经 `ls -la` 解析（文件名可含空格）。
+        """
+        root = self.snapshot_mount_path(volume_id, snapshot_id)
+        if self.mode == "local":
+            return self._list_dir_local(root, subpath)
+        return self._list_dir_ssh(root, subpath)
+
+    def _list_dir_local(self, root: str, subpath: str) -> list[dict]:
+        full = posixpath.normpath(posixpath.join(root, subpath)) if subpath else root
+        entries: list[dict] = []
+        for name in sorted(os.listdir(full)):
+            if name.startswith("."):
+                continue
+            p = os.path.join(full, name)
+            # 跳过符号链接：跟随 QTS 的 symlink 路径会乱码报错，
+            # 且真实目标文件会作为独立条目列出，不丢内容。
+            if os.path.islink(p):
+                continue
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            is_dir = os.path.isdir(p)
+            entries.append({
+                "name": name,
+                "is_dir": is_dir,
+                "size": None if is_dir else st.st_size,
+                "is_symlink": False,
+            })
+        return entries
+
+    def _list_dir_ssh(self, root: str, subpath: str) -> list[dict]:
+        full = posixpath.normpath(posixpath.join(root, subpath)) if subpath else root
+        out = self._run(["ls", "-la", full])
+        entries: list[dict] = []
+        for line in out.splitlines():
+            parsed = _parse_ls_entry(line)
+            if parsed is None:
+                continue
+            # 跳过隐藏/系统虚拟目录（如 .@wfm、.qpkg、.@msdfs_root），
+            # 这些在 QTS 上并非真实可读路径，且对用户无意义。
+            # 也跳过符号链接（跟随会乱码报错，真实目标会单独列出）。
+            if parsed["name"].startswith(".") or parsed["is_symlink"]:
+                continue
+            entries.append(parsed)
+        return entries
+
+    def read_file(
+        self,
+        volume_id: str,
+        snapshot_id: str,
+        rel_path: str,
+        max_bytes: Optional[int] = 10 * 1024 * 1024,
+    ) -> bytes:
+        """读取快照内单个文件的字节内容。
+
+        max_bytes 限制读取上限，防止超大文件撑爆内存/带宽（默认 10MB）。
+        SSH 模式经 `head -c` 读取原始字节（二进制安全）；之所以不用 SFTP，
+        是因为 QTS 的 SFTP 子系统对中文/特殊文件名路径编码处理有坑，
+        改用 shell 命令 + UTF-8 locale 更可靠。
+        """
+        if ".." in rel_path.split("/"):
+            raise QnapError("非法相对路径")
+        root = self.snapshot_mount_path(volume_id, snapshot_id)
+        full = posixpath.normpath(posixpath.join(root, rel_path)) if rel_path else root
+        if self.mode == "local":
+            with open(full, "rb") as fh:
+                return fh.read(max_bytes) if max_bytes else fh.read()
+        out, err = self._run_ssh_raw([
+            "head", "-c", str(max_bytes if max_bytes else 10 * 1024 * 1024), full,
+        ])
+        if not out and err.strip():
+            raise QnapError(f"读取文件失败: {err.decode(errors='replace').strip()}")
+        return out
+
+    def restore_file(
+        self,
+        volume_id: str,
+        snapshot_id: str,
+        rel_path: str,
+        dest: str,
+    ) -> str:
+        """将快照内单个文件取回到服务器本地 dest（dest 为文件或目录路径）。
+
+        绝不覆盖已存在文件：若目标已存在，自动加 .restored-<时间戳> 后缀。
+        SSH 模式经 `cat` 流式写入，二进制安全。
+        """
+        if ".." in rel_path.split("/"):
+            raise QnapError("非法相对路径")
+        root = self.snapshot_mount_path(volume_id, snapshot_id)
+        full = posixpath.normpath(posixpath.join(root, rel_path))
+        if os.path.isdir(dest):
+            dest_path = os.path.join(dest, posixpath.basename(full))
+        else:
+            dest_path = dest
+        if os.path.exists(dest_path):
+            import time as _time
+            base, ext = os.path.splitext(dest_path)
+            dest_path = f"{base}.restored-{int(_time.time())}{ext}"
+        if self.mode == "local":
+            import shutil as _shutil
+            _shutil.copy2(full, dest_path)
+        else:
+            if self._ssh is None:
+                self.login()
+            _stdin, stdout_i, stderr_i = self._ssh.exec_command(
+                "cat " + shlex.quote(full), timeout=self.timeout)
+            with open(dest_path, "wb") as fh:
+                while True:
+                    chunk = stdout_i.read(65536)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+            err = stderr_i.read().decode(errors="replace").strip()
+            if err:
+                raise QnapError(f"取回文件失败: {err}")
+        return dest_path
+
+    def _run_ssh_raw(self, args: list[str]) -> tuple[bytes, bytes]:
+        """经 SSH 执行命令并返回原始字节（用于读取文件内容，二进制安全）。"""
+        if self._ssh is None:
+            self.login()
+        cmd = " ".join(shlex.quote(a) for a in args)
+        _stdin, stdout, stderr = self._ssh.exec_command(cmd, timeout=self.timeout)
+        return stdout.read(), stderr.read()
+
+
 
 # ---------------------------------------------------------------------------
 # 高层封装（storage 统一入口会调用）
@@ -349,5 +523,39 @@ def delete_snapshot(snapshot_id: str, client: Optional[QnapClient] = None) -> No
     client = client or default_client()
     try:
         client.delete_snapshot(snapshot_id)
+    finally:
+        client.close()
+
+
+def list_dir(
+    volume_id: str, snapshot_id: str, subpath: str = "",
+    client: Optional[QnapClient] = None,
+) -> list[dict]:
+    client = client or default_client()
+    try:
+        return client.list_dir(volume_id, snapshot_id, subpath)
+    finally:
+        client.close()
+
+
+def read_file(
+    volume_id: str, snapshot_id: str, rel_path: str,
+    max_bytes: Optional[int] = 10 * 1024 * 1024,
+    client: Optional[QnapClient] = None,
+) -> bytes:
+    client = client or default_client()
+    try:
+        return client.read_file(volume_id, snapshot_id, rel_path, max_bytes=max_bytes)
+    finally:
+        client.close()
+
+
+def restore_file(
+    volume_id: str, snapshot_id: str, rel_path: str, dest: str,
+    client: Optional[QnapClient] = None,
+) -> str:
+    client = client or default_client()
+    try:
+        return client.restore_file(volume_id, snapshot_id, rel_path, dest)
     finally:
         client.close()
