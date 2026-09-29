@@ -142,3 +142,80 @@ B 段集成测试：创建→浏览→读取→取回→删除轮询，全绿）
 文档与代码改完后，在 E 盘仓库（`E:/我的AI软件/NAS快照AI工具`）执行
 `git add -A && git commit -m "..." && bash push.sh` 推送即可（SSH 免 token，已配置）。
 
+## 七、Docker 实机部署验证（2026-09-29 续三）
+
+> 目标：在**真实 QNAP TS-873A（QTS 5.2.9）**上用 Container Station 的 Docker 跑起 NAS Safe，
+> 走"远程管理模式"（server 在容器里，经 SSH 回连 NAS 调 `qcli`），端到端验证快照闭环。
+> 结论：**PASS**。镜像已构建并保留，验证容器已清理。
+
+### 为什么走 Docker 远程模式，而不是裸机装 Python
+
+- QNAP 默认没给普通用户装好 Python3 运行环境，裸装依赖麻烦；而 Container Station 是官方套件。
+- 远程模式**不设 privileged、不挂宿主根目录**——容器不碰宿主任何数据，只经 SSH 回连 NAS 调官方
+  `qcli_volumesnapshot`，安全面最小，正好契合"防勒索工具自身不应有过大权限"的原则。
+- 镜像同时兼容"btrfs 宿主本地模式"（带 `btrfs-progs`）与"QNAP 远程模式"（带 `paramiko`），一份镜像两用。
+
+### 镜像构建：四个真机坑（已逐一解决）
+
+QNAP 上的 Docker 二进制是 `/share/CE_CACHEDEV1_DATA/.qpkg/container-station/bin/docker`
+（**不在 PATH**），且是 QNAP 包装的 sh 脚本，会**强制把 `HOME` 设成 `$QPKG_DIR/homes/$(id -un)`**，
+2376 端口还要证书——**只能走 SSH 命令行，不能用 docker context / TCP 直连**。构建过程踩了四个坑：
+
+| # | 现象 | 根因 | 解决 |
+|---|---|---|---|
+| 1 | `curl` 拉 `github.com/.../archive/...tar.gz` 返回 `http=000` | GitHub 重定向到 `objects.githubusercontent.com`，QNAP 上该域名不通 | 改用 paramiko **SFTP 从本机直传**全部源码（36 文件）到 `/share/Container/nassafe/src`，再本地 build |
+| 2 | 后台 `docker build` 静默失败 | QNAP 没有 `nohup` 可用，后台进程拿不到稳定 stdio | 改**前台长超时** build（500s 一镜到底） |
+| 3 | `RUN mkdir .../homes/lw76p: Permission denied` | 包装脚本强设 `HOME=homes/lw76p`，但该目录属 `admin/750`，`lw76p` 建不了 | `sudo -S` 预建 `homes/lw76p` 并 `chown lw76p:everyone`（lw76p 可 sudo，密码同 SSH） |
+| 4 | `E: Package 'zfsutils-linux' has no installation candidate` | Debian trixie 软件源无该包；且 ZFS 需宿主内核模块，容器内本就不可用 | 从 `Dockerfile` **移除 zfsutils-linux**，ZFS 用户改裸机部署（已在文件头注释标明） |
+
+> 镜像源可用性实测：Debian trixie 默认源 `apt-get` 可达；PyPI 可达；daocloud 镜像可达（302）；
+> **Docker Hub 直连不通**（`http=000`）——好在构建不依赖拉 base 以外的镜像；GitHub tarball 不通（见坑 1）。
+> 最终镜像 `nassafe/nassafe:1.0.0` ≈ **159MB**（含 paramiko + btrfs-progs）。
+
+### 起容器（远程管理模式）
+
+`docker-compose.qnap.yml` 已写好：不设 privileged、不挂 `/host`，经 `NASSAFE_QNAP_HOST` SSH 回连。
+核心环境变量：
+
+```bash
+export NASSAFE_QNAP_PASS='你的威联通SSH密码'   # 密码注入环境变量，不落盘
+docker compose -f docker-compose.qnap.yml up -d
+```
+
+> 关键：容器内 `NASSAFE_QNAP_HOST` 必须写**真实 NAS IP**（如 `192.168.8.62`），
+> 绝不能写 `127.0.0.1/localhost`——否则 `default_client()` 会误判为"本地模式"去容器里找 `qcli` 而失败。
+> 监听地址由独立的 `NASSAFE_BIND_HOST`（默认 `0.0.0.0`）控制，与 NAS 地址分离。
+
+### 端到端验证闭环：PASS
+
+从 **Windows 电脑**直接访问 `http://192.168.8.62:8848`（QNAP 防火墙未挡 8848 端口），
+经容器 API 走完完整流程：
+
+1. **创建锁定快照**：`POST /api/snapshot/create` → 在卷 2「我的文件」上创建 `vital=true` 快照，**sid=20002**（永久锁，防勒索核心）。
+2. **列快照确认锁定**：`GET /api/snapshots` 返回该快照 `vital=1`、`status=Ready`。
+3. **浏览真实文件**：`GET /api/browse` 遍历自动只读挂载点 `/mnt/snapshot/2/20002/`，列出顶层 **16 个真实目录**（Mac mini下载文件夹 / Multimediea / Time Machine / hmp-tools / …），证明远程模式浏览链路通。
+4. **清理**：HTTP API **无 delete 路由**（删除走 `qcli`），改用 SSH `qcli_volumesnapshot -d snapshotID=20002` 删除并轮询到 `Removing...` 彻底消失（约 20~60s 异步回收）。
+
+✅ **结论**：威联通 QTS 的 Docker 远程管理模式快照闭环（创建锁定→列→浏览真实文件→删除轮询消失）
+在真机完整跑通，Web UI 与 REST API 均可用。
+
+### 收尾状态
+
+- 验证容器已移除：`docker rm -f nassafe`（验证用，不留垃圾）。
+- 镜像保留：`nassafe/nassafe:1.0.0` 仍在 NAS 上，随时 `docker compose -f docker-compose.qnap.yml up -d` 重起。
+- 构建目录保留：`/share/Container/nassafe/src`（源码已同步到最新 commit `5e2bd3b`，含 paramiko + zfs 去除）。
+
+### 给用户的"重起 / 部署"命令
+
+在你运行 Docker 的这台机器（或 NAS 的 Container Station 终端）上：
+
+```bash
+cd <nassafe仓库>
+export NASSAFE_QNAP_PASS='你的威联通SSH密码'
+docker compose -f docker-compose.qnap.yml up -d
+# 浏览器打开：http://运行Docker的机器:8848
+```
+
+取回的文件默认落到容器内 `/app/_restored`；如需落到宿主机，给 compose 加
+`-v /你本地路径:/app/_restored` 挂载即可。
+

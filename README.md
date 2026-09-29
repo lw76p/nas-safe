@@ -136,7 +136,7 @@ sh scripts/probe.sh
 | OMV | ✅ 支持 | Debian 底子 |
 | **绿联 UGOS Pro** | ⚠️ 实测中 | btrfs 池可用；ext4 池无法快照 |
 | 群晖 DSM（开 SSH） | ⚠️ 实测中 | 需 SSH + btrfs 存储池 |
-| **威联通 QTS（开 SSH）** | ✅ **已适配** | ext4 + 块级快照，走官方 `qcli_volumesnapshot` CLI；创建/锁定/删除 + 浏览/取回全闭环真机验证（含 Web UI） |
+| **威联通 QTS（开 SSH）** | ✅ **已适配** | ext4 + 块级快照，走官方 `qcli_volumesnapshot` CLI；创建/锁定/删除 + 浏览/取回全闭环真机验证（含 Web UI）。**Docker 远程模式已真机验证**（见下） |
 | 极空间等封闭系统 | ❌ 不支持 | 无 SSH、无 btrfs、无开放接口 |
 
 ### 关于绿联
@@ -168,6 +168,28 @@ python3 server/app.py
 - 浏览器打开 `http://运行服务的那台机器:8848` 即可像在 NAS 本机一样浏览、取回文件
 - 取回的文件会保存到**运行服务的这台机器**上（不是 NAS 上），路径在取回时弹窗确认
 - Windows 开发机照样能跑：远程路径一律按 Linux 处理，不受本机系统影响
+
+#### 用 Docker 部署（威联通 QTS 推荐）
+
+如果你不想在 NAS 上裸装 Python，可以用官方提供的 `docker-compose.qnap.yml`：
+容器**不设 privileged、不挂宿主根目录**，只经 SSH 回连 NAS 调 `qcli`，安全面最小。
+
+```bash
+# 在你运行 Docker 的机器上（或 NAS 的 Container Station 终端）
+cd nassafe
+export NASSAFE_QNAP_PASS='你的威联通SSH密码'   # 密码走环境变量，不写进文件
+docker compose -f docker-compose.qnap.yml up -d
+# 浏览器打开：http://运行Docker的机器:8848
+```
+
+注意：容器内 `NASSAFE_QNAP_HOST` 必须填**真实 NAS IP**（如 `192.168.8.62`），
+不能填 `127.0.0.1/localhost`，否则会误判成"本地模式"去容器里找 `qcli` 而失败。
+取回的文件默认落到容器内 `/app/_restored`；想落到宿主机就给 compose 加
+`-v /本地路径:/app/_restored` 挂载。
+
+> 该 `docker-compose.qnap.yml` 已在真实 QNAP TS-873A（QTS 5.2.9）上构建镜像并端到端验证：
+> 创建锁定快照 → 列快照确认锁定 → 浏览到真实文件 → SSH 删除轮询消失，全闭环 PASS。
+> 详见 [docs/QNAP-REALITY.md](docs/QNAP-REALITY.md) 第七章。
 
 ---
 
