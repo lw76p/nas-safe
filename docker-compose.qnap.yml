@@ -1,0 +1,53 @@
+# NAS Safe — 威联通 QTS 远程管理模式部署
+#
+# 适用场景：把 NAS Safe 装在另一台机器 / 容器里，远程管理你的威联通 NAS。
+# 与默认 docker-compose.yml 的区别：
+#   - 不设 privileged、不挂载宿主机根目录（/host）—— 远程模式完全不碰宿主数据
+#   - 容器经 SSH 回连 NAS（NASSAFE_QNAP_HOST）调用官方 qcli 快照接口
+#
+# 用法（在运行 Docker 的这台机器上）：
+#   export NASSAFE_QNAP_PASS='你的威联通SSH密码'
+#   docker compose -f docker-compose.qnap.yml up -d
+#
+# 浏览器打开：http://运行Docker的这台机器:8848
+# 取回的文件会保存到容器内的 /app/_restored（如需落到宿主机，自行加 -v 挂载）。
+
+services:
+  nassafe:
+    image: nassafe/nassafe:1.0.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nassafe
+    restart: unless-stopped
+
+    ports:
+      - "8848:8848"
+
+    environment:
+      # 界面监听与端口
+      NASSAFE_BIND_HOST: "0.0.0.0"
+      NASSAFE_PORT: "8848"
+      NASSAFE_WEB_DIR: "/app/web"
+      TZ: "Asia/Shanghai"
+
+      # —— 威联通远程管理模式（核心）——
+      # 指向你的 NAS IP（不要写 127.0.0.1/localhost，否则会误判为本地模式去容器里找 qcli）
+      NASSAFE_QNAP_HOST: "192.168.8.62"
+      NASSAFE_QNAP_USER: "lw76p"
+      # 密码从运行环境注入，避免写进文件
+      NASSAFE_QNAP_PASS: "${NASSAFE_QNAP_PASS}"
+
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8848/api/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

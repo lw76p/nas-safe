@@ -18,6 +18,10 @@ RUN apt-get update \
       ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# QNAP 远程管理模式需要 paramiko（SSH 到 QTS 调用 qcli_volumesnapshot）。
+# 仅容器部署才需要；裸机直接跑 server/app.py 仍是零依赖。
+RUN pip install --no-cache-dir paramiko
+
 WORKDIR /app
 
 COPY server/ /app/server/
