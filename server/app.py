@@ -145,6 +145,9 @@ def build_snapshot_list(volume_mountpoint: str) -> dict:
         raise StorageError(f"未找到存储单元: {volume_mountpoint}")
 
     snaps = storage.list_all_snapshots(target)
+    protected_keys = {
+        e.get("key") for e in storage.load_protected().get("entries", [])
+    }
 
     items = []
     for snap in snaps:
@@ -155,6 +158,7 @@ def build_snapshot_list(volume_mountpoint: str) -> dict:
         items.append({
             **snap.to_dict(),
             "volume_id": target.volume_id,
+            "protected": storage.snapshot_key(snap) in protected_keys,
             "size_bytes": size if size is not None else snap.size_bytes,
             "size_human": human_size(size if size is not None else snap.size_bytes),
         })
@@ -336,6 +340,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if route == "/api/health":
                 self._send_json({"ok": True, "time": iso_now()})
+            elif route == "/api/alerts":
+                self._send_json({
+                    "ok": True,
+                    "alerts": storage.scan_tamper(),
+                    "scanned_at": iso_now(),
+                })
             elif route == "/api/system":
                 self._send_json(build_system_info())
             elif route == "/api/volumes":

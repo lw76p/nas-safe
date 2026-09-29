@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import datetime
 import time
+import json
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
@@ -603,15 +604,17 @@ def create_snapshot(volume: Volume, name: str, vital: bool = True) -> Snapshot:
         snap_dir = volume.snapshot_dir or os.path.join(volume.mountpoint, ".nassafe", "snapshots")
         snap = create_btrfs_snapshot(volume.mountpoint, snap_dir, name)
         snap.fs_type = "btrfs"
+        register_protected(snap)
         return snap
     if volume.fs_type == "zfs":
         snap = create_zfs_snapshot(volume.name, name)
         snap.fs_type = "zfs"
+        register_protected(snap)
         return snap
     if volume.fs_type == "qnap":
         from qnap import create_snapshot as _qc
         s = _qc(volume.volume_id or volume.mountpoint, name, vital=vital)
-        return Snapshot(
+        snap = Snapshot(
             name=s.name,
             volume=volume.volume_id or volume.mountpoint,
             created_at=s.created_at,
@@ -621,6 +624,8 @@ def create_snapshot(volume: Volume, name: str, vital: bool = True) -> Snapshot:
             readonly=True,
             fs_type="qnap",
         )
+        register_protected(snap)
+        return snap
     raise StorageError(f"不支持的文件系统: {volume.fs_type}")
 
 
@@ -629,12 +634,15 @@ def delete_snapshot(snapshot: Snapshot) -> None:
     if snapshot.fs_type == "qnap" and snapshot.snapshot_id:
         from qnap import delete_snapshot as _qd
         _qd(snapshot.snapshot_id)
+        unregister_protected(snapshot_key(snapshot))
         return
     if snapshot.fs_type == "btrfs":
         delete_btrfs_snapshot(snapshot.path)
+        unregister_protected(snapshot_key(snapshot))
         return
     if snapshot.fs_type == "zfs":
         run(["zfs", "destroy", snapshot.path], timeout=120)
+        unregister_protected(snapshot_key(snapshot))
         return
     raise StorageError(f"无法删除该类型快照: {snapshot.fs_type}")
 
@@ -787,4 +795,157 @@ def restore_from_snapshot(snapshot: Snapshot, rel_path: str, dest: str) -> dict:
         "restored_to": dest_path,
         "message": f"已恢复到：{dest_path}",
     }
+
+
+# ---------------------------------------------------------------------------
+# 篡改检测 / 受保护快照基线
+# ---------------------------------------------------------------------------
+# 设计：NAS Safe 创建的快照自动登记到「受保护基线」(state/protected.json)。
+# 巡检时对比"当前实际快照列表"与基线：
+#   - 基线中有、当前消失         → critical「受保护快照消失」（可能被删/勒索清除）
+#   - 基线里 vital=True、当前解锁 → warn「快照锁被解除」
+#   - 基线里 readonly=True、当前变可写 → warn「快照变为可写」
+# 主动通过 NAS Safe 删除的快照会 unregister，不触发告警。
+
+def _iso_now() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def state_dir() -> str:
+    """受保护基线 / 状态目录，可用 NASSAFE_STATE_DIR 覆盖。"""
+    d = os.environ.get("NASSAFE_STATE_DIR") or os.path.join(os.getcwd(), "state")
+    return d
+
+
+def snapshot_key(snap: "Snapshot") -> str:
+    """跨品牌唯一标识一个快照。"""
+    sid = snap.snapshot_id or snap.name
+    return f"{snap.fs_type}:{snap.volume}:{sid}"
+
+
+def load_protected() -> dict:
+    path = os.path.join(state_dir(), "protected.json")
+    if not os.path.exists(path):
+        return {"entries": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {"entries": []}
+    if not isinstance(data, dict) or "entries" not in data:
+        return {"entries": []}
+    return data
+
+
+def save_protected(data: dict) -> None:
+    d = state_dir()
+    try:
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "protected.json"), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except OSError:
+        # 状态目录不可写（只读环境 / 权限受限）时静默跳过，不影响核心快照功能
+        pass
+
+
+def register_protected(snap: "Snapshot") -> None:
+    """把一个快照登记为受保护（创建/锁定时自动调用）。"""
+    data = load_protected()
+    entries = data.setdefault("entries", [])
+    key = snapshot_key(snap)
+    if any(e.get("key") == key for e in entries):
+        return
+    entries.append({
+        "key": key,
+        "fs_type": snap.fs_type,
+        "volume": snap.volume,
+        "snapshot_id": snap.snapshot_id,
+        "name": snap.name,
+        "vital": bool(snap.vital),
+        "readonly": bool(snap.readonly),
+        "registered_at": _iso_now(),
+    })
+    save_protected(data)
+
+
+def unregister_protected(key: str) -> None:
+    """从受保护基线移除（主动删除快照时调用，避免误报）。"""
+    data = load_protected()
+    before = len(data.get("entries", []))
+    data["entries"] = [e for e in data.get("entries", []) if e.get("key") != key]
+    if len(data["entries"]) != before:
+        save_protected(data)
+
+
+def is_protected(key: str) -> bool:
+    return any(e.get("key") == key for e in load_protected().get("entries", []))
+
+
+def scan_tamper() -> list:
+    """巡检所有卷的快照，对比受保护基线，产出篡改告警列表。
+
+    返回 list[dict]，空列表表示一切正常。
+    对 list_all_volumes / list_all_snapshots 抛异常的情况优雅降级（跳过），
+    不因巡检失败而崩掉接口。
+    """
+    alerts: list = []
+    try:
+        volumes = list_all_volumes()
+    except Exception:
+        return alerts
+
+    current: dict = {}
+    for vol in volumes:
+        try:
+            for s in list_all_snapshots(vol):
+                current[snapshot_key(s)] = s
+        except Exception:
+            continue
+
+    for entry in load_protected().get("entries", []):
+        key = entry.get("key")
+        if key not in current:
+            alerts.append({
+                "level": "critical",
+                "type": "deleted",
+                "title": "受保护快照消失",
+                "detail": (
+                    f"快照「{entry.get('name')}」（位于 {entry.get('volume')}）"
+                    f"已不在快照列表中，可能是被手动删除或勒索软件清除。"
+                ),
+                "volume": entry.get("volume"),
+                "snapshot": entry.get("name"),
+                "key": key,
+                "detected_at": _iso_now(),
+            })
+            continue
+        snap = current[key]
+        if entry.get("vital") and not snap.vital:
+            alerts.append({
+                "level": "warn",
+                "type": "unlocked",
+                "title": "快照锁被解除",
+                "detail": (
+                    f"快照「{entry.get('name')}」的永久锁定（immutable）已被解除，"
+                    f"它现在可被删除，建议立即重新锁定。"
+                ),
+                "volume": entry.get("volume"),
+                "snapshot": entry.get("name"),
+                "key": key,
+                "detected_at": _iso_now(),
+            })
+        elif entry.get("readonly") and not snap.readonly:
+            alerts.append({
+                "level": "warn",
+                "type": "writable",
+                "title": "快照变为可写",
+                "detail": (
+                    f"快照「{entry.get('name')}」从只读变为可写，存在被篡改风险。"
+                ),
+                "volume": entry.get("volume"),
+                "snapshot": entry.get("name"),
+                "key": key,
+                "detected_at": _iso_now(),
+            })
+    return alerts
 

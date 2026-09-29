@@ -187,7 +187,7 @@ async function loadSnapshots() {
       node.innerHTML = `
         <div class="tl-label">${formatShort(snap.created_at || snap.name)}</div>
         <div class="tl-dot"></div>
-        <div class="tl-size">${snap.size_human || ""}</div>
+        <div class="tl-size">${snap.size_human || ""}${snap.protected ? ' <span class="lock" title="受 NAS Safe 保护">🔒</span>' : ""}</div>
       `;
       node.onclick = () => openSnapshotDetail(snap);
       tl.appendChild(node);
@@ -507,6 +507,33 @@ function escapeAttr(s) {
   return escapeHtml(s).replace(/"/g, "&quot;");
 }
 
+/* ------------------------- 篡改检测告警轮询 ------------------------- */
+
+// 受保护快照（被 NAS Safe 锁定的）一旦消失或被解锁，后端 /api/alerts 会告警。
+// 这里定时拉取并顶栏展示，命中「快照被删的那一刻立刻告警」的核心卖点。
+async function pollAlerts() {
+  try {
+    const data = await api("/api/alerts");
+    const alerts = (data.alerts || []).filter(
+      (a) => a.level === "critical" || a.level === "warn"
+    );
+    if (alerts.length) {
+      const critical = alerts.some((a) => a.level === "critical");
+      const title = critical ? "⚠ 检测到快照被篡改风险" : "快照保护状态异常";
+      const body = alerts
+        .map((a) => "• " + a.title + "：" + a.detail)
+        .join("；");
+      showBanner(critical ? "error" : "warn", title, body);
+      state.tamperActive = true;
+    } else if (state.tamperActive) {
+      $("alertBanner").hidden = true;
+      state.tamperActive = false;
+    }
+  } catch (e) {
+    // 服务不可达时静默，不打扰用户
+  }
+}
+
 /* ------------------------- 事件绑定 ------------------------- */
 
 $("refreshBtn").onclick = async () => {
@@ -536,3 +563,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 boot();
+
+// 篡改检测告警轮询：每 30s 拉一次 /api/alerts，发现异常则顶栏告警
+pollAlerts();
+setInterval(pollAlerts, 30000);

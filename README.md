@@ -56,6 +56,7 @@ ZFS 的 `zfs hold` 也不是真保护：有 root 权限就能 `zfs release` 再 
 | **单文件取回** | 浏览快照目录，勾选文件取回，**不覆盖你当前的数据** |
 | **一键拍快照** | 不用进系统面板翻菜单 |
 | **风险提示** | 自动检测哪些存储单元没有保护，红黄绿一眼看懂 |
+| **篡改告警** | 你锁定的快照一旦被删/被解锁，顶栏立刻红/黄告警（每 30s 巡检） |
 | **跨品牌统一** | 飞牛、绿联、TrueNAS、Unraid、OMV、群晖/威联通（开 SSH）—— 同一个界面 |
 
 ---
@@ -222,7 +223,8 @@ zfs snapshot pool/data@snap-20260929-163000
 | GET | `/api/volumes` | 存储单元列表（含 QNAP 远程卷） |
 | GET | `/api/snapshots?volume=<路径>` | 快照列表 |
 | GET | `/api/browse?path=<路径>` 或 `?snapshot_id=<ID>&volume_id=<ID>&subpath=<路径>` | 浏览快照内文件（btrfs/zfs 用 `path`；威联通 QNAP 用后者） |
-| POST | `/api/snapshot/create` | 创建快照 |
+| POST | `/api/snapshot/create` | 创建快照（自动登记为受保护） |
+| GET | `/api/alerts` | 篡改告警列表（受保护快照消失/解锁即告警） |
 | POST | `/api/snapshot/restore` | 取回文件（需 `confirm: true`；btrfs/zfs 用 `snapshot_path`，QNAP 用 `snapshot_id+volume_id+relative_file+destination`） |
 
 ### 运行测试
@@ -239,9 +241,9 @@ python3 server/test_qnap.py     # 威联通：含真机集成测试（需设 NAS
 
 ## 路线图
 
-**v1.0（当前）** —— 时间轴、单文件取回、跨系统适配
+**v1.0（当前）** —— 时间轴、单文件取回、跨系统适配、快照锁定 + 篡改告警（受保护快照消失/解锁即顶栏告警）
 
-**v1.x** —— 自动快照策略、快照锁定、篡改检测告警、重复文件扫描
+**v1.x** —— 自动快照策略、重复文件扫描
 
 **v2.0** —— 异地不可变副本、多设备统一看板、AI 解读体检报告
 
