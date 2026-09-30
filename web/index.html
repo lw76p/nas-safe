@@ -170,17 +170,17 @@
         <option value="600000">每 10 分钟</option>
         <option value="1800000">每 30 分钟</option>
       </select>
-      <label class="chk-inline"><input type="checkbox" id="autoBehavior"> 含勒索行为扫描 (v3)</label>
+      <label class="chk-inline"><input type="checkbox" id="autoBehavior"> 同时扫描勒索迹象</label>
     </div>
     <div class="monitor-controls">
       <input id="watchPaths" class="text-input" placeholder="监控路径（逗号分隔，留空则用当前选中的卷）">
       <button class="btn ghost" id="pickPathsBtn">📁 选择路径</button>
-      <button class="btn ghost" id="integrityBtn">深度校验快照 (v2)</button>
-      <button class="btn ghost" id="behaviorBtn">扫描勒索行为 (v3)</button>
+      <button class="btn ghost" id="integrityBtn">校验快照是否被改动</button>
+      <button class="btn ghost" id="behaviorBtn">扫描勒索迹象</button>
       <button class="btn ghost" id="aiInterpretBtn">AI 解读报告</button>
     </div>
     <div id="monitorResults" class="monitor-results">
-      <p class="muted">点击上方按钮运行主动防御检测（深度校验会在创建快照时建立内容基线，越早开始保护越有效）。</p>
+      <p class="muted">点击上方按钮给 NAS 做一次主动体检：「校验快照」核对锁定快照里的文件有没有被偷偷改动（越早开始核对，可对照的时间点越多）；「扫描勒索迹象」检查文件有没有被大批量加密、改名的典型勒索病毒动作。</p>
     </div>
   </section>
 

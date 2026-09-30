@@ -599,7 +599,7 @@ async function loadSnapshots() {
 function openSnapshotDetail(snap) {
   const qnap = isQnapSnap(snap);
   const pathLabel = qnap
-    ? (snap.mount_path || `卷#${snap.volume_id} / 快照#${snap.snapshot_id}`)
+    ? (snap.mount_path || "NAS 内部快照")
     : (snap.path || "-");
   const body = `
     <div class="kv">
@@ -976,7 +976,7 @@ async function runIntegrityCheck(silent = false) {
     toast("校验失败：" + err.message, "err");
   } finally {
     btn.disabled = false;
-    btn.textContent = "深度校验快照 (v2)";
+    btn.textContent = "校验快照是否被改动";
   }
 }
 
@@ -1023,7 +1023,7 @@ async function runBehaviorScan(silent = false) {
     toast("扫描失败：" + err.message, "err");
   } finally {
     btn.disabled = false;
-    btn.textContent = "扫描勒索行为 (v3)";
+    btn.textContent = "扫描勒索迹象";
   }
 }
 
@@ -1073,7 +1073,7 @@ function renderMonitorResults(payload, kind) {
   if (kind === "integrity") {
     const rs = payload || [];
     if (!rs.length) {
-      box.innerHTML = `<p class="muted">✅ 所有带内容基线的受保护快照均完整，未检测到内容被篡改。</p>`;
+      box.innerHTML = `<p class="muted">✅ 校验通过：受保护快照里的文件与创建时完全一致，没有发现被篡改的迹象。</p>`;
       return;
     }
     box.innerHTML = rs
