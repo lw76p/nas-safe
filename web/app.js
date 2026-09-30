@@ -651,7 +651,7 @@ async function aiDiagnose() {
 function aiAsk() {
   openModal(
     "🤖 问 AI",
-    `<textarea id="aiAskText" class="text-input" rows="3"
+    `<textarea id="aiAskText" class="text-input ask-textarea" rows="9"
        placeholder="用大白话问，例如：我的 NAS 现在安全吗？快照会不会把盘占满？最近有什么要注意的？"></textarea>
      <p class="muted" style="margin:8px 0 0">回答基于当前系统状态与告警，仅供参考；关键操作请以人工判断为准。</p>`,
     `<button class="btn ghost" data-act="close">取消</button>

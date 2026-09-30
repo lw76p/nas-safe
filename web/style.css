@@ -586,6 +586,13 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .text-input::placeholder { color: var(--text-3); }
 .text-input:focus { outline: none; border-color: var(--z-monitor); box-shadow: 0 0 0 3px var(--z-monitor-soft); }
 
+/* 问 AI 大输入框：打开即大面积，可纵向拉伸 */
+.ask-textarea {
+  display: block; width: 100%; box-sizing: border-box;
+  min-height: 220px; resize: vertical;
+  line-height: 1.7; font-size: 14px;
+}
+
 .monitor-auto {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   padding: 13px 15px; margin-bottom: 14px;
