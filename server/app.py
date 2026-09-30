@@ -581,6 +581,105 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send_json({"ok": True, "text": result})
 
+            elif route == "/api/ai/diagnose":
+                # AI 体检：聚合全机状态（硬件指标+趋势+快照保护+告警）交 AI 出报告
+                if not ai.is_ready():
+                    raise StorageError("AI 未配置，请先到「设置」启用 AI 解读")
+                sections: list = []
+
+                try:
+                    m = metrics.collect()
+                    cpu = m.get("cpu") or {}
+                    mem = m.get("mem") or {}
+                    up = m.get("uptime") or {}
+                    cpu_t = cpu.get("temp_c")
+                    parts = [f"【系统】主机 {m.get('hostname','NAS')}，已运行 "
+                             f"{up.get('days',0)} 天 {up.get('hours',0)} 小时，"
+                             f"CPU 占用 {cpu.get('percent','--')}%"
+                             + (f"，CPU 温度 {cpu_t}°C" if cpu_t is not None else "")
+                             + f"，内存占用 {mem.get('percent','--')}%"]
+                    vols = m.get("volumes") or []
+                    if vols:
+                        vs = "；".join(f"{v['mount']} 已用 {v.get('percent',0)}%"
+                                       for v in vols[:8])
+                        parts.append("【存储空间】" + vs)
+                    tr = m.get("trends") or []
+                    for t in tr:
+                        if t.get("days_to_full"):
+                            parts.append(f"【趋势预警】{t['mount']} 按最近增长速度，"
+                                         f"预计约 {t['days_to_full']} 天后存满（当前 {t['percent']}%）")
+                        else:
+                            parts.append(f"【趋势】{t['mount']} 在缓慢增长（当前 {t['percent']}%）")
+                    sections.append("\n".join(parts))
+                except Exception as exc:  # noqa: BLE001 单块失败不拖垮整体
+                    sections.append(f"【系统】硬件指标暂时读不到（{exc}）")
+
+                try:
+                    vdata = build_volume_list().get("volumes", [])
+                    snap_lines = []
+                    for v in vdata[:6]:
+                        cnt = v.get("snapshot_count", 0)
+                        snap_lines.append(
+                            f"{v.get('name','?')}：{cnt} 张快照"
+                            + ("，全部受保护" if cnt else "，还没有快照，建议立即拍第一张")
+                            + (f"，最新 {str(v.get('latest_snapshot'))[:16]}" if v.get("latest_snapshot") else ""))
+                    if snap_lines:
+                        sections.append("【快照保护】\n" + "\n".join(snap_lines))
+                except Exception:  # noqa: BLE001
+                    pass
+
+                try:
+                    alerts = storage.scan_tamper()
+                    if alerts:
+                        sections.append("【当前告警】\n" + "\n".join(
+                            f"- [{a.get('level','')}] {a.get('type','')}：{a.get('detail','')}"
+                            for a in alerts[:10]))
+                    else:
+                        sections.append("【当前告警】无，快照保护正常")
+                except Exception:  # noqa: BLE001
+                    pass
+
+                report = "\n\n".join(sections)
+                result, err = ai.interpret(report)
+                if err:
+                    self._send_json({"ok": False, "error": err}, 400)
+                else:
+                    self._send_json({"ok": True, "text": result, "context": report})
+
+            elif route == "/api/ai/ask":
+                # 问 AI：自然语言问 NAS 状态，自动注入当前指标/告警作为背景
+                question = (payload.get("question") or "").strip()
+                if not question:
+                    raise StorageError("请先输入问题")
+                if not ai.is_ready():
+                    raise StorageError("AI 未配置，请先到「设置」启用 AI 解读")
+                ctx_parts: list = []
+                try:
+                    m = metrics.collect()
+                    ctx_parts.append(
+                        f"当前系统：CPU {((m.get('cpu') or {}).get('percent') or '--')}%，"
+                        f"内存 {((m.get('mem') or {}).get('percent') or '--')}%，"
+                        + "；".join(f"{v['mount']} 已用 {v.get('percent',0)}%"
+                                    for v in (m.get("volumes") or [])[:6]))
+                    for t in (m.get("trends") or []):
+                        if t.get("days_to_full"):
+                            ctx_parts.append(f"趋势：{t['mount']} 预计约 {t['days_to_full']} 天后存满")
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    alerts = storage.scan_tamper()
+                    ctx_parts.append("当前告警：" + ("无" if not alerts else
+                        "；".join(f"[{a.get('level','')}]{a.get('type','')}" for a in alerts[:8])))
+                except Exception:  # noqa: BLE001
+                    pass
+                result, err = ai.answer(question, context="\n".join(ctx_parts))
+                if err:
+                    self._send_json({"ok": False, "error": err}, 400)
+                elif result is None:
+                    self._send_json({"ok": False, "error": "AI 未启用或未配置密钥", "ready": False}, 400)
+                else:
+                    self._send_json({"ok": True, "text": result})
+
             elif route == "/api/autosnapshot":
                 if not isinstance(payload, dict):
                     raise StorageError("配置格式错误")

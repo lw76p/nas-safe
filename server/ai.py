@@ -262,10 +262,20 @@ def discover_local() -> dict:
 # 对话调用（统一 OpenAI 兼容接口）
 # ---------------------------------------------------------------------------
 
+def _ollama_default_base() -> str:
+    """Ollama 默认地址兜底：容器里 localhost 连不到宿主，优先用 NAS IP。"""
+    ip = os.environ.get("NASSAFE_QNAP_HOST") or os.environ.get("NASSAFE_HOST")
+    if ip and ip not in ("127.0.0.1", "localhost"):
+        return f"http://{ip}:11434/v1"
+    return "http://localhost:11434/v1"
+
+
 def _chat(messages: list, cfg: dict, timeout: int = 30) -> (str, str):
     prov = cfg.get("provider", "deepseek")
     info = PROVIDERS.get(prov, PROVIDERS["deepseek"])
     base = (cfg.get("base_url") or info["base_url"]).rstrip("/")
+    if prov == "ollama" and "localhost" in base:
+        base = _ollama_default_base()  # 配置缺 base_url 时兜底到 NAS IP
     model = cfg.get("model") or info["model"]
     api_key = cfg.get("api_key", "")
     url = f"{base}/chat/completions"

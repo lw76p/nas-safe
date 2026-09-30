@@ -62,8 +62,11 @@
           <p class="sub">NAS 主机硬件健康与资源占用 · 15 秒自动刷新</p>
         </div>
       </div>
-      <button class="btn ghost" id="metricsRefreshBtn">刷新</button>
-    </div>
+      <div class="panel-actions">
+        <button class="btn ghost" id="aiAskBtn" title="用大白话问 NAS 的状态">🤖 问 AI</button>
+        <button class="btn primary" id="aiDiagnoseBtn" title="AI 汇总全机状态出一份体检报告">🤖 AI 体检</button>
+        <button class="btn ghost" id="metricsRefreshBtn">刷新</button>
+      </div>
     <div id="metricsBody" class="metrics-grid">
       <p class="muted">读取硬件指标…</p>
     </div>

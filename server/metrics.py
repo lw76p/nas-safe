@@ -27,6 +27,44 @@ _last: dict | None = None          # {"ts": float, "data": dict}
 _net_prev: dict | None = None      # {"ts", "total_rx", "total_tx", "ifaces": {名: (rx, tx)}}
 _io_prev: dict | None = None       # {盘名: (读扇区, 写扇区)}
 
+# 趋势样本环形缓冲（卷用量%/内存%）与上限
+_hist: list = []
+_HIST_MAX = 120                    # 15s/次 × 120 ≈ 30 分钟窗口
+
+
+def _compute_trends() -> list:
+    """从 _hist 线性外推每个卷的增长速度与"预计几天后存满"。
+
+    保守输出：样本 >=10 且窗口 >=5 分钟；增速为正且用量 >1% 才报；
+    days_to_full 仅在 90 天内有意义（更远的当作"缓慢增长"不报天数）。"""
+    out: list = []
+    if len(_hist) < 10:
+        return out
+    span = _hist[-1]["ts"] - _hist[0]["ts"]
+    if span < 300:
+        return out
+    hours = span / 3600.0
+    mounts: set = set()
+    for h in _hist:
+        mounts.update(h["vols"].keys())
+    for mount in sorted(mounts):
+        pts = [(h["ts"], h["vols"][mount]) for h in _hist
+               if h["vols"].get(mount) is not None]
+        if len(pts) < 10:
+            continue
+        pct = pts[-1][1]
+        slope = (pct - pts[0][1]) / hours  # % / 小时
+        if pct is None or pct <= 1.0 or slope <= 0.05:
+            continue
+        days = (100.0 - pct) / slope / 24.0
+        out.append({
+            "mount": mount,
+            "percent": round(pct, 1),
+            "growth_pct_per_hour": round(slope, 3),
+            "days_to_full": round(days, 1) if days <= 90 else None,
+        })
+    return out
+
 _BATCH = r"""
 echo "#STAT"
 head -1 /proc/stat 2>/dev/null
@@ -319,7 +357,8 @@ def collect(force: bool = False) -> dict:
     cpu_percent = _parse_cpu(lines.get("STAT", []))
     mem = _parse_mem(lines.get("MEM", []))
     net = _parse_net(lines.get("NET", []))
-    vols = _parse_df(lines.get("DF", []))
+    vols = [v for v in _parse_df(lines.get("DF", []))
+            if not v.get("mount", "").startswith(("/mnt/snapshot/", "/.snapshots", "/mnt/snaphot/"))]
     disks = _parse_blk(lines.get("BLK", []))
     cpu_temp, disk_temps = _parse_temps(lines.get("TEMP", []))
     fan = _parse_fan(lines.get("FAN", []))
@@ -373,6 +412,17 @@ def collect(force: bool = False) -> dict:
         except (ValueError, IndexError):
             pass
 
+    # 趋势预测（规则版，AIOps"预计何时存满"的轻量实现）：
+    # 维护近期样本环形缓冲，对卷用量做线性外推。样本够（>=10 次、跨 >=5 分钟）才输出。
+    _hist.append({
+        "ts": now,
+        "mem": (mem or {}).get("percent"),
+        "vols": {v["mount"]: v.get("percent") for v in vols if v.get("mount")},
+    })
+    if len(_hist) > _HIST_MAX:
+        del _hist[: len(_hist) - _HIST_MAX]
+    trends = _compute_trends()
+
     data = {
         "hostname": (lines.get("HOST") or [""])[0].strip() or "NAS",
         "uptime_s": uptime_s,
@@ -381,6 +431,7 @@ def collect(force: bool = False) -> dict:
         "mem": mem,
         "net": {"rx_bps": rx_bps, "tx_bps": tx_bps, "ifaces": net["ifaces"]},
         "volumes": vols,
+        "trends": trends,
         "disks": disks,
         "fan": fan,
         "capabilities": {

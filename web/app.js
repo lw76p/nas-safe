@@ -302,10 +302,18 @@ function renderMetrics(m) {
       </div>`;
   }).join("");
   const g3 = (m.volumes || []).reduce((g, v) => Math.max(g, grade(v.percent, 75, 90)), 0);
+  // 趋势预警：按近期增速外推"预计几天后存满"（后端规则计算，AI 体检也会引用）
+  const trendNote = (m.trends || []).map((t) => {
+    const label = t.mount.split("/").pop() || t.mount;
+    return t.days_to_full
+      ? `<p class="muted t-warn" style="margin:6px 0 0">📈 ${escapeHtml(label)} 按最近增长速度，预计约 <b>${t.days_to_full} 天后存满</b>，可考虑清理或扩容</p>`
+      : `<p class="muted" style="margin:6px 0 0">📈 ${escapeHtml(label)} 在缓慢增长（当前 ${t.percent}%），暂不用担心</p>`;
+  }).join("");
   const card3 = (m.volumes || []).length ? `
     <div class="metric-card mc-${GRADE[g3][0]}">
       ${cardHead("存储", g3)}
       ${volRows}
+      ${trendNote}
     </div>` : "";
 
   // 卡4：磁盘槽位图 —— 按类型分组（nvme=M.2，sdX=SATA/HDD），显示容量/温度/实时读写
@@ -526,6 +534,83 @@ async function autoSelectVolume() {
   if (saved) vol = state.volumes.find((v) => v.mountpoint === saved || String(v.id) === saved);
   if (!vol && state.volumes.length) vol = state.volumes[0];
   if (vol) await selectVolume(vol, true);
+}
+
+/* ------------------------- AI 体检 / 问 AI ------------------------- */
+
+// 一键体检：后端聚合全机状态交 AI 出报告，弹窗展示
+async function aiDiagnose() {
+  const btn = $("aiDiagnoseBtn");
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span>体检中`;
+  openModal(
+    "AI 健康体检",
+    `<p class="muted"><span class="spinner"></span>正在汇总硬件、存储、快照保护和告警数据，交给 AI 分析…（约 10-30 秒）</p>`,
+    `<button class="btn ghost" data-act="close">取消</button>`
+  );
+  try {
+    const data = await api("/api/ai/diagnose", { method: "POST", body: "{}" });
+    openModal(
+      "🤖 AI 健康体检报告",
+      `<div style="white-space:pre-wrap; line-height:1.8">${escapeHtml(data.text)}</div>`,
+      `<button class="btn primary" data-act="close">知道了</button>`
+    );
+  } catch (e) {
+    openModal(
+      "AI 健康体检",
+      `<p>体检失败：${escapeHtml(e.message)}</p>
+       <p class="muted">如果提示 AI 未配置，请到「设置 → AI 解读」选择云端供应商填密钥，或用「🔍 自动搜索」一键接入本地 Ollama。</p>`,
+      `<button class="btn primary" data-act="close">去设置</button>`,
+      { goSettings: () => { closeModal(); showView("settings"); } }
+    );
+  }
+  btn.disabled = false;
+  btn.textContent = "🤖 AI 体检";
+}
+
+// 问 AI：自然语言问 NAS 状态（自动带上当前指标/告警当背景）
+function aiAsk() {
+  openModal(
+    "🤖 问 AI",
+    `<textarea id="aiAskText" class="text-input" rows="3"
+       placeholder="用大白话问，例如：我的 NAS 现在安全吗？快照会不会把盘占满？最近有什么要注意的？"></textarea>
+     <p class="muted" style="margin:8px 0 0">回答基于当前系统状态与告警，仅供参考；关键操作请以人工判断为准。</p>`,
+    `<button class="btn ghost" data-act="close">取消</button>
+     <button class="btn primary" data-act="send">提问</button>`,
+    {
+      send: async () => {
+        const q = ($("aiAskText") && $("aiAskText").value || "").trim();
+        if (!q) { toast("请先输入问题", "warn"); return; }
+        $("modalBody").innerHTML = `<p class="muted"><span class="spinner"></span>思考中…</p>`;
+        try {
+          const data = await api("/api/ai/ask", {
+            method: "POST",
+            body: JSON.stringify({ question: q }),
+          });
+          openModal(
+            "🤖 问 AI",
+            `<p style="margin-top:0"><b>问：</b>${escapeHtml(q)}</p>
+             <div style="white-space:pre-wrap; line-height:1.8">${escapeHtml(data.text)}</div>`,
+            `<button class="btn ghost" data-act="again">再问一个</button>
+             <button class="btn primary" data-act="close">关闭</button>`,
+            { again: () => { closeModal(); aiAsk(); } }
+          );
+        } catch (e) {
+          openModal(
+            "🤖 问 AI",
+            `<p>回答失败：${escapeHtml(e.message)}</p>
+             <p class="muted">如果提示 AI 未配置，请到「设置 → AI 解读」先启用。</p>`,
+            `<button class="btn primary" data-act="close">关闭</button>`
+          );
+        }
+      },
+    }
+  );
+  // 回车直接提问
+  const ta = $("aiAskText");
+  if (ta) ta.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); modalActions.send(); }
+  });
 }
 
 /* ------------------------- 时间轴 ------------------------- */
@@ -1355,6 +1440,8 @@ $("snapBtn").onclick = createSnapshot;
 $("integrityBtn").onclick = runIntegrityCheck;
 $("behaviorBtn").onclick = runBehaviorScan;
 $("aiInterpretBtn").onclick = aiInterpret;
+$("aiDiagnoseBtn").onclick = aiDiagnose;
+$("aiAskBtn").onclick = aiAsk;
 
 $("notifyType").onchange = () => renderNotifyFields($("notifyType").value);
 $("notifySaveBtn").onclick = saveNotify;
