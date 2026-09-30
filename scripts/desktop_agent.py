@@ -53,7 +53,7 @@ CTRL_PORT = 18765          # 本机控制端口（只监听 127.0.0.1，不外�
 PROTOCOL = "nassafe-agent"  # 浏览器拉起本机小助手的自定义协议
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.1"
+AGENT_VER = "1.0.6.2"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -1147,9 +1147,16 @@ class TrayIcon:
             u32.AppendMenuW(menu, 0x00000800, 0, None)          # MF_SEPARATOR
             u32.AppendMenuW(menu, 0x00000000, self.ID_QUIT, "退出小助手")
             u32.SetForegroundWindow(hwnd)
-            u32.TrackPopupMenuEx(menu, 0x0100 | 0x0002, pt.x, pt.y, hwnd, None)
+            # TPM_RETURNCMD(0x0100)：函数直接返回选中的菜单 ID，不发 WM_COMMAND
+            cmd = u32.TrackPopupMenuEx(menu, 0x0100 | 0x0002, pt.x, pt.y, hwnd, None)
             u32.DestroyMenu(menu)
             u32.PostMessageW(hwnd, 0, 0, 0)   # 消除菜单残留
+            if cmd == self.ID_OPEN and self.on_open:
+                threading.Thread(target=self.on_open, daemon=True).start()
+            elif cmd == self.ID_READ_ALL and self.on_read_all:
+                self.on_read_all()
+            elif cmd == self.ID_QUIT and self.on_quit:
+                self.on_quit()
         except Exception:
             pass
 
