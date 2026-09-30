@@ -66,6 +66,7 @@ function setStatus(text, kind = "") {
 
 async function boot() {
   try {
+    if (document.getElementById("jsVer")) document.getElementById("jsVer").textContent = APP_JS_VER;
     const sys = await api("/api/system");
     state.system = sys.system;
     const s = sys.system;
@@ -1998,6 +1999,12 @@ if ("Notification" in window) {
 // 小助手在本机 127.0.0.1:18765 提供 /ping（在线检测）与 /stop（请求退出）；
 // 启动走 nassafe-agent:// 自定义协议（安装时注册），浏览器会弹一次「打开？」确认。
 const AGENT_CTRL = "http://127.0.0.1:18765";
+const APP_JS_VER = "20260930c";
+
+function setTestResult(t) {
+  const el = document.getElementById("testResult");
+  if (el) el.textContent = t;
+}
 
 function fetchT(url, ms) {
   const ctl = new AbortController();
@@ -2099,6 +2106,7 @@ $("pushTestBtn").onclick = async () => {
   const btn = $("pushTestBtn");
   btn.disabled = true;
   const t0 = toast("正在发送测试提醒…", "");
+  setTestResult("正在发送测试提醒…");
   let localOk = false;
   try {
     // 桌面助手在线时优先本机直推（瞬间到达托盘），成功立即反馈
@@ -2118,6 +2126,7 @@ $("pushTestBtn").onclick = async () => {
         localOk = lr.ok;
       } catch (_) { localOk = false; }
       if (localOk) toast("桌面助手已收到测试提醒 ✓", "ok");
+      setTestResult("✓ 桌面助手已收到测试提醒");
     }
     // 同时走服务端通道（微信/邮件等），带超时避免卡死
     try {
@@ -2127,15 +2136,23 @@ $("pushTestBtn").onclick = async () => {
       }, 8000);
       if (r && r.ok) {
         toast(`已推送（桌面助手 + ${r.channel || "服务端通道"}）`, "ok");
+        setTestResult(`✓ 已推送（桌面助手 + ${r.channel || "服务端通道"}）`);
       } else if (!localOk) {
         toast("推送失败：" + ((r && (r.msg || r.error)) || "未知"), "err");
+        setTestResult("✗ 推送失败：" + ((r && (r.msg || r.error)) || "未知"));
       }
     } catch (e) {
-      if (!localOk) toast("推送失败：" + (e.message || "未知"), "err");
-      else toast("桌面助手已收到，但服务端通道失败：" + (e.message || "未知"), "warn");
+      if (!localOk) {
+        toast("推送失败：" + (e.message || "未知"), "err");
+        setTestResult("✗ 推送失败：" + (e.message || "未知"));
+      } else {
+        toast("桌面助手已收到，但服务端通道失败：" + (e.message || "未知"), "warn");
+        setTestResult("⚠ 桌面助手已收到，但服务端通道失败：" + (e.message || "未知"));
+      }
     }
   } catch (e) {
     toast("推送失败：" + e.message, "err");
+    setTestResult("✗ 推送失败：" + e.message);
   } finally {
     btn.disabled = false;
   }
