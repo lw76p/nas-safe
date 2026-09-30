@@ -13,10 +13,19 @@ FILES = [
     ("server/integrity.py", "/app/server/integrity.py"),
     ("server/behavior.py", "/app/server/behavior.py"),
     ("server/notify.py", "/app/server/notify.py"),
+    ("server/anomalies.py", "/app/server/anomalies.py"),
+    ("server/metrics.py", "/app/server/metrics.py"),
+    ("server/qnap.py", "/app/server/qnap.py"),
+    ("server/storage.py", "/app/server/storage.py"),
     ("server/app.py", "/app/server/app.py"),
+    ("scripts/desktop_agent.py", "/app/scripts/desktop_agent.py"),
     ("web/app.js", "/app/web/app.js"),
     ("web/index.html", "/app/web/index.html"),
     ("web/style.css", "/app/web/style.css"),
+    ("agent/桌面助手.exe", "/app/agent/桌面助手.exe"),
+    ("agent/NASSafeAgent.exe", "/app/agent/NASSafeAgent.exe"),
+    ("agent/nassafe_agent.ico", "/app/agent/nassafe_agent.ico"),
+    ("agent/nassafe_agent_alert.ico", "/app/agent/nassafe_agent_alert.ico"),
 ]
 
 c = paramiko.SSHClient()
