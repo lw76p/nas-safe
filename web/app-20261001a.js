@@ -652,7 +652,7 @@ async function askAiFix(a) {
     `<p style="margin-top:0"><b>异常：</b>${escapeHtml(a.title)}</p>
      <p class="muted"><span class="spinner"></span>AI 正在分析…</p>`,
     `<button class="btn ghost" data-act="back">返回异常列表</button>`,
-    { back: () => openAnomalyModal() });
+    { back: () => openAnomalyModal() }, { stay: true });
   try {
     const data = await routeAI(a.q, "/api/ai/ask");
     openModal("🤖 AI 修复方案",
@@ -661,13 +661,13 @@ async function askAiFix(a) {
        <p class="muted" style="margin-top:10px">以上为 AI 建议，仅供参考；执行任何操作前请确认。</p>`,
       `<button class="btn ghost" data-act="back">返回异常列表</button>
        <button class="btn primary" data-act="close">关闭</button>`,
-      { back: () => openAnomalyModal() });
+      { back: () => openAnomalyModal() }, { stay: true });
   } catch (e) {
     openModal("🤖 AI 修复方案",
       `<p>分析失败：${escapeHtml(e.message)}</p>
        <p class="muted">如果提示 AI 未配置，请到「设置 → AI 解读」先启用。</p>`,
       `<button class="btn ghost" data-act="back">返回异常列表</button>`,
-      { back: () => openAnomalyModal() });
+      { back: () => openAnomalyModal() }, { stay: true });
   }
 }
 
@@ -993,18 +993,21 @@ function aiAsk() {
              <div style="white-space:pre-wrap; line-height:1.8">${ans ? escapeHtml(ans) : "（AI 没有返回内容，请点「再问一个」重试；若反复出现请换云端供应商对比）"}</div>`,
             `<button class="btn ghost" data-act="again">再问一个</button>
              <button class="btn primary" data-act="close">关闭</button>`,
-            { again: () => { closeModal(); aiAsk(); } }
+            { again: () => { closeModal(); aiAsk(); } },
+            { stay: true }
           );
         } catch (e) {
           openModal(
             "🤖 问 AI",
             `<p>回答失败：${escapeHtml(e.message)}</p>
              <p class="muted">如果提示 AI 未配置，请到「设置 → AI 解读」先启用。</p>`,
-            `<button class="btn primary" data-act="close">关闭</button>`
+            `<button class="btn primary" data-act="close">关闭</button>`,
+            { stay: true }
           );
         }
       },
-    }
+    },
+    { stay: true }
   );
   // 回车直接提问
   const ta = $("aiAskText");
@@ -1380,9 +1383,11 @@ async function createSnapshot() {
 
 let modalActions = {};
 let modalHasInput = false;
+let modalSticky = false; // 粘性弹窗：AI 问答/解读等结果弹窗，切窗口回来点遮罩也不许关
 
-function openModal(title, body, foot, actions) {
+function openModal(title, body, foot, actions, opts) {
   modalActions = actions || {};
+  modalSticky = !!(opts && opts.stay);
   $("modalTitle").textContent = title;
   $("modalBody").innerHTML = body;
   $("modalFoot").innerHTML = foot || "";
@@ -1403,10 +1408,11 @@ function openModal(title, body, foot, actions) {
   // 避免误触把已输入的内容弄丢（如「问 AI」写了一大段突然没了）。
   // 这类弹窗必须点「取消 / ✕ / 关闭」才关。
   modalHasInput = !!$("modalBody").querySelector("textarea, input, [contenteditable='true']");
-  $("modalMask").onclick = modalHasInput ? null : closeModal;
+  $("modalMask").onclick = (modalHasInput || modalSticky) ? null : closeModal;
 }
 
 function closeModal() {
+  modalSticky = false;
   $("modalRoot").hidden = true;
   $("modalBox").dataset.mode = "";
   $("modalBody").innerHTML = "";
@@ -1890,7 +1896,8 @@ async function aiInterpret() {
       "AI 解读报告",
       `<div style="white-space:pre-wrap;line-height:1.75;font-size:13.5px;color:var(--text)">${escapeHtml(data.text)}</div>`,
       `<button class="btn ghost" data-act="close">关闭</button>`,
-      {}
+      {},
+      { stay: true }
     );
   } catch (e) {
     toast("AI 解读失败：" + e.message, "err");
@@ -1973,7 +1980,7 @@ $("modalMask").onclick = closeModal;
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("modalRoot").hidden) {
     // 含输入框的弹窗不靠 Esc 关闭，避免误触丢失已输入内容
-    if (modalHasInput) return;
+    if (modalHasInput || modalSticky) return;
     closeModal();
   }
 });
