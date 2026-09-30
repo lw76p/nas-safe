@@ -1846,7 +1846,13 @@ $("alertBanner").title = "点击查看异常详情";
 if ("Notification" in window) {
   $("notifyPermBtn").onclick = async () => {
     const p = await Notification.requestPermission();
-    toast(p === "granted" ? "已授权电脑弹窗提醒" : (p === "denied" ? "被浏览器拒绝，请在地址栏权限里允许" : "未授权"), p === "granted" ? "ok" : "warn");
+    if (p === "granted") { toast("已授权电脑弹窗提醒", "ok"); return; }
+    if (location.protocol !== "https:") {
+      // 非安全来源（http 且非 localhost）浏览器不弹询问框、直接拒绝，需手动在站点设置里允许
+      toast("浏览器要求手动允许：点地址栏左侧 ⓘ → 网站设置 → 通知 → 允许，然后回到这里再点一次测试", "warn", 8000);
+    } else {
+      toast("被浏览器拒绝：点地址栏左侧 ⓘ → 网站设置 → 通知 → 允许，即可恢复", "warn", 8000);
+    }
   };
 } else {
   $("notifyPermBtn").onclick = () => toast("当前浏览器不支持桌面通知", "warn");
