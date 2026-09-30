@@ -52,6 +52,23 @@
     </div>
   </section>
 
+  <!-- 系统仪表盘（主页顶部，按能力渲染，15s 自动刷新） -->
+  <section class="panel zone zone-monitor" id="dashboardPanel" data-view="home">
+    <div class="panel-head">
+      <div class="zone-head">
+        <span class="zone-ico">◉</span>
+        <div>
+          <h2>系统仪表盘</h2>
+          <p class="sub">NAS 主机硬件健康与资源占用 · 15 秒自动刷新</p>
+        </div>
+      </div>
+      <button class="btn ghost" id="metricsRefreshBtn">刷新</button>
+    </div>
+    <div id="metricsBody" class="metrics-grid">
+      <p class="muted">读取硬件指标…</p>
+    </div>
+  </section>
+
   <!-- 一眼概览 -->
   <section class="overview" id="overview" data-view="home">
     <div class="ov-card zone-storage">
@@ -79,7 +96,7 @@
       <span class="ov-ico">◉</span>
       <div class="ov-body">
         <div class="ov-num" id="ovMonitor">—</div>
-        <div class="ov-label">持续监控</div>
+        <div class="ov-label">实时监控</div>
       </div>
     </div>
   </section>
@@ -130,14 +147,14 @@
     </div>
   </section>
 
-  <!-- 功能区三：防勒索实时监控 -->
+  <!-- 功能区三：实时监控 -->
   <section class="panel zone zone-monitor" id="monitorPanel" data-view="monitor">
     <div class="panel-head">
       <div class="zone-head">
         <span class="zone-ico">◉</span>
         <div>
-          <h2>防勒索实时监控</h2>
-          <p class="sub">深度校验受保护快照内容是否被篡改（v2）+ 扫描目录勒索行为迹象（v3）</p>
+          <h2>实时监控</h2>
+          <p class="sub">防勒索巡检：深度校验受保护快照内容是否被篡改（v2）+ 扫描目录勒索行为迹象（v3）</p>
         </div>
       </div>
     </div>
@@ -156,6 +173,7 @@
     </div>
     <div class="monitor-controls">
       <input id="watchPaths" class="text-input" placeholder="监控路径（逗号分隔，留空则用当前选中的卷）">
+      <button class="btn ghost" id="pickPathsBtn">📁 选择路径</button>
       <button class="btn ghost" id="integrityBtn">深度校验快照 (v2)</button>
       <button class="btn ghost" id="behaviorBtn">扫描勒索行为 (v3)</button>
       <button class="btn ghost" id="aiInterpretBtn">AI 解读报告</button>
@@ -230,7 +248,7 @@
         <option value="openai">OpenAI（云端）</option>
         <option value="qwen">通义千问（云端）</option>
         <option value="zhipu">智谱 GLM（云端）</option>
-        <option value="ollama">本地 Ollama（一键本地 AI，免密钥）</option>
+        <option value="ollama">本地 AI（Ollama / LM Studio / llama.cpp 等，免密钥）</option>
       </select>
     </div>
     <div class="set-row" id="aiKeyRow">
@@ -247,6 +265,7 @@
     </div>
     <p class="muted" id="aiHint" style="margin:8px 0 0; line-height:1.8"></p>
     <div class="set-actions">
+      <button class="btn ghost" id="aiDiscoverBtn">🔍 自动搜索本地 AI</button>
       <button class="btn primary" id="aiSaveBtn">保存 AI 设置</button>
     </div>
     <p class="muted" style="margin-top:12px">密钥仅保存在本机 state 目录，不会进入代码仓库；未配置时相关功能自动隐藏，核心防勒索不受影响。</p>

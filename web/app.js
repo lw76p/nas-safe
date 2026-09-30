@@ -185,7 +185,306 @@ function updateOverview() {
   }
 }
 
-/* ------------------------- 主导航视图切换 ------------------------- */
+/* ------------------------- 系统仪表盘 ------------------------- */
+
+// 按能力渲染硬件指标卡片；拿不到的字段自动隐藏（跨品牌分层适配）。
+function fmtBps(v) {
+  if (v == null) return "--";
+  if (v < 1024) return v + " B/s";
+  if (v < 1048576) return (v / 1024).toFixed(1) + " KB/s";
+  return (v / 1048576).toFixed(1) + " MB/s";
+}
+function fmtKB(kb) {
+  if (kb >= 1048576) return (kb / 1048576).toFixed(1) + " TB";
+  if (kb >= 1024) return (kb / 1024).toFixed(0) + " GB";
+  return kb + " KB";
+}
+function donut(label, percent, color) {
+  const p = Math.max(0, Math.min(100, percent || 0));
+  const r = 34, c = 2 * Math.PI * r;
+  return `
+    <div class="donut">
+      <svg viewBox="0 0 84 84" width="84" height="84">
+        <circle cx="42" cy="42" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="9"/>
+        <circle cx="42" cy="42" r="${r}" fill="none" stroke="${color}" stroke-width="9"
+          stroke-linecap="round" stroke-dasharray="${(p / 100 * c).toFixed(1)} ${c.toFixed(1)}"
+          transform="rotate(-90 42 42)"/>
+        <text x="42" y="47" text-anchor="middle" fill="var(--text)" font-size="16" font-weight="700">${Math.round(p)}%</text>
+      </svg>
+      <span class="donut-label">${label}</span>
+    </div>`;
+}
+
+async function loadMetrics(force) {
+  const body = $("metricsBody");
+  if (!body) return;
+  try {
+    const data = await api("/api/system/metrics" + (force ? "?force=1" : ""));
+    if (!data.ok) throw new Error(data.error || "采集失败");
+    renderMetrics(data.metrics);
+  } catch (e) {
+    body.innerHTML = `<p class="muted">暂时无法读取硬件指标：${escapeHtml(e.message)}（核心防勒索功能不受影响）</p>`;
+  }
+}
+
+function renderMetrics(m) {
+  const body = $("metricsBody");
+  const cap = m.capabilities || {};
+
+  // 状态评级：0=正常(绿) 1=注意(琥珀) 2=异常(红)。每张卡独立评级。
+  const grade = (v, warn, bad) => (v == null ? 0 : v >= bad ? 2 : v >= warn ? 1 : 0);
+  const GRADE = { 0: ["ok", "正常"], 1: ["warn", "注意"], 2: ["bad", "异常"] };
+  const cardHead = (title, g, extra = "") => {
+    const [cls, txt] = GRADE[g];
+    return `<h4><span>${title}</span><span class="mc-pill ${cls}">${txt}</span>${extra}</h4>`;
+  };
+
+  // 卡1：系统运行状况
+  const up = m.uptime || {};
+  const gTemp = cap.cpu_temp ? grade(m.cpu.temp_c, 80, 90) : 0;
+  const gLoad = grade(m.cpu && m.cpu.load1 != null ? m.cpu.load1 : null, 8, 16);
+  const g1 = Math.max(gTemp, gLoad);
+  const tempBad = gTemp === 2;
+  const worst1 = gTemp >= gLoad
+    ? (gTemp ? (gTemp === 2 ? "CPU 温度过高" : "CPU 温度偏高") : "")
+    : (gLoad ? "系统负载过高" : "");
+  let card1 = `
+    <div class="metric-card mc-${GRADE[g1][0]}">
+      ${cardHead("系统运行状况", g1)}
+      <div class="metric-row"><span class="status-dot ${GRADE[g1][0] === "bad" ? "bad" : GRADE[g1][0] === "warn" ? "warn" : "ok"}"></span>
+        <b>${escapeHtml(m.hostname || "NAS")}</b>
+        ${worst1 ? `<span class="mc-reason">${worst1}</span>` : ""}</div>
+      <div class="metric-kv"><span>运行时间</span><b>${up.days || 0} 天 ${up.hours || 0} 小时 ${up.minutes || 0} 分</b></div>
+      ${cap.cpu_temp ? `<div class="metric-kv"><span>CPU 温度</span><b class="${gTemp === 2 ? "t-warn" : gTemp === 1 ? "t-warn" : "t-ok"}">${m.cpu.temp_c}°C</b></div>` : ""}
+      ${m.cpu && m.cpu.load1 != null ? `<div class="metric-kv"><span>负载</span><b>${m.cpu.load1}</b></div>` : ""}
+      ${cap.fan && m.fan ? (m.fan.cpu_fan_rpm ? `<div class="metric-kv"><span>CPU 风扇</span><b>${m.fan.cpu_fan_rpm} RPM</b></div>` : "") + (m.fan.fan_rpm ? `<div class="metric-kv"><span>机箱风扇</span><b>${m.fan.fan_rpm} RPM</b></div>` : "") : ""}
+    </div>`;
+
+  // 卡2：资源监控（网速行首轮用 -- 占位，避免卡片出现/消失引起跳动）
+  const gCpu = cap.cpu_percent ? grade(m.cpu.percent, 80, 95) : 0;
+  const gMem = cap.mem ? grade(m.mem.percent, 80, 90) : 0;
+  const g2 = Math.max(gCpu, gMem);
+  const hasNet = m.net && m.net.ifaces && m.net.ifaces.length;
+  const fastest = hasNet
+    ? m.net.ifaces.reduce((a, b) => ((b.rx_bps || 0) + (b.tx_bps || 0) > (a.rx_bps || 0) + (a.tx_bps || 0) ? b : a))
+    : null;
+  let card2 = `
+    <div class="metric-card mc-${GRADE[g2][0]}">
+      ${cardHead("资源监控", g2)}
+      <div class="donut-row">
+        ${cap.cpu_percent ? donut("CPU", m.cpu.percent, gCpu === 2 ? "var(--red)" : gCpu === 1 ? "var(--amber)" : "var(--z-storage)") : ""}
+        ${cap.mem ? donut("RAM", m.mem.percent, gMem === 2 ? "var(--red)" : gMem === 1 ? "var(--amber)" : "var(--z-monitor)") : ""}
+        ${!cap.cpu_percent && !cap.mem ? `<p class="muted">不可用</p>` : ""}
+      </div>
+      ${hasNet ? `<div class="metric-kv net"><span>↓ ${fmtBps(fastest.rx_bps)}</span><span>↑ ${fmtBps(fastest.tx_bps)}</span></div>
+      <p class="muted" style="margin:2px 0 0">网卡 ${escapeHtml(fastest.iface)}${m.net.ifaces.length > 1 ? `（共 ${m.net.ifaces.length} 个）` : ""}</p>` : ""}
+    </div>`;
+
+  // 卡3：存储（卷用量条）
+  const volRows = (m.volumes || []).map((v) => {
+    const known = state.volumes.find((x) => x.mountpoint === v.mount);
+    const label = known ? known.name : v.mount.split("/").pop() || v.mount;
+    const pct = Math.max(0, Math.min(100, v.percent));
+    return `
+      <div class="vol-meter">
+        <div class="vol-meter-head"><span>${escapeHtml(label)}</span>
+          <span class="muted">${fmtKB(v.used_kb)} / ${fmtKB(v.total_kb)}（${pct}%）</span></div>
+        <div class="meter"><i style="width:${pct}%" class="${pct >= 90 ? "danger" : pct >= 75 ? "warn" : ""}"></i></div>
+      </div>`;
+  }).join("");
+  const g3 = (m.volumes || []).reduce((g, v) => Math.max(g, grade(v.percent, 75, 90)), 0);
+  const card3 = (m.volumes || []).length ? `
+    <div class="metric-card mc-${GRADE[g3][0]}">
+      ${cardHead("存储", g3)}
+      ${volRows}
+    </div>` : "";
+
+  // 卡4：磁盘槽位图 —— 按类型分组（nvme=M.2，sdX=SATA/HDD），显示容量/温度/实时读写
+  const gDisk = (d) => d.temp_c == null ? 0 : grade(d.temp_c, 50, 60);
+  const g4 = (m.disks || []).reduce((g, d) => Math.max(g, gDisk(d)), 0);
+  const ioTxt = (d) => {
+    if (d.read_bps == null && d.write_bps == null) return "";
+    return `<span class="chip-io">↓${fmtBps(d.read_bps)} ↑${fmtBps(d.write_bps)}</span>`;
+  };
+  const chip = (d, label) => {
+    const tb = (d.size_b / 1024**4).toFixed(1);
+    const gd = gDisk(d);
+    const temp = d.temp_c != null ? `<span class="chip-temp ${GRADE[gd][0]}">${d.temp_c}°C</span>` : "";
+    return `
+      <div class="disk-chip" title="${escapeHtml(d.model)} ${tb}TB">
+        <b>${label}</b>
+        <span>${tb}TB</span>
+        ${temp}
+        ${ioTxt(d)}
+      </div>`;
+  };
+  const nvme = (m.disks || []).filter((d) => d.name.startsWith("nvme"));
+  const sata = (m.disks || []).filter((d) => !d.name.startsWith("nvme"));
+  let diskGroups = "";
+  if (nvme.length) {
+    diskGroups += `<div class="bay-group"><span class="bay-label">M.2</span>${
+      nvme.map((d, i) => chip(d, `SSD ${i + 1}`)).join("")}</div>`;
+  }
+  if (sata.length) {
+    diskGroups += `<div class="bay-group"><span class="bay-label">3.5"/SATA</span>${
+      sata.map((d, i) => chip(d, `HDD ${i + 1}`)).join("")}</div>`;
+  }
+  const card4 = (m.disks || []).length ? `
+    <div class="metric-card mc-${GRADE[g4][0]}">
+      ${cardHead("磁盘", g4, `<span class="muted">（${m.disks.length} 块）</span>`)}
+      ${diskGroups}
+    </div>` : "";
+
+  body.innerHTML = card1 + card2 + card3 + card4;
+}
+
+/* ------------------------- 监控路径选择器 ------------------------- */
+
+// 弹窗树形勾选：存储卷（可展开一级子目录）→ 多选 → 写回监控路径输入框。
+async function openPathPicker() {
+  // 根节点用真实挂载路径（QNAP 的 mountpoint 是卷ID，需从指标里取实际路径）
+  let roots = [];
+  try {
+    const mm = await api("/api/system/metrics");
+    if (mm.ok && mm.metrics.volumes) {
+      roots = mm.metrics.volumes.map((v) => {
+        const known = state.volumes.find((x) => x.mountpoint === v.mount);
+        return {
+          mount: v.mount,
+          name: known ? known.name : (v.mount.split("/").pop() || v.mount),
+        };
+      });
+    }
+  } catch (e) { /* 忽略 */ }
+  if (!roots.length) {
+    roots = state.volumes
+      .filter((v) => (v.mountpoint || "").startsWith("/"))
+      .map((v) => ({ mount: v.mountpoint, name: v.name }));
+  }
+  const sel = new Set(($("watchPaths").value || "").split(",").map((s) => s.trim()).filter(Boolean));
+
+  const volRow = (v) => `
+    <div class="pick-vol" data-vol="${escapeHtml(v.mount)}">
+      <label class="pick-row">
+        <input type="checkbox" class="pick-cb" data-vol="1"
+               data-path="${escapeHtml(v.mount)}" ${sel.has(v.mount) ? "checked" : ""}>
+        <b>${escapeHtml(v.name)}</b>
+        <span class="muted">${escapeHtml(v.mount)}</span>
+      </label>
+      <button class="btn ghost pick-expand" data-path="${escapeHtml(v.mount)}">展开子目录 ▾</button>
+      <div class="pick-children" hidden></div>
+    </div>`;
+
+  openModal(
+    "选择监控路径",
+    `<p class="muted" style="margin-top:0">勾选要实时监控的存储卷或其中的文件夹；可多选。留空 = 监控当前选中卷。</p>
+     ${roots.map(volRow).join("") || `<p class="muted">未发现存储卷</p>`}`,
+    `<button class="btn ghost" data-act="all">全选卷</button>
+     <button class="btn ghost" data-act="clear">清空</button>
+     <button class="btn ghost" data-act="close">取消</button>
+     <button class="btn primary" data-act="ok">确定</button>`,
+    {
+      all: () => {
+        document.querySelectorAll("#modalBody .pick-cb[data-vol]").forEach((cb) => (cb.checked = true));
+      },
+      clear: () => {
+        document.querySelectorAll("#modalBody .pick-cb").forEach((cb) => (cb.checked = false));
+      },
+      ok: () => {
+        const picked = [...document.querySelectorAll("#modalBody .pick-cb:checked")]
+          .map((cb) => cb.dataset.path).filter(Boolean);
+        // 父目录已选中时其子路径冗余，去重
+        const uniq = picked.filter((p) => !picked.some((o) => o !== p && p.startsWith(o + "/")));
+        $("watchPaths").value = uniq.join(", ");
+        localStorage.setItem("nassafe_watchpaths", $("watchPaths").value);
+        closeModal();
+        toast(uniq.length ? `已选择 ${uniq.length} 个监控路径` : "已清空监控路径（留空=监控当前选中卷）", "ok");
+      },
+    }
+  );
+
+  // 子目录懒加载（只列一级，够用且不重）
+  $("modalBody").onclick = async (ev) => {
+    const btn = ev.target.closest(".pick-expand");
+    if (!btn) return;
+    const wrap = btn.parentElement.querySelector(".pick-children");
+    if (!wrap.hidden) { wrap.hidden = true; btn.textContent = "展开子目录 ▾"; return; }
+    if (!wrap.dataset.loaded) {
+      btn.textContent = "读取中…";
+      try {
+        const base = btn.dataset.path.replace(/\/+$/, "");
+        const data = await api(`/api/list_dir?path=${encodeURIComponent(base)}`);
+        wrap.innerHTML = (data.dirs || []).map((d) => {
+          const p = base + "/" + d;
+          return `<label class="pick-row sub">
+            <input type="checkbox" class="pick-cb" data-path="${escapeHtml(p)}" ${sel.has(p) ? "checked" : ""}>
+            📁 ${escapeHtml(d)}
+          </label>`;
+        }).join("") || `<p class="muted">没有子目录</p>`;
+        wrap.dataset.loaded = "1";
+      } catch (e) {
+        wrap.innerHTML = `<p class="muted">读取失败：${escapeHtml(e.message)}</p>`;
+      }
+    }
+    wrap.hidden = false;
+    btn.textContent = "收起 ▴";
+  };
+}
+
+/* ------------------------- 本地 AI 自动发现 ------------------------- */
+
+function applyDiscovery(f) {
+  $("aiProvider").value = "ollama";
+  aiProviderChanged();
+  $("aiBase").value = f.base_url;
+  const best = f.recommended || (f.models && f.models.length ? (f.models[0].name || f.models[0]) : "");
+  if (best) $("aiModel").value = best;
+  saveAI();
+  toast(`已自动配置：${f.base_url}（模型：${f.models && f.models.length ? f.models[0] : "默认"}）`, "ok");
+  if (f.hint) setTimeout(() => toast(f.hint, "warn"), 800);
+}
+
+async function aiDiscover() {
+  const btn = $("aiDiscoverBtn");
+  btn.disabled = true;
+  btn.textContent = "搜索中（约 5-10 秒）…";
+  try {
+    const data = await api("/api/ai/discover", { method: "POST", body: "{}" });
+    const found = data.found || [];
+    if (!found.length) {
+      toast("没有找到本地 AI 服务。确认 Ollama 已安装（可用 DeployEasy 一键部署），且监听 0.0.0.0", "err");
+    } else if (found.length === 1) {
+      applyDiscovery(found[0]);
+    } else {
+      openModal(
+        "找到多个本地 AI 服务",
+        found.map((f, i) => `
+          <label class="pick-row">
+            <input type="radio" name="aiDisc" value="${i}" ${i === 0 ? "checked" : ""}>
+            <b>${escapeHtml(f.base_url)}</b>
+            <span class="muted">${(f.models || []).length} 个模型${f.hint ? " · ⚠ 需设置监听" : ""}</span>
+          </label>
+          ${f.models && f.models.length ? `<p class="muted" style="margin:0 0 8px 24px">模型：${f.models.map(escapeHtml).join("、")}</p>` : ""}
+        `).join(""),
+        `<button class="btn ghost" data-act="close">取消</button>
+         <button class="btn primary" data-act="ok">使用选中的</button>`,
+        {
+          ok: () => {
+            const r = document.querySelector("input[name='aiDisc']:checked");
+            if (r) applyDiscovery(found[Number(r.value)]);
+            closeModal();
+          },
+        }
+      );
+    }
+  } catch (e) {
+    toast("搜索失败：" + e.message, "err");
+  }
+  btn.disabled = false;
+  btn.textContent = "🔍 自动搜索本地 AI";
+}
+
+
 
 // 顶栏标签页：总览 / 快照时间轴 / 实时监控 / 设置；风险横幅全局常驻。
 const VIEWS = ["home", "snapshots", "monitor", "settings"];
@@ -207,6 +506,8 @@ function showView(name) {
   applyView();
   // 直接点进时间轴页但还没选过卷：恢复上次选的卷，没记录就自动选第一个
   if (name === "snapshots" && !state.activeVolume) autoSelectVolume();
+  // 回到主页时立即刷新仪表盘
+  if (name === "home") loadMetrics();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -912,10 +1213,9 @@ function aiProviderChanged() {
   const hint = $("aiHint");
   if (isOllama) {
     hint.innerHTML =
-      "本地 Ollama 免密钥，数据不出 NAS。还没装？" +
-      "① 用 <b>DeployEasy 一键部署 Ollama</b>（最简单），或到 ollama.com 手动安装；" +
-      "② 装好拉一个模型：<code>ollama pull qwen2.5:7b</code>；" +
-      "③ 服务地址填 <code>http://NAS的IP:11434/v1</code> —— " +
+      "支持 Ollama / LM Studio / llama.cpp / vLLM 等本地模型服务，数据不出 NAS。" +
+      "还没装？用 <b>DeployEasy 一键部署 Ollama</b>（最简单），或点下方「自动搜索」自动发现并配置；" +
+      "手动配置：服务地址填 <code>http://NAS的IP:11434/v1</code> —— " +
       "注意别填 localhost：NAS Safe 跑在 Docker 里，容器内的 localhost 不是 NAS 本机。";
   } else {
     hint.textContent = "去对应平台申请一个 API Key 粘贴到上面即可（DeepSeek 最便宜，国内直连）。数据将发送给该云端供应商。";
@@ -1107,6 +1407,19 @@ document.querySelectorAll("#mainTabs .tab").forEach((t) => {
   t.onclick = () => showView(t.dataset.view);
 });
 applyView();
+
+// 系统仪表盘：手动刷新 + 15s 自动轮询（仅主页可见时取数，SSH 采集有 15s 缓存）
+$("metricsRefreshBtn").onclick = () => loadMetrics(true);
+$("pickPathsBtn").onclick = openPathPicker;
+$("aiDiscoverBtn").onclick = aiDiscover;
+loadMetrics();
+setInterval(() => {
+  if ((localStorage.getItem("nassafe_view") || "home") === "home") loadMetrics();
+}, 15000);
+
+// 监控路径：恢复上次选择器保存的值（优先于自动填充）
+const savedWp = localStorage.getItem("nassafe_watchpaths");
+if (savedWp != null) $("watchPaths").value = savedWp;
 
 // 篡改检测告警轮询：每 30s 拉一次 /api/alerts，发现异常则顶栏告警
 pollAlerts();

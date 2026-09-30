@@ -138,6 +138,129 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .tab.active[data-view="monitor"] { background: var(--z-monitor-soft); border-color: var(--z-monitor); }
 .tab.active[data-view="settings"] { background: var(--z-guard-soft); border-color: var(--z-guard); }
 
+/* --------------------------- 系统仪表盘 --------------------------- */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 14px;
+  align-items: start;   /* 隐藏卡片不破格：剩余卡片自动补位铺满 */
+}
+.metric-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--green);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+}
+.metric-card.mc-warn { border-left-color: var(--amber); }
+.metric-card.mc-bad { border-left-color: var(--red); }
+.metric-card h4 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mc-pill {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 999px;
+}
+.mc-pill.ok { color: var(--green); background: var(--green-bg); }
+.mc-pill.warn { color: var(--amber); background: var(--amber-bg); }
+.mc-pill.bad { color: var(--red); background: var(--red-bg); }
+.mc-reason { color: var(--amber); font-size: 12px; font-weight: 600; }
+.metric-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); }
+.status-dot.warn { background: var(--amber); }
+.status-dot.bad { background: var(--red); }
+.metric-kv {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--text-2);
+  padding: 3px 0;
+}
+.metric-kv b { color: var(--text); font-weight: 600; }
+.metric-kv b.t-ok { color: var(--green); }
+.metric-kv b.t-warn { color: var(--amber); }
+.metric-kv.net { font-family: var(--font-mono); font-size: 15px; color: var(--text); }
+.donut-row { display: flex; gap: 18px; align-items: center; margin: 4px 0 8px; }
+.donut { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.donut-label { font-size: 12px; color: var(--text-2); font-weight: 600; }
+.vol-meter { margin-bottom: 10px; }
+.vol-meter-head { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+.vol-meter-head span:first-child { color: var(--text); font-weight: 600; }
+.meter {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.meter i {
+  display: block;
+  height: 100%;
+  background: var(--z-storage);
+  border-radius: 999px;
+  transition: width .5s var(--ease);
+}
+.meter i.warn { background: var(--amber); }
+.meter i.danger { background: var(--red); }
+.bay-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.bay-label {
+  font-size: 11px;
+  color: var(--text-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+.disk-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 74px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-top: 2px solid var(--green);
+  border-radius: var(--radius-xs);
+  padding: 7px 9px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.disk-chip b { color: var(--text); font-size: 12px; }
+.chip-temp { font-weight: 700; }
+.chip-temp.ok { color: var(--green); }
+.chip-temp.warn { color: var(--amber); }
+.chip-temp.bad { color: var(--red); }
+.chip-io { font-family: var(--font-mono); font-size: 10px; white-space: nowrap; }
+
+/* --------------------------- 弹窗选择器（监控路径 / AI 服务） --------------------------- */
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  font-size: 13px;
+}
+.pick-row:hover { background: var(--surface-2); }
+.pick-row.sub { margin-left: 18px; }
+.pick-vol {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.pick-vol .pick-row { padding-top: 0; }
+.pick-expand { margin: 4px 0 6px 24px; padding: 3px 10px; font-size: 12px; }
+.pick-children { margin-left: 24px; }
+
 .layout {
   max-width: 1120px;
   margin: 0 auto;

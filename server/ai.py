@@ -71,6 +71,194 @@ def is_ready() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 本地 AI 自动发现（自动搜索 + 自动选最优模型）
+#
+# 支持：Ollama(11434) / LM Studio(1234) / llama.cpp(8080) / vLLM(8000) /
+#       LocalAI(8080) / Xinference(9997) / LiteLLM(4000) —— 全部 OpenAI 兼容。
+# 选优：本地拿不到跑分，用确定性代理 —— 模型体积(字节) + 名称参数量(70b>7b)
+#       + 优质家族加成 + 排除 embedding/rerank 类，选综合分最高的。
+# ---------------------------------------------------------------------------
+
+_LOCAL_PORTS = [11434, 1234, 8080, 8000, 9997, 4000]
+_LAN_SCAN_PORTS = [11434, 1234]  # 局域网全段只扫最常见的两个端口，控制耗时
+_OLLAMA_UA = "Mozilla/5.0 (compatible; NAS Safe/1.0)"
+
+
+def _http_json(url: str, timeout: float = 2.5):
+    req = urllib.request.Request(url)
+    req.add_header("User-Agent", _OLLAMA_UA)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def _identify(host: str, port: int):
+    """识别 host:port 上跑的本地 AI 服务。返回 {kind, base_url, models} 或 None。"""
+    base = f"http://{host}:{port}"
+
+    # Ollama 原生接口（带模型体积，选优最准）
+    try:
+        body = _http_json(base + "/api/tags", 2.0)
+        models = [
+            {"name": m.get("name"), "size_b": m.get("size")}
+            for m in body.get("models", []) if m.get("name")
+        ]
+        if models:
+            return {"kind": "ollama", "base_url": base + "/v1", "models": models}
+    except Exception:  # noqa: BLE001
+        pass
+
+    # OpenAI 兼容 /v1/models（LM Studio / llama.cpp / vLLM / LocalAI / Xinference / LiteLLM）
+    try:
+        body = _http_json(base + "/v1/models", 2.0)
+        ids = [d.get("id") for d in body.get("data", []) if d.get("id")]
+        if ids:
+            return {"kind": "openai", "base_url": base + "/v1",
+                    "models": [{"name": i} for i in ids]}
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+_GOOD_FAMILIES = ("qwen", "deepseek", "llama", "glm", "mistral", "phi", "gemma", "gpt")
+
+
+def _model_score(name: str, size_b) -> float:
+    """模型优选打分。-1 = 排除（embedding/rerank/whisper 等非对话模型）。"""
+    import re
+
+    n = name or ""
+    if re.search(r"embed|bge-|rerank|nomic|clip|whisper|vision|guard", n, re.I):
+        return -1.0
+    score = 0.0
+    if size_b:
+        score += float(size_b) / 1e9          # Ollama 真实体积(GB)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*[bB](?![a-zA-Z0-9])", n)
+    if m:
+        score += float(m.group(1)) * 2        # 名称里的参数量权重更高
+    low = n.lower()
+    if any(k in low for k in _GOOD_FAMILIES):
+        score += 3.0
+    if "instruct" in low or "chat" in low:
+        score += 1.0
+    return score
+
+
+def _pick_best(models: list):
+    """从模型列表里选综合分最高的；全被排除时退化为第一个。"""
+    best, best_s = None, float("-inf")
+    for m in models or []:
+        s = _model_score(m.get("name"), m.get("size_b"))
+        if s > best_s:
+            best, best_s = m, s
+    if best is None and models:
+        best = models[0]
+    return (best or {}).get("name")
+
+
+def _tcp_scan(hosts: list, ports: list, timeout: float = 1.0, join_s: float = 6.0) -> set:
+    """并发 TCP 探测，返回存活的 (host, port) 集合。"""
+    import socket
+    import threading
+
+    alive: set = set()
+    lock = threading.Lock()
+
+    def _probe(h: str, p: int) -> None:
+        s = socket.socket()
+        s.settimeout(timeout)
+        try:
+            s.connect((h, p))
+            s.close()
+            with lock:
+                alive.add((h, p))
+        except OSError:
+            pass
+
+    threads = [threading.Thread(target=_probe, args=(h, p), daemon=True)
+               for h in hosts for p in ports]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(join_s)
+    return alive
+
+
+def discover_local() -> dict:
+    """搜索本机/局域网/NAS 上的本地 AI 服务，自动选出每个服务上的最优模型。
+
+    三步：① 常见候选主机 × 全端口集（NAS IP / 容器网关 / host.docker.internal）
+          ② NAS 网段受限扫描（只扫 11434/1234，约 5-8 秒）
+          ③ 经 NAS 本机通道探测（服务只监听 127.0.0.1 时容器不可达，单独提示）"""
+    found: list = []
+    seen: set = set()  # 已识别的 (host, port)
+
+    # ① 候选主机 × 全端口集
+    cand_hosts = ["host.docker.internal", "172.17.0.1", "172.18.0.1"]
+    nas_ip = os.environ.get("NASSAFE_QNAP_HOST") or os.environ.get("NASSAFE_HOST")
+    if nas_ip and nas_ip not in ("127.0.0.1", "localhost"):
+        cand_hosts.insert(0, nas_ip)
+    for h, p in sorted(_tcp_scan(cand_hosts, _LOCAL_PORTS)):
+        info = _identify(h, p)
+        if info:
+            info["recommended"] = _pick_best(info["models"])
+            info["via"] = "candidate"
+            found.append(info)
+            seen.add((h, p))
+
+    # ② NAS 网段受限扫描
+    if nas_ip:
+        try:
+            import ipaddress
+
+            net = ipaddress.ip_network(f"{nas_ip}/24", strict=False)
+            hosts = [str(h) for h in net.hosts() if str(h) != nas_ip]
+            for h, p in sorted(_tcp_scan(hosts, _LAN_SCAN_PORTS)):
+                if (h, p) in seen:
+                    continue
+                info = _identify(h, p)
+                if info:
+                    info["recommended"] = _pick_best(info["models"])
+                    info["via"] = "lan"
+                    found.append(info)
+        except Exception:  # noqa: BLE001 网段计算/扫描失败不致命
+            pass
+
+    # ③ NAS 本机通道（经 SSH 在 NAS 上探测，能发现"只监听 127.0.0.1"的情况）
+    try:
+        from qnap import default_client
+
+        script = ("curl -s -m 2 http://127.0.0.1:11434/api/tags 2>/dev/null; "
+                  "echo '---'; "
+                  "curl -s -m 2 http://127.0.0.1:1234/v1/models 2>/dev/null")
+        out = default_client().run_shell(script)
+        parts = out.split("---")
+        nas_models = None
+        if parts and parts[0].strip():
+            try:
+                body = json.loads(parts[0].strip())
+                nas_models = [{"name": m.get("name"), "size_b": m.get("size")}
+                              for m in body.get("models", []) if m.get("name")]
+            except Exception:  # noqa: BLE001
+                pass
+        if nas_models and nas_ip:
+            reachable = any(f["base_url"].startswith(f"http://{nas_ip}:") for f in found)
+            if not reachable:
+                found.append({
+                    "kind": "ollama",
+                    "base_url": f"http://{nas_ip}:11434/v1",
+                    "models": nas_models,
+                    "recommended": _pick_best(nas_models),
+                    "via": "nas_local",
+                    "hint": "本地 AI 服务在 NAS 上运行，但只监听了 127.0.0.1，容器内可能连不上；"
+                            "请设置 OLLAMA_HOST=0.0.0.0 后重启服务（DeployEasy 部署的默认可达）",
+                })
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {"found": found}
+
+
+# ---------------------------------------------------------------------------
 # 对话调用（统一 OpenAI 兼容接口）
 # ---------------------------------------------------------------------------
 

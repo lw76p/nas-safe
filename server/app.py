@@ -54,6 +54,7 @@ import behavior   # noqa: E402  v3 勒索行为检测
 import notify     # noqa: E402  多渠道告警通知（微信服务号/Webhook/Bark/ntfy/邮件）
 import ai         # noqa: E402  AI 解读（多云供应商 + 本地 Ollama）
 import autosnapshot  # noqa: E402  自动快照调度器（每小时 vital 锁快照 + 保留清理）
+import metrics  # noqa: E402  系统指标采集（仪表盘：CPU/RAM/温度/网速/磁盘/卷容量）
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
@@ -402,6 +403,37 @@ class Handler(BaseHTTPRequestHandler):
                 if not paths:
                     raise StorageError("缺少 paths 参数（可传多个 paths=...）")
                 self._send_json(behavior.detect_behavior(paths))
+            elif route == "/api/system/metrics":
+                try:
+                    force = bool(query.get("force"))
+                    self._send_json({"ok": True, "metrics": metrics.collect(force=force)})
+                except Exception as exc:  # noqa: BLE001 指标采集失败不拖垮页面
+                    self._send_json({"ok": False, "error": str(exc)})
+
+            elif route == "/api/list_dir":
+                # 只读：列出生产目录一级子目录（监控路径选择器用）。
+                # 安全校验：绝对路径、禁止 ..、必须落在已知卷挂载点范围内。
+                # 注意 QNAP 后端 volume.mountpoint 是卷ID，真实路径从指标采集的 df 里取。
+                path = unquote((query.get("path") or [""])[0])
+                if not path.startswith("/") or ".." in path.split("/"):
+                    raise StorageError("路径不合法")
+                mounts = set()
+                try:
+                    for v in storage.list_all_volumes():
+                        mp = str(getattr(v, "mountpoint", "") or "")
+                        if mp.startswith("/"):
+                            mounts.add(mp.rstrip("/"))
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    for v in metrics.collect().get("volumes", []):
+                        mounts.add(str(v.get("mount", "")).rstrip("/"))
+                except Exception:  # noqa: BLE001
+                    pass
+                mounts.discard("")
+                if mounts and not any(path == m or path.startswith(m + "/") for m in mounts):
+                    raise StorageError("路径必须在存储卷挂载点范围内")
+                self._send_json({"ok": True, **metrics.list_dirs(path)})
             elif route == "/api/notify/config":
                 self._send_json({
                     "ok": True,
@@ -532,6 +564,10 @@ class Handler(BaseHTTPRequestHandler):
                         cfg["api_key"] = old["api_key"]
                 ai.save_config(cfg)
                 self._send_json({"ok": True, "ready": ai.is_ready(), "config": ai.load_config()})
+
+            elif route == "/api/ai/discover":
+                # 自动搜索本地 AI（Ollama）：候选地址 + 局域网受限扫描 + NAS 本机通道
+                self._send_json({"ok": True, **ai.discover_local()})
 
             elif route == "/api/ai/interpret":
                 text = (payload.get("text") or "").strip()

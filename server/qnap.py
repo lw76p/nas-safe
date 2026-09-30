@@ -283,6 +283,30 @@ class QnapClient:
                 pass
             self._ssh = None
 
+    def run_shell(self, script: str) -> str:
+        """执行一段原始 shell 脚本（只读探测，如系统指标采集）。
+
+        SSH 模式经远端 shell；本地模式直接 /bin/sh -c。"""
+        if self.host in (None, "", "127.0.0.1", "localhost"):
+            import subprocess
+
+            proc = subprocess.run(
+                ["/bin/sh", "-c", script],
+                capture_output=True, text=True, timeout=self.timeout,
+            )
+            return (proc.stdout or "") + (proc.stderr or "")
+        import paramiko  # 懒加载
+
+        if self._ssh is None:
+            self._ssh = paramiko.SSHClient()
+            self._ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self._ssh.connect(
+                self.host, port=22, username=self.user, password=self.password,
+                timeout=15, look_for_keys=False, allow_agent=False,
+            )
+        stdin, stdout, stderr = self._ssh.exec_command(script, timeout=self.timeout)
+        return stdout.read().decode(errors="replace") + stderr.read().decode(errors="replace")
+
     # -- 登录 ----------------------------------------------------------
 
     def login(self) -> None:
