@@ -1940,7 +1940,7 @@ function showDesktopAgentGuide() {
        <li><b>右键解压</b>到任意文件夹，双击里面的 <code>NASSafeAgent.exe</code></li>
        <li>自动弹出「安装 NAS Safe 助手」窗口并显示进度，几秒后提示「安装完成」——
            <b>不用选地址、不用填任何东西</b></li>
-       <li>右下角出现绿色盾牌图标，鼠标放上去显示「NAS Safe · 快照保护中」</li>
+       <li>右下角出现蓝色盾牌图标（和软件同色），鼠标放上去显示「NAS Safe · 快照保护中」</li>
      </ol>
      <p class="muted">不需要安装 Python，也不需要管理员权限。<br>
        若 Windows 提示「已保护你的电脑」：点 <b>更多信息 → 仍要运行</b>（未签名软件的正常提示）。<br>

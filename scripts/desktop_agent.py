@@ -9,8 +9,8 @@
   · 桌面端与微信端**同步发**：小助手在线时，本机弹窗与微信/邮件同一时刻发出；
     不判断用户是否坐在电脑前（判断空闲既易误判、又要常驻检测，不划算）
   · 小助手被用户关闭：自动上报离线，改由 NAS 服务端看门狗继续发微信/邮件，提醒不丢
-  · 常驻形态：系统托盘图标（右下角通知区域）—— 绿色盾牌，悬停显示「NAS Safe · 快照保护中」；
-    有未读告警时绿色圆中央出现红色感叹号，左键看未读、右键菜单可全部已读或退出
+  · 常驻形态：系统托盘图标（右下角通知区域）—— 产品蓝盾牌，悬停显示「NAS Safe · 快照保护中」；
+    有未读告警时蓝色圆中央出现红色感叹号，左键看未读、右键菜单可全部已读或退出
 
 阅读规则（按用户要求）：
   · 同一条异常**只弹一次**，异常恢复后才可能再弹
@@ -33,6 +33,7 @@ import atexit
 import ctypes
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -348,12 +349,12 @@ def _self_cmd():
     return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
 
 
-def ensure_autostart(base, interval):
+def ensure_autostart(base, interval, exe=None):
     if os.name != "nt":
         return False
     try:
         import winreg
-        cmd = f'{_self_cmd()} --nas "{base}" --interval {interval}'
+        cmd = (f'"{exe}"' if exe else _self_cmd()) + f' --nas "{base}" --interval {interval}'
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                              r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
         winreg.SetValueEx(key, "NASSafeAgent", 0, winreg.REG_SZ, cmd)
@@ -382,12 +383,12 @@ def remove_autostart():
         return False
 
 
-def register_protocol():
+def register_protocol(exe=None):
     if os.name != "nt":
         return False
     try:
         import winreg
-        inner = f'{_self_cmd()} --protocol "%1"'
+        inner = (f'"{exe}"' if exe else _self_cmd()) + ' --protocol "%1"'
         root = rf"Software\Classes\{PROTOCOL}"
         for sub, name, val in (
             ("", None, "URL:NAS Safe Agent Protocol"),
@@ -449,37 +450,200 @@ def collect(m):
     return out
 
 
+def install_dir() -> str:
+    """小助手的固定安装位置（当前用户目录下，不需要管理员权限）。"""
+    base = os.environ.get("APPDATA") if os.name == "nt" else None
+    return os.path.join(base or os.path.expanduser("~"), "NASSafeAgent")
+
+
+def self_install_flow(base_hint=""):
+    """双击下载的 EXE 时：把自己安装到固定目录并启动守护。
+
+    步骤：确定 NAS 地址 → 停掉旧实例 → 复制自身 → 写开机自启与协议 →
+          显示「正在安装」进度 → 启动安装副本（缩到托盘）→ 自身退出。
+    全程不需要管理员权限，也不需要用户解压或选择。
+    """
+    frozen = getattr(sys, "frozen", False)
+    src = sys.executable if frozen else os.path.abspath(__file__)
+    dst_dir = install_dir()
+    dst = os.path.join(dst_dir, "NASSafeAgent.exe" if frozen else "desktop_agent.py")
+    if os.path.abspath(os.path.dirname(src)) == os.path.abspath(dst_dir):
+        return None  # 已经是安装后的副本，正常守护即可
+
+    # 1) NAS 地址：命令行 > 包内预置 > 已保存 > 探测向导
+    base = (base_hint or bundled_nas() or (load_config().get("nas") or "")).rstrip("/")
+    if not base:
+        base = install_wizard(base_hint) or ""
+    if not base:
+        return None
+
+    # 2) 停掉可能正在运行的旧实例，避免文件占用
+    if agent_online():
+        agent_stop_remote()
+        time.sleep(2)
+
+    # 3) 复制到固定目录
+    try:
+        os.makedirs(dst_dir, exist_ok=True)
+        shutil.copy2(src, dst)
+    except Exception as e:
+        print("复制到安装目录失败：", e, file=sys.stderr)
+        notify("NAS Safe 安装未完成",
+               "无法写入安装目录，请先退出正在运行的小助手后重新双击")
+        return False
+
+    # 4) 写配置 / 开机自启 / 协议（都指向安装后的副本）
+    interval = int(load_config().get("interval") or DEFAULT_INTERVAL)
+    save_config({"nas": base, "interval": interval})
+    ensure_autostart(base, interval, exe=dst)
+    register_protocol(exe=dst)
+
+    # 5) 进度窗口 + 启动副本，自身退出
+    install_progress(base)
+    try:
+        subprocess.Popen([dst, "--nas", base, "--interval", str(interval)],
+                         close_fds=True, creationflags=CREATE_NO_WINDOW)
+    except Exception as e:
+        print("启动小助手失败：", e, file=sys.stderr)
+        return False
+    return True
+
+
+# --------------------------------------------------------------------------
+# 现代化窗口基础组件（tkinter，无边框 + 自绘标题栏 + 主色按钮）
+# --------------------------------------------------------------------------
+FONT = "Microsoft YaHei UI"
+ACCENT = "#2563eb"
+BG = "#f6f8fc"
+CARD = "#ffffff"
+LINE = "#e6e9f0"
+TEXT = "#111827"
+TEXT2 = "#6b7280"
+
+
+def _modern_window(title, w, h, accent=ACCENT):
+    """无边框现代化窗口：返回 (root, body)。标题栏可拖动，右上角 × 关闭。"""
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.overrideredirect(True)
+    root.configure(bg=BG)
+    root.resizable(False, False)
+    try:
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+    except Exception:
+        root.geometry(f"{w}x{h}")
+
+    bar = tk.Frame(root, bg=accent, height=44)
+    bar.pack(fill="x")
+    bar.pack_propagate(False)
+    tk.Label(bar, text="  " + title, bg=accent, fg="#ffffff",
+             font=(FONT, 11, "bold")).pack(side="left")
+    close = tk.Label(bar, text="  ✕  ", bg=accent, fg="#dbeafe",
+                     font=(FONT, 11), cursor="hand2")
+    close.pack(side="right")
+
+    def _close(_e=None):
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    close.bind("<Button-1>", _close)
+    close.bind("<Enter>", lambda e: close.configure(fg="#ffffff"))
+    close.bind("<Leave>", lambda e: close.configure(fg="#dbeafe"))
+
+    def _start(e):
+        root._dx, root._dy = e.x, e.y
+
+    def _move(e):
+        try:
+            root.geometry(f"+{root.winfo_x() + e.x - root._dx}+{root.winfo_y() + e.y - root._dy}")
+        except Exception:
+            pass
+
+    bar.bind("<Button-1>", _start)
+    bar.bind("<B1-Motion>", _move)
+    body = tk.Frame(root, bg=BG)
+    body.pack(fill="both", expand=True)
+    return root, body
+
+
+def _btn(parent, text, primary=True, width=None, cmd=None, state="normal"):
+    import tkinter as tk
+    b = tk.Button(
+        parent, text=text, command=cmd, state=state,
+        bg=ACCENT if primary else "#eef1f7",
+        fg="#ffffff" if primary else TEXT,
+        activebackground="#1d4ed8" if primary else "#e2e6ef",
+        activeforeground="#ffffff" if primary else TEXT,
+        relief="flat", bd=0, padx=16, pady=6, cursor="hand2",
+        font=(FONT, 10, "bold" if primary else "normal"),
+    )
+    if width:
+        b.configure(width=width)
+    return b
+
+
+def _empty_state(body, text, sub=""):
+    import tkinter as tk
+    box = tk.Frame(body, bg=CARD, highlightthickness=1, highlightbackground=LINE)
+    box.pack(fill="both", expand=True, padx=18, pady=4)
+    tk.Label(box, text="✓", bg=CARD, fg="#16a34a", font=(FONT, 26)).pack(pady=(46, 4))
+    tk.Label(box, text=text, bg=CARD, fg=TEXT, font=(FONT, 12, "bold")).pack()
+    if sub:
+        tk.Label(box, text=sub, bg=CARD, fg=TEXT2, font=(FONT, 9)).pack(pady=(4, 0))
+
+
 def install_progress(base):
-    """自动安装：只显示进度窗口（约 2.6 秒自动关闭），不需要用户做任何选择。"""
+    """自动安装：现代化进度窗口（动画进度条约 2.4 秒走满后自动关闭）。"""
     try:
         import tkinter as tk
     except Exception:
         return
     try:
-        root = tk.Tk()
-        root.title("安装 NAS Safe 助手")
-        root.geometry("430x190")
-        root.resizable(False, False)
+        root, body = _modern_window("安装 NAS Safe 助手", 460, 236)
         root.attributes("-topmost", True)
-        try:
-            root.eval("tk::PlaceWindow . center")
-        except Exception:
-            pass
-        tk.Label(root, text="安装 NAS Safe 助手",
-                 font=("Microsoft YaHei UI", 13, "bold")).pack(pady=(24, 6))
-        st = tk.Label(root, text="正在安装…", fg="#2563eb",
-                      font=("Microsoft YaHei UI", 10))
+
+        tk.Label(body, text="正在安装 NAS Safe 助手", bg=BG, fg=TEXT,
+                 font=(FONT, 14, "bold")).pack(pady=(22, 4))
+        st = tk.Label(body, text="准备中…", bg=BG, fg=ACCENT, font=(FONT, 10))
         st.pack()
-        tk.Label(root, text=f"守护地址：{base}", fg="#666").pack(pady=(4, 10))
-        tk.Label(root, text="安装完成后会自动缩到右下角托盘图标里",
-                 fg="#888", font=("Microsoft YaHei UI", 8)).pack(side="bottom", pady=8)
+        tk.Label(body, text=f"守护地址  {base}", bg=BG, fg=TEXT2,
+                 font=(FONT, 9)).pack(pady=(4, 14))
 
-        def step2():
-            st.configure(text="正在写入开机自启…")
-            root.after(900, lambda: st.configure(text="安装完成 ✓", fg="#16a34a"))
-            root.after(1600, root.destroy)
+        track = tk.Frame(body, bg=LINE, height=8)
+        track.pack(fill="x", padx=26)
+        track.pack_propagate(False)
+        fill = tk.Frame(track, bg=ACCENT, width=0, height=8)
+        fill.place(x=0, y=0, relheight=1.0, width=0)
 
-        root.after(600, step2)
+        tk.Label(body, text="装好后自动缩到右下角托盘，只在异常时提醒",
+                 bg=BG, fg=TEXT2, font=(FONT, 8)).pack(side="bottom", pady=12)
+
+        total = 2100
+        steps = 28
+        w_full = 408
+
+        def tick(i=0):
+            p = min(1.0, i / steps)
+            try:
+                fill.place(width=int(w_full * p))
+            except Exception:
+                pass
+            if i == 7:
+                st.configure(text="正在写入安装目录…")
+            elif i == 16:
+                st.configure(text="正在设置开机自启…")
+            elif i >= steps:
+                st.configure(text="安装完成 ✓", fg="#16a34a")
+                fill.configure(bg="#16a34a")
+                root.after(900, root.destroy)
+                return
+            root.after(total // steps, lambda: tick(i + 1))
+
+        root.after(250, lambda: tick(0))
         root.mainloop()
     except Exception:
         pass
@@ -498,32 +662,26 @@ def install_wizard(base_hint=""):
         return None
     result = {"url": None, "manual": None}
 
-    root = tk.Tk()
-    root.title("安装 NAS Safe 助手")
-    root.geometry("520x320")
-    root.resizable(False, False)
+    root, body = _modern_window("安装 NAS Safe 助手", 540, 366)
     root.attributes("-topmost", True)
-    try:
-        root.eval("tk::PlaceWindow . center")
-    except Exception:
-        pass
 
-    tk.Label(root, text="安装 NAS Safe 助手", font=("Microsoft YaHei UI", 14, "bold")).pack(pady=(18, 4))
-    status = tk.Label(root, text="正在安装…", fg="#2563eb", font=("Microsoft YaHei UI", 10))
+    tk.Label(body, text="安装 NAS Safe 助手", bg=BG, fg=TEXT,
+             font=(FONT, 14, "bold")).pack(pady=(18, 3))
+    status = tk.Label(body, text="正在查找局域网内的 NAS Safe…", bg=BG, fg=ACCENT,
+                      font=(FONT, 10))
     status.pack()
-    sub = tk.Label(root, text="正在查找局域网内的 NAS Safe 服务…", fg="#666")
-    sub.pack(pady=(0, 10))
+    sub = tk.Label(body, text="", bg=BG, fg=TEXT2, font=(FONT, 9))
+    sub.pack(pady=(2, 12))
 
-    frame = tk.Frame(root)
-    frame.pack(fill="both", expand=True, padx=18)
+    frame = tk.Frame(body, bg=BG)
+    frame.pack(fill="both", expand=True, padx=20)
     var = tk.StringVar(value="")
     ent = {"box": None}
 
-    btn = tk.Button(root, text="安装并开机自启", width=24, bg="#2563eb", fg="white",
-                    state="disabled")
-    btn.pack(pady=6)
-    tk.Label(root, text="安装后缩到右下角托盘，只在异常时提醒，几乎不占资源。",
-             fg="#888", font=("Microsoft YaHei UI", 8)).pack(side="bottom", pady=8)
+    foot = tk.Frame(body, bg=BG)
+    foot.pack(fill="x", padx=20, pady=(6, 14))
+    btn = _btn(foot, "安装并开机自启", primary=True, width=20, state="disabled")
+    btn.pack(side="right")
 
     def finish(url):
         url = (url or "").strip()
@@ -538,15 +696,27 @@ def install_wizard(base_hint=""):
     def on_done(cands):
         status.configure(text="准备就绪", fg="#16a34a")
         if cands:
-            sub.configure(text=f"找到 {len(cands)} 个 NAS Safe 服务，选择要守护的地址：")
+            status.configure(text="准备就绪", fg="#16a34a")
+            sub.configure(text=f"找到 {len(cands)} 个 NAS Safe 服务，选择要守护的地址")
+            card = tk.Frame(frame, bg=CARD, highlightthickness=1, highlightbackground=LINE)
+            card.pack(fill="both", expand=True)
             for c in cands[:5]:
-                tk.Radiobutton(frame, text=c, variable=var, value=c).pack(anchor="w")
+                row = tk.Frame(card, bg=CARD)
+                row.pack(fill="x", padx=12, pady=2)
+                tk.Radiobutton(row, text=c, variable=var, value=c, bg=CARD, fg=TEXT,
+                               selectcolor="#eaf2ff", activebackground=CARD,
+                               font=(FONT, 10), bd=0, highlightthickness=0).pack(anchor="w", pady=4)
             var.set(cands[0])
             btn.configure(state="normal", command=lambda: finish(var.get()))
         else:
-            sub.configure(text="没有自动找到，请手动填写 NAS 地址：")
-            box = tk.Entry(frame, width=42)
-            box.pack(pady=8)
+            status.configure(text="没有自动找到", fg="#b45309")
+            sub.configure(text="请手动填写 NAS 地址（例如 http://192.168.8.62:8848）")
+            card = tk.Frame(frame, bg=CARD, highlightthickness=1, highlightbackground=LINE)
+            card.pack(fill="both", expand=True)
+            box = tk.Entry(card, width=44, relief="flat", bg=CARD, fg=TEXT,
+                           font=(FONT, 10), highlightthickness=1,
+                           highlightbackground=LINE, highlightcolor=ACCENT)
+            box.pack(padx=14, pady=16)
             if base_hint:
                 box.insert(0, base_hint)
             ent["box"] = box
@@ -571,8 +741,8 @@ def install_wizard(base_hint=""):
 # --------------------------------------------------------------------------
 # 系统托盘图标（ctypes + Win32，纯标准库，零第三方依赖）
 #
-#   正常：绿色盾牌；悬停提示「NAS Safe · 快照保护中」
-#   告警：绿色圆中央出现红色感叹号；悬停提示未读条数
+#   正常：产品蓝盾牌（与 NAS Safe 界面同色）；悬停提示「NAS Safe · 快照保护中」
+#   告警：蓝色圆中央出现红色感叹号；悬停提示未读条数
 #   左键：打开未读列表；右键：菜单（查看未读 / 全部已读 / 退出）
 # --------------------------------------------------------------------------
 class TrayIcon:
@@ -659,8 +829,8 @@ class TrayIcon:
             cx = cy = (size - 1) / 2.0
             r_out = size / 2.0 - 0.8
             r_in = size * 0.30
-            green = (34, 197, 94)     # 正常绿
-            red = (239, 68, 68)       # 告警红
+            blue = (37, 99, 235)      # 产品主色蓝（与 NAS Safe 界面一致）
+            red = (239, 68, 68)      # 告警红
             for y in range(size):
                 for x in range(size):
                     dx, dy = x - cx, y - cy
@@ -669,7 +839,7 @@ class TrayIcon:
                     if a <= 0:
                         continue
                     a = 1.0 if a > 1 else a
-                    r, g, b = green
+                    r, g, b = blue
                     if alert and d <= r_in:
                         r, g, b = red
                         a = 1.0 if d <= r_in - 0.8 else a
@@ -879,51 +1049,75 @@ def show_inbox_window(on_change=None):
                 i.get("text", "") for i in load_unread()[:3]))
             return
         try:
-            root = tk.Tk()
-            root.title("NAS Safe 未读提醒")
-            root.geometry("520x330")
+            root, body = _modern_window("NAS Safe · 未读提醒", 580, 400)
             root.attributes("-topmost", True)
-            tk.Label(root, text="未读提醒（点一条即标记已读）", anchor="w").pack(
-                fill="x", padx=12, pady=(12, 6))
-            frame = tk.Frame(root)
-            frame.pack(fill="both", expand=True, padx=12)
-            lb = tk.Listbox(frame, activestyle="none")
-            sb = tk.Scrollbar(frame, command=lb.yview)
-            lb.configure(yscrollcommand=sb.set)
-            lb.pack(side="left", fill="both", expand=True)
-            sb.pack(side="right", fill="y")
 
-            def refill():
-                lb.delete(0, "end")
-                for it in load_unread():
-                    lb.insert("end", f"[{it.get('ts','')}] {it.get('text','')}")
+            hdr = tk.Frame(body, bg=BG)
+            hdr.pack(fill="x", padx=20, pady=(16, 10))
+            count_lbl = tk.Label(hdr, text="", bg=BG, fg=TEXT, font=(FONT, 13, "bold"))
+            count_lbl.pack(side="left")
+            tk.Label(hdr, text="点一条即标记为已读", bg=BG, fg=TEXT2,
+                     font=(FONT, 9)).pack(side="left", padx=10)
 
-            def on_pick(_e=None):
-                sel = lb.curselection()
-                if not sel:
-                    return
+            holder = tk.Frame(body, bg=BG)
+            holder.pack(fill="both", expand=True, padx=20)
+
+            lb = None
+
+            def build_list():
+                nonlocal lb
+                for w in holder.winfo_children():
+                    w.destroy()
+                lb = None
                 items = load_unread()
-                if sel[0] < len(items):
-                    items.pop(sel[0])
-                    save_unread(items)
-                    if on_change:
-                        on_change()
-                refill()
+                count_lbl.configure(text=f"{len(items)} 条未读")
+                if not items:
+                    _empty_state(holder, "没有未读提醒", "一切正常，有异常会在这里告诉你")
+                    return
+                card = tk.Frame(holder, bg=CARD, highlightthickness=1, highlightbackground=LINE)
+                card.pack(fill="both", expand=True)
+                lb = tk.Listbox(card, bd=0, relief="flat", highlightthickness=0,
+                                bg=CARD, fg=TEXT, font=(FONT, 10), activestyle="none",
+                                selectbackground="#eaf2ff", selectforeground=TEXT,
+                                selectborderwidth=0)
+                sb = tk.Scrollbar(card, command=lb.yview, width=8, bd=0,
+                                  troughcolor=CARD, activebackground="#c7d2e5")
+                lb.configure(yscrollcommand=sb.set)
+                lb.pack(side="left", fill="both", expand=True, padx=(10, 2), pady=10)
+                sb.pack(side="right", fill="y", pady=10, padx=(0, 6))
+                for it in items:
+                    lb.insert("end", f"   {it.get('ts','')}    {it.get('text','')}")
 
-            lb.bind("<<ListboxSelect>>", on_pick)
-            lb.bind("<Double-Button-1>", on_pick)
-            refill()
-            row = tk.Frame(root)
-            row.pack(fill="x", padx=12, pady=8)
+                def on_pick(_e=None):
+                    if not lb:
+                        return
+                    sel = lb.curselection()
+                    if not sel:
+                        return
+                    arr = load_unread()
+                    if sel[0] < len(arr):
+                        arr.pop(sel[0])
+                        save_unread(arr)
+                        if on_change:
+                            on_change()
+                    build_list()
+
+                lb.bind("<<ListboxSelect>>", on_pick)
+                lb.bind("<Double-Button-1>", on_pick)
+
+            build_list()
+
+            foot = tk.Frame(body, bg=BG)
+            foot.pack(fill="x", padx=20, pady=(8, 16))
 
             def read_all():
                 save_unread([])
                 if on_change:
                     on_change()
-                refill()
+                build_list()
 
-            tk.Button(row, text="全部标记已读", command=read_all).pack(side="left")
-            tk.Button(row, text="关闭", command=root.destroy).pack(side="right")
+            _btn(foot, "全部标记已读", primary=False, cmd=read_all).pack(side="left")
+            _btn(foot, "关闭", primary=True, cmd=root.destroy).pack(side="right")
             root.mainloop()
         except Exception as e:
             print("消息窗口失败：", e, file=sys.stderr)
@@ -1273,6 +1467,12 @@ def main():
     if args.protocol:
         handle_protocol(args.protocol)
         return
+
+    # 双击下载的 EXE：自己完成安装（复制到固定目录 + 开机自启 + 启动托盘副本）
+    if getattr(sys, "frozen", False) and \
+            os.path.abspath(os.path.dirname(sys.executable)) != os.path.abspath(install_dir()):
+        if self_install_flow(args.nas.rstrip("/")):
+            return
 
     if agent_online():
         print("已有小助手在运行（如需重启，请在网页设置里先关闭再开启）。")
