@@ -97,6 +97,15 @@ async function loadVolumes() {
   const data = await api("/api/volumes");
   state.volumes = data.volumes;
 
+  // 时间轴页的卷切换下拉框：选项 = 所有存储卷
+  const sel = $("tlVolumeSel");
+  if (sel) {
+    sel.innerHTML = state.volumes
+      .map((v) => `<option value="${escapeHtml(v.mountpoint ?? String(v.id))}">${escapeHtml(v.name)}</option>`)
+      .join("");
+    if (state.activeVolume) sel.value = state.activeVolume.mountpoint ?? String(state.activeVolume.id);
+  }
+
   // 用户当前停在时间轴页但还没选过卷（如刷新后），卷列表到位后自动补选
   if (!state.activeVolume && (localStorage.getItem("nassafe_view") || "home") === "snapshots") {
     autoSelectVolume();
@@ -525,7 +534,9 @@ async function selectVolume(vol, keepSnapshot) {
   state.activeVolume = vol;
   localStorage.setItem("nassafe_volume", vol.mountpoint ?? String(vol.id));
   $("tlTitle").textContent = `快照时间轴 — ${vol.name}`;
-  $("tlSubtitle").textContent = vol.mountpoint;
+  $("tlSubtitle").textContent = `显示「${vol.name}」这一个存储卷的快照（其他卷的快照不在本时间轴内）`;
+  const sel = $("tlVolumeSel");
+  if (sel && sel.value !== (vol.mountpoint ?? String(vol.id))) sel.value = vol.mountpoint ?? String(vol.id);
   $("browseBtn").disabled = true;
   // 默认把当前卷的挂载点填入勒索行为监控路径
   if ($("watchPaths").value.trim() === "") {
@@ -548,6 +559,8 @@ async function loadSnapshots() {
   try {
     const data = await api(`/api/snapshots?volume=${encodeURIComponent(vol.mountpoint)}`);
     state.snapshots = data.snapshots;
+    $("tlSubtitle").textContent =
+      `当前显示「${vol.name}」这一个存储卷的快照，共 ${state.snapshots.length} 张 · 🔒 = 受 NAS Safe 保护`;
 
     if (!state.snapshots.length) {
       tl.innerHTML = `<p class="muted">
@@ -1412,6 +1425,12 @@ applyView();
 $("metricsRefreshBtn").onclick = () => loadMetrics(true);
 $("pickPathsBtn").onclick = openPathPicker;
 $("aiDiscoverBtn").onclick = aiDiscover;
+// 时间轴页：卷切换下拉框 —— 不用回总览，直接换卷看时间轴
+$("tlVolumeSel").onchange = () => {
+  const key = $("tlVolumeSel").value;
+  const vol = state.volumes.find((v) => (v.mountpoint ?? String(v.id)) === key);
+  if (vol) selectVolume(vol);
+};
 loadMetrics();
 setInterval(() => {
   if ((localStorage.getItem("nassafe_view") || "home") === "home") loadMetrics();
