@@ -1107,7 +1107,7 @@ function openSnapshotDetail(snap) {
 
   const canBrowse = qnap || (snap.path && snap.path.startsWith("/"));
   // 仅 NAS Safe 托管的 QNAP 快照允许整卷回滚（防误操作系统/无关快照）
-  const canRevert = qnap && /^auto-|nassafe_|snap-/.test(snap.name || "");
+  const canRevert = qnap && /^(auto-|nassafe_|snap-)/.test(snap.name || "");
   const foot = `
     <button class="btn ghost" data-act="close">关闭</button>
     ${canRevert ? `<button class="btn danger" data-act="revert">⚠ 整卷回滚到此快照</button>` : ""}
