@@ -206,8 +206,8 @@ function fmtBps(v) {
   return (v / 1048576).toFixed(1) + " MB/s";
 }
 function fmtKB(kb) {
-  if (kb >= 1048576) return (kb / 1048576).toFixed(1) + " TB";
-  if (kb >= 1024) return (kb / 1024).toFixed(0) + " GB";
+  if (kb >= 1048576) return (kb / 1048576).toFixed(1) + " GB";
+  if (kb >= 1024) return (kb / 1024).toFixed(0) + " MB";
   return kb + " KB";
 }
 function donut(label, percent, color) {
@@ -546,13 +546,13 @@ async function pushAnomalyAlert(list) {
   const worst = list.slice().sort((a, b) => b.sev - a.sev)[0];
   const summary = list.map((a) => a.title).join("；");
   const wantDesk = localStorage.getItem("nassafe_desk_notify") === "1";
-  const wantRemote = localStorage.getItem("nassafe_remote_notify") === "1";
+  const wantRemote = true; // 远端推送（微信/邮件）为默认行为，多通道自动选最快
 
   if (wantDesk && "Notification" in window && Notification.permission === "granted") {
     let body = summary;
     // AI 供应商 = 本地模型时，用本地 AI 把异常写成一句人话提醒（数据不出本机）
     const provider = ($("aiProvider") && $("aiProvider").value) || "";
-    if (provider === "ollama" && localStorage.getItem("nassafe_ai_notify") !== "0") {
+    if (provider === "ollama") { // 默认规则：本地 AI 时自动生成人话文案
       try {
         const d = await api("/api/ai/ask", {
           method: "POST",
@@ -2085,11 +2085,7 @@ refreshAgentState();
 setInterval(() => { if (!$("agentChk").disabled) refreshAgentState(); }, 30000);
 
 $("deskNotifyChk").checked = localStorage.getItem("nassafe_desk_notify") === "1";
-$("aiNotifyChk").checked = localStorage.getItem("nassafe_ai_notify") !== "0";
-$("remoteNotifyChk").checked = localStorage.getItem("nassafe_remote_notify") === "1";
 $("deskNotifyChk").onchange = () => localStorage.setItem("nassafe_desk_notify", $("deskNotifyChk").checked ? "1" : "0");
-$("aiNotifyChk").onchange = () => localStorage.setItem("nassafe_ai_notify", $("aiNotifyChk").checked ? "1" : "0");
-$("remoteNotifyChk").onchange = () => localStorage.setItem("nassafe_remote_notify", $("remoteNotifyChk").checked ? "1" : "0");
 $("pushTestBtn").onclick = async () => {
   try {
     const r = await api("/api/notify/alert", { method: "POST", body: JSON.stringify({ title: "NAS Safe 测试提醒", detail: "这是一条异常提醒通道的测试消息", level: "warn" }) });

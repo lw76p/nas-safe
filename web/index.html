@@ -281,7 +281,7 @@
     <p class="muted" style="margin:6px 0 0">按本机时间自动切换（日出约 6 点、日落约 18 点半，随季节微调），每分钟检查一次；关闭则始终使用当前深色界面。</p>
 
     <h3 class="sub-h">异常主动提醒</h3>
-    <label class="chk-inline"><input type="checkbox" id="agentChk"> 启用桌面小助手（推荐 · 勾选即启动，取消即停止）<span class="muted" id="agentState" style="margin-left:8px"></span></label>
+    <label class="chk-inline"><input type="checkbox" id="agentChk"> 启用桌面小助手（推荐 · 此功能需配合本地AI模型使用）<span class="muted" id="agentState" style="margin-left:8px"></span></label>
     <p class="muted" style="margin:2px 0 6px">装好后电脑提醒全部交给它：缩在右下角托盘图标里（蓝色盾牌，和软件界面同色，鼠标放上去显示「NAS Safe · 快照保护中」）；有异常时图标中间亮起红色感叹号，并弹一次 Windows 通知后自动消失 —— 看过的不再提醒，没读的不会重复打扰，只在托盘上留红色标记，点开即读。开机自启，关掉网页也守护。</p>
     <div id="webNotifyRow" hidden>
       <label class="chk-inline"><input type="checkbox" id="deskNotifyChk"> 备选：网页弹窗提醒（需网页保持打开，且浏览器允许通知）</label>
@@ -289,16 +289,15 @@
         <button class="btn ghost" id="notifyPermBtn">授权网页弹窗</button>
       </div>
     </div>
-    <label class="chk-inline"><input type="checkbox" id="aiNotifyChk"> 用本地 AI 生成提醒文案（AI 供应商为「本地 AI」时生效，数据不出本机）</label>
-    <label class="chk-inline"><input type="checkbox" id="remoteNotifyChk"> 同时推送到微信 / 邮件（同时配置多个时自动选最快到达的通道）</label>
     <div class="set-actions">
       <button class="btn ghost" id="agentInstallBtn">安装 / 重装小助手</button>
       <button class="btn ghost" id="pushTestBtn">发一条测试提醒</button>
     </div>
     <p class="muted" style="margin-top:8px; line-height:1.8">
       电脑弹窗需要网页保持运行（可最小化、切到别的标签）。「桌面小助手」装好后勾选即启动：
-      彻底关掉网页它也在电脑上守护，开机自启；取消勾选即自动退出。云端 AI 用户请保持「微信 / 邮件」通道开启，
-      异常会自动走微信服务号或小程序，谁最快用谁。
+      彻底关掉网页它也在电脑上守护，开机自启；取消勾选即自动退出。
+      异常提醒为默认开启：AI 供应商为「本地 AI」时自动用本地 AI 生成提醒文案（数据不出本机），
+      同时自动推送到微信 / 邮件，多个通道同时配置时谁最快用谁。
     </p>
   </section>
 </main>
