@@ -1,0 +1,32 @@
+<view class="wrap">
+  <view class="card">
+    <view class="card-title">后端地址</view>
+    <input class="url-input" value="{{baseUrl}}" bindinput="onInput" placeholder="http://192.168.8.62:8848" />
+    <view class="btn-row">
+      <button class="btn" bindtap="save">保存</button>
+      <button class="btn btn-primary" loading="{{testing}}" disabled="{{testing}}" bindtap="test">测试连接</button>
+    </view>
+    <view class="muted small" wx:if="{{savedUrl}}">已保存：{{savedUrl}}</view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">功能模块</view>
+    <view class="row">
+      <text>通知推送</text>
+      <text class="badge {{notifyEnabled === true ? 'ok' : (notifyEnabled === false ? 'muted' : 'info')}}">{{notifyEnabled === true ? '已启用' : (notifyEnabled === false ? '未启用' : '检测中')}}</text>
+    </view>
+    <view class="row">
+      <text>AI 解读</text>
+      <text class="badge {{aiEnabled === true ? 'ok' : (aiEnabled === false ? 'muted' : 'info')}}">{{aiEnabled === true ? '已启用' : (aiEnabled === false ? '未启用' : '检测中')}}</text>
+    </view>
+    <view class="muted small" style="margin-top:10rpx;">「未启用」表示当前后端为旧版，需在 NAS 上升级 NAS Safe 后端。</view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">关于</view>
+    <view class="row"><text class="muted">客户端</text><text>NAS Safe 小程序 v1.0</text></view>
+    <view class="muted small" style="margin-top:10rpx;" bindtap="openReadme">真机访问需 HTTPS 域名 ▸ 点此查看说明</view>
+  </view>
+
+  <view class="hint">本小程序是 NAS Safe 防勒索服务的移动端遥控器：在手机上查看存储单元、管理快照、浏览并取回文件、接收告警。</view>
+</view>

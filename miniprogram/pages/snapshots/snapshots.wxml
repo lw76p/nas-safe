@@ -1,0 +1,26 @@
+<view class="wrap">
+  <view class="bar-row">
+    <picker mode="selector" range="{{volumes}}" range-key="name" value="{{volIndex}}" bindchange="onVolumePick">
+      <view class="picker">
+        <text class="muted">单元 </text>
+        <text class="picker-val">{{currentVolumeName || '请选择'}} ▾</text>
+      </view>
+    </picker>
+    <button class="btn btn-primary create-btn" loading="{{creating}}" disabled="{{creating}}" bindtap="createSnapshot">+ 创建</button>
+  </view>
+
+  <view class="card" wx:for="{{snapshots}}" wx:key="name" data-idx="{{index}}" bindtap="openSnapshot">
+    <view class="snap-head">
+      <text class="snap-name">{{item.name}}</text>
+      <text class="badge {{item.vital ? 'ok' : 'muted'}}">{{item.vital ? '永久锁' : '普通'}}</text>
+    </view>
+    <view class="snap-meta muted small">
+      <text wx:if="{{item.created_at}}">创建 {{item.created_at}}</text>
+      <text wx:if="{{item.size_human}}"> · {{item.size_human}}</text>
+      <text wx:if="{{item.status}}"> · {{item.status}}</text>
+    </view>
+  </view>
+
+  <view class="empty" wx:if="{{!loading && snapshots.length === 0}}">该存储单元暂无快照，点「创建」开始保护</view>
+  <view class="hint">点击快照可浏览其中文件并取回。创建快照默认永久锁定（防勒索核心）。</view>
+</view>

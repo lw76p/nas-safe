@@ -63,7 +63,7 @@
 | **OMV (OpenMediaVault)** | btrfs / ZFS | Debian 底子，直接调命令 | **P0** |
 | **绿联 UGOS Pro** | **建池时二选一：ext4 / Btrfs** | SSH 开放程度待实测；快照仅 btrfs 存储空间支持 | **P1** |
 | **群晖 DSM（开 SSH）** | ext4 默认 / Btrfs 看型号 | btrfs 机型可走命令；ext4 机型走 API | **P1** |
-| **威联通 QTS** | **ext4 + 块级存储池快照**（非 btrfs；QuTS Hero 才是 ZFS） | **B 类·官方 `qcli_volumesnapshot` CLI**（已落地 `server/qnap.py`，SSH 真机验证通过：创建+锁定+删除+浏览/取回 全闭环，见 docs/QNAP-REALITY.md） | **P1 · 已适配** |
+| **威联通 QTS** | **ext4 + 块级存储池快照**（非 btrfs；QuTS Hero 才是 ZFS） | **B 类·官方 `qcli_volumesnapshot` CLI**（已落地 `server/qnap.py`，SSH 真机验证通过，见 docs/QNAP-REALITY.md） | **P1 · 已适配** |
 
 ### 暂不支持
 
@@ -109,8 +109,8 @@
 
 ### v2.0 — 防勒索深化 + 商业化
 
-- 快照锁定（独立权限账户持有）—— **v1 已落地**（创建即锁定 + 受保护基线登记）
-- 篡改检测 + 完整性校验 —— **v1 已落地基线对比法**（受保护快照消失/解锁即顶栏告警，前端 30s 轮询，详见 storage.scan_tamper）；v2 深化为内容完整性校验
+- 快照锁定（独立权限账户持有）
+- 篡改检测 + 完整性校验
 - 服务号 / 群机器人告警（温度、SMART、快照异常）
 - 硬盘 SMART 预警
 - 异地副本（用户自己的对象存储：阿里云 OSS / 腾讯云 COS / Backblaze B2 / CF R2）
@@ -397,7 +397,7 @@ DeployEasy / HMP 可以闭源（它们不碰用户全盘数据），但防勒索
 ## 十三、下一步行动
 
 1. ✅ 本文档定稿
-2. ✅ **威联通 QTS 适配层落地**（SSH 真机验证：创建+锁定+删除+浏览/取回 全闭环，`server/qnap.py` 集成测试全绿）→ 结论见 docs/QNAP-REALITY.md；**绿联 SSH 待实测**
+2. ✅ **威联通 QTS 适配层落地**（SSH 真机验证：创建+锁定+删除闭环，`server/qnap.py` + 30 项测试全绿）→ 结论见 docs/QNAP-REALITY.md；**绿联 SSH 待实测**
 3. ⬜ 飞牛版 MVP：
    - `docker-compose.yml`（一条命令拉起）
    - 后端：探测 + 列快照 + 挂载浏览 + 导出单文件 + 拍快照 + 回滚

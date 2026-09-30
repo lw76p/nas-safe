@@ -1,0 +1,23 @@
+.wrap { padding-bottom: 40rpx; }
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 20rpx 28rpx;
+  font-size: 26rpx;
+  color: var(--blue);
+}
+.crumb { padding: 4rpx 0; }
+.crumb:active { opacity: .6; }
+
+.entry {
+  display: flex;
+  align-items: center;
+  padding: 22rpx 24rpx;
+}
+.entry-icon { font-size: 40rpx; margin-right: 18rpx; }
+.entry-body { flex: 1; display: flex; flex-direction: column; }
+.entry-name { font-size: 30rpx; }
+.entry-meta { margin-top: 6rpx; }
+.entry-act { color: var(--accent); font-size: 26rpx; flex-shrink: 0; margin-left: 12rpx; }

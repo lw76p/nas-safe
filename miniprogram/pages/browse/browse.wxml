@@ -1,0 +1,18 @@
+<view class="wrap">
+  <view class="crumbs">
+    <text class="crumb" data-idx="-1" bindtap="goCrumb">📁 根</text>
+    <text class="crumb" wx:for="{{crumbs}}" wx:key="*this" data-idx="{{index}}" bindtap="goCrumb">/ {{item}}</text>
+  </view>
+
+  <view class="card entry" wx:for="{{entries}}" wx:key="name" data-idx="{{index}}" bindtap="openEntry">
+    <text class="entry-icon">{{item.type === 'dir' ? '📁' : '📄'}}</text>
+    <view class="entry-body">
+      <text class="entry-name">{{item.name}}</text>
+      <text class="entry-meta muted small" wx:if="{{item.type !== 'dir'}}">{{item.size_human || ''}}{{item.mtime ? ' · ' + item.mtime : ''}}</text>
+    </view>
+    <text class="entry-act" wx:if="{{item.type !== 'dir'}}">取回 ›</text>
+  </view>
+
+  <view class="empty" wx:if="{{!loading && entries.length === 0}}">此目录为空</view>
+  <view class="hint">点击文件夹进入，点击文件可取回到 NAS 指定目录（绝不覆盖现有文件）。</view>
+</view>

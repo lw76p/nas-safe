@@ -4,3 +4,9 @@ __pycache__/
 .DS_Store
 _restored/
 .nassafe/
+
+# 本地同步副本与运行状态（不入库）
+server_nas/
+web_nas/
+state/
+*.log

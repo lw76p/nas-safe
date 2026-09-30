@@ -1,0 +1,30 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/snapshots/snapshots",
+    "pages/alerts/alerts",
+    "pages/browse/browse",
+    "pages/settings/settings"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#0e131c",
+    "navigationBarTitleText": "NAS Safe 防勒索",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#0e131c",
+    "enablePullDownRefresh": false
+  },
+  "tabBar": {
+    "color": "#7a8794",
+    "selectedColor": "#2ecc71",
+    "backgroundColor": "#0e131c",
+    "borderStyle": "black",
+    "list": [
+      { "pagePath": "pages/index/index", "text": "监控" },
+      { "pagePath": "pages/snapshots/snapshots", "text": "快照" },
+      { "pagePath": "pages/alerts/alerts", "text": "告警" },
+      { "pagePath": "pages/settings/settings", "text": "设置" }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

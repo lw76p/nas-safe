@@ -1,0 +1,18 @@
+<view class="wrap">
+  <view class="card" wx:if="{{!enabled}}">
+    <view class="card-title">告警模块</view>
+    <view class="muted">当前后端未启用告警模块（/api/alerts 不可用）。</view>
+    <view class="muted small" style="margin-top:10rpx;">升级后端到含「防篡改告警」的版本后，此处即可显示受保护快照消失/解锁/变可写等告警。</view>
+  </view>
+
+  <view class="card alert" wx:for="{{alerts}}" wx:key="id" wx:if="{{enabled}}">
+    <view class="alert-head">
+      <text class="badge {{item.level === 'critical' ? 'danger' : (item.level === 'warn' ? 'warn' : 'info')}}">{{item.level || 'info'}}</text>
+      <text class="alert-time muted small">{{item.time}}</text>
+    </view>
+    <view class="alert-msg">{{item.message || '（无内容）'}}</view>
+  </view>
+
+  <view class="empty" wx:if="{{enabled && alerts.length === 0}}">暂无告警，一切正常</view>
+  <view class="hint" wx:if="{{enabled}}">告警由后端定时扫描产生：受保护快照消失、永久锁被解除、只读变可写等。</view>
+</view>

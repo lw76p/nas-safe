@@ -770,6 +770,9 @@ function renderMonitorResults(payload, kind) {
 let notifyDraft = {};
 
 const NOTIFY_FIELDS = {
+  relay: [
+    { key: "recipients", label: "接收邮箱（多个用逗号或换行分隔）", multiline: true },
+  ],
   wechat_service_account: [
     { key: "appid", label: "AppID" },
     { key: "appsecret", label: "AppSecret", secret: true },
@@ -798,16 +801,36 @@ function renderNotifyFields(type) {
   const fields = NOTIFY_FIELDS[type] || [];
   $("notifyFields").innerHTML = fields
     .map(
-      (f) => `
+      (f) => {
+        if (f.multiline) {
+          return `
+      <div class="set-row">
+        <span class="set-label">${f.label}</span>
+        <textarea id="nf_${f.key}" class="text-input" rows="3"
+          placeholder="例如 a@qq.com, b@163.com">${escapeHtml(notifyDraft[f.key] || "")}</textarea>
+      </div>`;
+        }
+        return `
       <div class="set-row">
         <span class="set-label">${f.label}</span>
         <input id="nf_${f.key}" class="text-input"
           type="${f.secret ? "password" : "text"}"
           value="${escapeAttr(notifyDraft[f.key] || "")}"
           placeholder="${f.secret ? "敏感信息，仅保存在本地" : ""}">
-      </div>`
+      </div>`;
+      }
     )
     .join("");
+  // 中继就绪提示
+  const hint = $("relayHint");
+  if (type === "relay" && hint) {
+    hint.style.display = "block";
+    hint.textContent = window.__relayAvailable
+      ? "✅ 厂商邮件中继已就绪：填邮箱即可接收报警，无需任何 Key。"
+      : "⚠️ 厂商邮件中继尚未配置（需厂商设置 NASSAFE_RELAY_APIKEY）。可改用下方高级通道，或联系厂商开通。";
+  } else if (hint) {
+    hint.style.display = "none";
+  }
 }
 
 function gatherNotifyChannel() {
@@ -862,11 +885,15 @@ async function loadSettings() {
   try {
     const nc = await api("/api/notify/config");
     const cfg = nc.config || {};
+    window.__relayAvailable = !!nc.relay_available;
     $("notifyEnabled").checked = !!cfg.enabled;
     const ch = (cfg.channels || [])[0] || {};
     if (ch.type) {
       $("notifyType").value = ch.type;
       notifyDraft = Object.assign({}, ch);
+    } else {
+      // 默认推荐：厂商邮件中继（填邮箱即用），零配置入门
+      $("notifyType").value = "relay";
     }
     renderNotifyFields($("notifyType").value);
   } catch (e) { /* 忽略 */ }
@@ -1010,3 +1037,60 @@ loadSettings();
 // 篡改检测告警轮询：每 30s 拉一次 /api/alerts，发现异常则顶栏告警
 pollAlerts();
 setInterval(pollAlerts, 30000);
+
+// ---- 自动快照设置 ----
+loadAutoSnap();
+$("autoSnapSaveBtn").onclick = saveAutoSnap;
+$("autoSnapRunBtn").onclick = runAutoSnap;
+
+function loadAutoSnap() {
+  api("/api/autosnapshot").then((d) => {
+    if (!d || !d.ok) return;
+    const c = d.config || {};
+    $("autoSnapEnabled").checked = !!c.enabled;
+    $("autoSnapInterval").value = c.interval_hours != null ? c.interval_hours : 1;
+    $("autoSnapKeep").value = c.keep != null ? c.keep : 48;
+    $("autoSnapVolumes").value = (c.volumes || []).join(",");
+  }).catch(() => {});
+}
+
+function saveAutoSnap() {
+  const volumes = ($("autoSnapVolumes").value || "")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  const cfg = {
+    enabled: $("autoSnapEnabled").checked,
+    interval_hours: parseInt($("autoSnapInterval").value, 10) || 1,
+    keep: parseInt($("autoSnapKeep").value, 10) || 48,
+    volumes: volumes,
+  };
+  api("/api/autosnapshot", { method: "POST", body: JSON.stringify(cfg) })
+    .then(() => toast("自动快照设置已保存", "ok"))
+    .catch((e) => toast("保存失败：" + (e && e.message ? e.message : e), "err"));
+}
+
+function runAutoSnap() {
+  const st = $("autoSnapStatus");
+  st.style.display = "block";
+  st.className = "notice";
+  st.textContent = "正在执行一轮自动快照（远程模式可能需要数秒）…";
+  api("/api/autosnapshot/run", { method: "POST", body: "{}" })
+    .then((d) => {
+      if (!d || !d.ok) {
+        st.className = "notice warn";
+        st.textContent = "执行失败：" + ((d && d.error) || "未知");
+        return;
+      }
+      const created = (d.created || []).length;
+      const cleaned = (d.cleaned || []).length;
+      const errs = (d.errors || []);
+      let msg = "已完成：新建 " + created + " 个快照，清理 " + cleaned + " 个旧快照";
+      if (errs.length) msg += "；" + errs.length + " 个错误（详见后端日志）";
+      st.className = errs.length ? "notice warn" : "notice ok";
+      st.textContent = msg;
+      toast(msg, errs.length ? "warn" : "ok");
+    })
+    .catch((e) => {
+      st.className = "notice warn";
+      st.textContent = "执行失败：" + (e && e.message ? e.message : e);
+    });
+}

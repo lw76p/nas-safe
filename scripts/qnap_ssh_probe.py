@@ -3,7 +3,7 @@
 """
 QNAP SSH 只读探测脚本（不落地密码：凭据通过环境变量传入）
 用法（在 bash 中，凭据不写文件）:
-  NASSAFE_HOST=192.168.8.62 NASSAFE_USER=lw76p NASSAFE_PASS='lWh19&^55' \
+  NASSAFE_HOST=<NAS_IP> NASSAFE_USER=<NAS用户> NASSAFE_PASS='<NAS密码>' \
     python scripts/qnap_ssh_probe.py
 
 只做只读命令，绝不创建/删除快照。用于摸清威联通 QTS 的快照底层接口，

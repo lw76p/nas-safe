@@ -38,6 +38,19 @@ services:
       # 是否允许执行 btrfs/zfs 命令（设为 false 时进入只读演示模式）
       NASSAFE_ALLOW_WRITE: "true"
 
+      # ===== 厂商邮件中继（零配置通知默认通道，可选）=====
+      # 终端用户只需在 Web UI 填接收邮箱即可收报警，无需任何第三方 Key。
+      # 配置步骤：
+      #   1) 去 https://resend.com 注册（GitHub 登录最快）
+      #   2) Domains → Add Domain → 填 tsetch.com（DNS 在 Cloudflare 加 SPF/DKIM/DMARC）
+      #   3) API Keys → Create Key，把 key 填到下面
+      # 未配置 NASSAFE_RELAY_APIKEY 时优雅降级（不崩溃）。
+      # 备选服务商 brevo：NASSAFE_RELAY_PROVIDER 改 "brevo" 即可（API 同字段）。
+      # NASSAFE_RELAY_APIKEY: "re_xxxxxxxxxxxx"
+      # NASSAFE_RELAY_PROVIDER: "resend"   # resend（默认）| brevo
+      # NASSAFE_RELAY_FROM: "alerts@resend.tsetch.com"
+      # NASSAFE_RELAY_FROM_NAME: "NAS Safe"
+
     # 健康检查
     healthcheck:
       test: ["CMD", "python3", "-c",

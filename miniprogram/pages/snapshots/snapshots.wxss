@@ -1,0 +1,30 @@
+.wrap { padding-bottom: 40rpx; }
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24rpx 24rpx 8rpx;
+  gap: 16rpx;
+}
+.picker {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14rpx;
+  padding: 16rpx 22rpx;
+  font-size: 30rpx;
+}
+.picker-val { color: var(--text); font-weight: 600; }
+.create-btn {
+  flex-shrink: 0;
+  padding: 16rpx 30rpx;
+  font-size: 28rpx;
+}
+
+.snap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.snap-name { font-size: 30rpx; font-weight: 600; }
+.snap-meta { margin-top: 10rpx; }

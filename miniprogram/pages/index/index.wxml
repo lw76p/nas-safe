@@ -1,0 +1,52 @@
+<view class="wrap">
+  <view class="hero">
+    <view class="hero-dot {{connected === false ? 'off' : 'on'}}"></view>
+    <view class="hero-text">
+      <view class="hero-title">NAS Safe 防勒索快照</view>
+      <view class="hero-sub">{{connected === false ? '无法连接后端' : (system ? system.os_name + ' · v' + version : '正在连接…')}}</view>
+    </view>
+  </view>
+
+  <view class="stats">
+    <view class="stat" bindtap="goSnapshots">
+      <view class="stat-num">{{volumes.length}}</view>
+      <view class="stat-label">存储单元</view>
+    </view>
+    <view class="stat" bindtap="goSnapshots">
+      <view class="stat-num">{{totalSnaps}}</view>
+      <view class="stat-label">快照总数</view>
+    </view>
+    <view class="stat" bindtap="goAlerts">
+      <view class="stat-num" style="color:{{alertCount > 0 ? '#ff5c6c' : '#2ecc71'}}">{{alertEnabled ? alertCount : '—'}}</view>
+      <view class="stat-label">{{alertEnabled ? '告警' : '告警未启'}}</view>
+    </view>
+  </view>
+
+  <view class="card" wx:if="{{system}}">
+    <view class="card-title">系统画像</view>
+    <view class="row"><text class="muted">系统</text><text>{{system.os_name}}</text></view>
+    <view class="row"><text class="muted">内核</text><text class="small">{{system.kernel}}</text></view>
+    <view class="row"><text class="muted">运行环境</text><text>{{system.is_container ? '容器内' : '裸机'}}</text></view>
+    <view class="row"><text class="muted">可用文件系统</text><text>{{fsText}}</text></view>
+  </view>
+
+  <view class="section-title">存储单元</view>
+  <view class="card vol" wx:for="{{volumes}}" wx:key="mountpoint" data-mp="{{item.mountpoint}}" bindtap="openVolume">
+    <view class="vol-head">
+      <text class="vol-name">{{item.name}}</text>
+      <text class="badge {{item.protected ? 'ok' : 'warn'}}">{{item.protected ? '已保护' : '未保护'}}</text>
+    </view>
+    <view class="vol-meta">
+      <text class="badge info">{{item.fs_type}}</text>
+      <text class="muted small">挂载点 {{item.mountpoint}}</text>
+    </view>
+    <view class="vol-foot">
+      <text class="muted small">快照 {{item.snapshot_count}} 个</text>
+      <text class="muted small" wx:if="{{item.latest_snapshot}}">最近 {{item.latest_snapshot}}</text>
+    </view>
+  </view>
+
+  <view class="empty" wx:if="{{!loading && volumes.length === 0}}">暂无存储单元，或后端未连接到 NAS</view>
+
+  <view class="hint">下拉可刷新。点击存储单元查看并管理其快照。</view>
+</view>

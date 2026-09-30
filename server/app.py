@@ -53,6 +53,7 @@ import integrity  # noqa: E402  v2 内容完整性校验
 import behavior   # noqa: E402  v3 勒索行为检测
 import notify     # noqa: E402  多渠道告警通知（微信服务号/Webhook/Bark/ntfy/邮件）
 import ai         # noqa: E402  AI 解读（多云供应商 + 本地 Ollama）
+import autosnapshot  # noqa: E402  自动快照调度器（每小时 vital 锁快照 + 保留清理）
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
@@ -405,6 +406,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({
                     "ok": True,
                     "config": _mask_notify_cfg(notify.load_config()),
+                    "relay_available": notify.relay_configured(),
                 })
             elif route == "/api/ai/config":
                 cfg = ai.load_config()
@@ -416,6 +418,13 @@ class Handler(BaseHTTPRequestHandler):
                     "config": cfg,
                     "ready": ai.is_ready(),
                     "providers": list(ai.PROVIDERS.keys()),
+                })
+            elif route == "/api/autosnapshot":
+                cfg = autosnapshot.load_config()
+                self._send_json({
+                    "ok": True,
+                    "config": cfg,
+                    "interval_seconds": max(1, int(cfg.get("interval_hours", 1))) * 3600,
                 })
             elif route == "/api/system":
                 self._send_json(build_system_info())
@@ -531,6 +540,16 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send_json({"ok": True, "text": result})
 
+            elif route == "/api/autosnapshot":
+                if not isinstance(payload, dict):
+                    raise StorageError("配置格式错误")
+                cfg = autosnapshot.save_config(payload)
+                self._send_json({"ok": True, "config": cfg})
+
+            elif route == "/api/autosnapshot/run":
+                # 立即执行一轮自动快照（供测试 / 手动触发）
+                self._send_json({"ok": True, **autosnapshot.run_once()})
+
             else:
                 self._send_json({"ok": False, "error": f"未知接口: {route}"}, 404)
 
@@ -563,6 +582,10 @@ def main() -> None:
         notify.start_notifier(int(os.environ.get("NASSAFE_NOTIFY_INTERVAL", "60")))
     except Exception:  # noqa: BLE001
         pass
+    try:
+        autosnapshot.start_scheduler()  # 自动快照守护线程（每小时 vital 锁快照）
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

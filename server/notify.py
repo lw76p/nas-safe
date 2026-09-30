@@ -79,6 +79,8 @@ def _http_post_json(url: str, payload: dict, token: str = "", timeout: int = 10)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
+    # 必须伪装常规 UA：Python 默认 "Python-urllib/x.y" 会被 Cloudflare WAF 判为机器人并 403
+    req.add_header("User-Agent", "Mozilla/5.0 (compatible; NAS Safe/1.0)")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
@@ -220,7 +222,68 @@ def _send_email(ch: dict, text: str, *_) -> (bool, str):
         return False, f"邮件失败: {exc}"
 
 
+# ---- 厂商邮件中继（C 档默认·终端用户零配置通道）------------------------------
+# 终端用户只填「接收邮箱」即可；发信密钥由厂商侧通过环境变量下发，绝不进用户配置。
+#   NASSAFE_RELAY_PROVIDER  resend | brevo  （默认 resend）
+#   NASSAFE_RELAY_APIKEY    厂商邮件 API Key
+#   NASSAFE_RELAY_FROM      已验证发件人，如 alerts@tsetch.com
+#   NASSAFE_RELAY_FROM_NAME 发件人显示名（默认 NAS Safe）
+
+def relay_configured() -> bool:
+    return bool(os.environ.get("NASSAFE_RELAY_APIKEY", "").strip())
+
+
+def _parse_recipients(raw) -> list:
+    if isinstance(raw, list):
+        items = raw
+    else:
+        items = str(raw or "").replace(";", ",").replace("\n", ",").split(",")
+    out = []
+    for x in items:
+        x = x.strip()
+        if x and "@" in x and "." in x.split("@")[-1]:
+            out.append(x)
+    return out
+
+
+def _send_relay(ch: dict, text: str, *_) -> (bool, str):
+    """终端用户零配置通道：厂商运营邮件中继，用户只提供接收邮箱。
+
+    未配置厂商中继（NASSAFE_RELAY_APIKEY 缺失）→ 优雅降级提示，不崩溃。
+    """
+    api_key = os.environ.get("NASSAFE_RELAY_APIKEY", "").strip()
+    if not api_key:
+        return False, "厂商邮件中继未配置（环境变量 NASSAFE_RELAY_APIKEY 缺失）"
+    recipients = _parse_recipients(ch.get("recipients")) or _parse_recipients(
+        load_config().get("recipients")
+    )
+    if not recipients:
+        return False, "未设置接收邮箱（请在通道中填写接收邮箱）"
+    provider = os.environ.get("NASSAFE_RELAY_PROVIDER", "resend").strip().lower()
+    sender = os.environ.get("NASSAFE_RELAY_FROM", "alerts@tsetch.com").strip()
+    sender_name = os.environ.get("NASSAFE_RELAY_FROM_NAME", "NAS Safe").strip()
+    subject = "NAS Safe 安全动态"
+    if provider == "brevo":
+        payload = {
+            "sender": {"name": sender_name, "email": sender},
+            "to": [{"email": r} for r in recipients],
+            "subject": subject,
+            "textContent": text,
+        }
+        url = "https://api.brevo.com/v3/smtp/email"
+    else:  # resend（默认）
+        payload = {
+            "from": f"{sender_name} <{sender}>",
+            "to": recipients,
+            "subject": subject,
+            "text": text,
+        }
+        url = "https://api.resend.com/emails"
+    return _http_post_json(url, payload, token=api_key)
+
+
 _CHANNEL_DISPATCH = {
+    "relay": _send_relay,
     "webhook": _send_webhook,
     "bark": _send_bark,
     "ntfy": _send_ntfy,

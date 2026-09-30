@@ -1,0 +1,10 @@
+.wrap { padding-bottom: 40rpx; }
+
+.alert-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+.alert-time { color: var(--muted); }
+.alert-msg { font-size: 30rpx; line-height: 1.5; }

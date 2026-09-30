@@ -56,9 +56,6 @@ ZFS 的 `zfs hold` 也不是真保护：有 root 权限就能 `zfs release` 再 
 | **单文件取回** | 浏览快照目录，勾选文件取回，**不覆盖你当前的数据** |
 | **一键拍快照** | 不用进系统面板翻菜单 |
 | **风险提示** | 自动检测哪些存储单元没有保护，红黄绿一眼看懂 |
-| **篡改告警** | 你锁定的快照一旦被删/被解锁，顶栏立刻红/黄告警（每 30s 巡检） |
-| **内容完整性校验 (v2)** | 创建快照时建立内容基线；「深度校验」按钮比对文件清单/抽样哈希，内容被增删或替换即告警（设 `NASSAFE_INTEGRITY_CHECK=1` 可并入 30s 巡检） |
-| **勒索行为检测 (v3)** | 「扫描勒索行为」按钮检查生产目录的扩展名突变/熵值骤升/批量改名，可疑即告警并建议紧急快照 |
 | **跨品牌统一** | 飞牛、绿联、TrueNAS、Unraid、OMV、群晖/威联通（开 SSH）—— 同一个界面 |
 
 ---
@@ -138,7 +135,7 @@ sh scripts/probe.sh
 | OMV | ✅ 支持 | Debian 底子 |
 | **绿联 UGOS Pro** | ⚠️ 实测中 | btrfs 池可用；ext4 池无法快照 |
 | 群晖 DSM（开 SSH） | ⚠️ 实测中 | 需 SSH + btrfs 存储池 |
-| **威联通 QTS（开 SSH）** | ✅ **已适配** | ext4 + 块级快照，走官方 `qcli_volumesnapshot` CLI；创建/锁定/删除 + 浏览/取回全闭环真机验证（含 Web UI）。**Docker 远程模式已真机验证**（见下） |
+| **威联通 QTS（开 SSH）** | ✅ **已适配** | ext4 + 块级快照，走官方 `qcli_volumesnapshot` CLI（真机验证） |
 | 极空间等封闭系统 | ❌ 不支持 | 无 SSH、无 btrfs、无开放接口 |
 
 ### 关于绿联
@@ -149,49 +146,6 @@ sh scripts/probe.sh
 - 选 **ext4** → **无法使用快照**，需要重建存储池
 
 **NAS Safe 会主动检测并提示这一点** —— 绿联自己的界面不会告诉你"你选错了文件系统"。
-
----
-
-### 远程管理 NAS（高级）
-
-默认情况下 NAS Safe 装在 NAS 本机运行，直接读取宿主机的快照。
-如果你的 NAS 不方便装服务（比如威联通 QTS 只想用 SSH 管理），也可以把服务装在**另一台电脑/服务器**上，远程管理 NAS：
-
-```bash
-# 监听地址（默认 0.0.0.0；只想本机访问可设 127.0.0.1）
-export NASSAFE_BIND_HOST=0.0.0.0
-# 指向你的 NAS（SSH 凭据）
-export NASSAFE_QNAP_HOST=192.168.8.62
-export NASSAFE_QNAP_USER=admin
-export NASSAFE_QNAP_PASS='你的密码'
-python3 server/app.py
-```
-
-- 浏览器打开 `http://运行服务的那台机器:8848` 即可像在 NAS 本机一样浏览、取回文件
-- 取回的文件会保存到**运行服务的这台机器**上（不是 NAS 上），路径在取回时弹窗确认
-- Windows 开发机照样能跑：远程路径一律按 Linux 处理，不受本机系统影响
-
-#### 用 Docker 部署（威联通 QTS 推荐）
-
-如果你不想在 NAS 上裸装 Python，可以用官方提供的 `docker-compose.qnap.yml`：
-容器**不设 privileged、不挂宿主根目录**，只经 SSH 回连 NAS 调 `qcli`，安全面最小。
-
-```bash
-# 在你运行 Docker 的机器上（或 NAS 的 Container Station 终端）
-cd nassafe
-export NASSAFE_QNAP_PASS='你的威联通SSH密码'   # 密码走环境变量，不写进文件
-docker compose -f docker-compose.qnap.yml up -d
-# 浏览器打开：http://运行Docker的机器:8848
-```
-
-注意：容器内 `NASSAFE_QNAP_HOST` 必须填**真实 NAS IP**（如 `192.168.8.62`），
-不能填 `127.0.0.1/localhost`，否则会误判成"本地模式"去容器里找 `qcli` 而失败。
-取回的文件默认落到容器内 `/app/_restored`；想落到宿主机就给 compose 加
-`-v /本地路径:/app/_restored` 挂载。
-
-> 该 `docker-compose.qnap.yml` 已在真实 QNAP TS-873A（QTS 5.2.9）上构建镜像并端到端验证：
-> 创建锁定快照 → 列快照确认锁定 → 浏览到真实文件 → SSH 删除轮询消失，全闭环 PASS。
-> 详见 [docs/QNAP-REALITY.md](docs/QNAP-REALITY.md) 第七章。
 
 ---
 
@@ -223,10 +177,6 @@ zfs snapshot pool/data@snap-20260929-163000
 
 快照存放位置：`<存储单元>/.nassafe/snapshots/`
 
-> **威联通 QTS（ext4）特例**：不走 btrfs/zfs，而是官方 `qcli_volumesnapshot` CLI（底层 LVM 瘦快照）。
-> 快照创建后系统会**自动只读挂载**在宿主机的 `/mnt/snapshot/<卷ID>/<快照ID>/`，nas-safe 直接遍历该挂载点
-> 完成浏览/取回，与 btrfs/zfs 复用同一套逻辑。详见 [docs/QNAP-REALITY.md](docs/QNAP-REALITY.md)。
-
 ### 架构
 
 ```
@@ -244,56 +194,29 @@ zfs snapshot pool/data@snap-20260929-163000
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/system` | 系统能力画像 |
-| GET | `/api/volumes` | 存储单元列表（含 QNAP 远程卷） |
+| GET | `/api/volumes` | 存储单元列表 |
 | GET | `/api/snapshots?volume=<路径>` | 快照列表 |
-| GET | `/api/browse?path=<路径>` 或 `?snapshot_id=<ID>&volume_id=<ID>&subpath=<路径>` | 浏览快照内文件（btrfs/zfs 用 `path`；威联通 QNAP 用后者） |
-| POST | `/api/snapshot/create` | 创建快照（自动登记为受保护） |
-| GET | `/api/alerts` | 篡改告警列表（受保护快照消失/解锁即告警；加 `?integrity=1` 并入 v2 内容完整性深度校验） |
-| GET | `/api/integrity` | v2 内容完整性深度校验：比对受保护快照的清单签名与抽样内容哈希，发现被增删/替换 |
-| GET | `/api/behavior?paths=/a&paths=/b` | v3 勒索行为检测：扫描生产目录的扩展名突变 / 熵值骤升 / 批量改名，可疑时给出告警与建议 |
-| GET | `/api/notify/config` | 通知配置（密钥脱敏返回） |
-| POST | `/api/notify/config` | 保存通知配置（微信服务号 / 群机器人 Webhook / Bark / ntfy / 邮件） |
-| POST | `/api/notify/test` | 测试单个通知通道是否可用 |
-| GET | `/api/ai/config` | AI 配置（含供应商列表与 ready 状态） |
-| POST | `/api/ai/config` | 保存 AI 配置（DeepSeek / OpenAI / 通义 / 智谱 / 本地 Ollama） |
-| POST | `/api/ai/interpret` | 把体检 / 告警报告文本交给 AI 翻译成大白话 + 处置建议 |
-| POST | `/api/snapshot/restore` | 取回文件（需 `confirm: true`；btrfs/zfs 用 `snapshot_path`，QNAP 用 `snapshot_id+volume_id+relative_file+destination`） |
+| GET | `/api/browse?path=<路径>` | 浏览快照内文件 |
+| POST | `/api/snapshot/create` | 创建快照 |
+| POST | `/api/snapshot/restore` | 取回文件（需 `confirm: true`） |
 
 ### 运行测试
 
 ```bash
-python3 server/test_e2e.py      # 通用：路径注入防护、越权防护、取回逻辑、格式化、品牌识别
-python3 server/test_qnap.py     # 威联通：含真机集成测试（需设 NASSAFE_QNAP_HOST/NASSAFE_QNAP_USER/NASSAFE_QNAP_PASS 指向真机）
+python3 server/test_e2e.py
 ```
 
-覆盖：路径注入防护、越权防护、取回逻辑、格式化、品牌识别，以及威联通 QTS 的
-创建/锁定/删除 + 浏览/读取/取回全链路（真机集成测试会自我清理，创建后删除并轮询确认）。
+覆盖：路径注入防护、越权防护、取回逻辑、格式化、品牌识别。
 
 ---
 
 ## 路线图
 
-**v1.0（当前）** —— 时间轴、单文件取回、跨系统适配、快照锁定 + 篡改告警（受保护快照消失/解锁即顶栏告警）
+**v1.0（当前）** —— 时间轴、单文件取回、跨系统适配
 
-**v1.x（已落地）** —— 快照锁定（创建即 vital 永久锁 + 受保护基线登记）；篡改检测（v1 基线对比法 + **v2 内容完整性深度校验**：对本地可读快照建立清单签名与抽样内容哈希，内容被改即告警）；**v3 勒索行为检测 MVP**（扫描生产目录的扩展名突变 / 熵值骤升 / 批量改名，可疑即告警并建议紧急快照）
+**v1.x** —— 自动快照策略、快照锁定、篡改检测告警、重复文件扫描
 
-**v2.0 路线** —— 异地不可变副本、多设备统一看板、AI 解读体检报告
-
-> 注：v2 内容完整性校验与 v3 勒索行为检测已落地核心逻辑与单测（详见 `server/integrity.py`、`server/behavior.py`、`server/test_integrity.py`、`server/test_behavior.py`）。内容完整性深度校验较重，默认不并入 30s 巡检；通过 `GET /api/integrity` 或 `NASSAFE_INTEGRITY_CHECK=1` 开启。Web 监控面板提供「自动持续监控」开关：开启后按选定间隔（5/10/30 分钟）自动跑 v2 深度校验，可选附带 v3 勒索行为扫描，结果实时并入顶栏横幅；开关状态用 localStorage 持久化，刷新页面后仍保持监控中。
-
-### 通知与 AI（已落地核心，配置即用）
-
-**多渠道告警通知**（`server/notify.py`，仅标准库、零第三方依赖）：
-- 通道：微信服务号模板消息（B 类核心卖点）、企业微信/飞书/钉钉群机器人 Webhook（A 类零门槛）、Bark、ntfy、邮件 SMTP
-- 后端每 60s（可调 `NASSAFE_NOTIFY_INTERVAL`）扫描受保护快照告警（含 v2 完整性），**去重**后自动推送到已启用通道；创建快照等"相关变动"也实时推送
-- 配置存于 state 目录 `notify.json`，**绝不进仓库**；未启用时为空操作，核心防勒索零影响
-
-**AI 解读**（`server/ai.py`，仅标准库、零第三方依赖）：
-- 供应商：DeepSeek / OpenAI / 通义千问 / 智谱 GLM（均 OpenAI 兼容接口）+ **本地 Ollama 一键本地 AI**（免密钥）
-- 定位是"翻译官 + 提案人"：把体检/告警/系统数据翻成中文大白话并给处置建议，不做"是否勒索"的判定（那由规则引擎更准）
-- 配置存于 state 目录 `ai.json`；未启用 / 无密钥时按钮自动隐藏，核心功能零影响
-
-详见 `server/test_notify_ai.py`（优雅降级单测）。
+**v2.0** —— 异地不可变副本、多设备统一看板、AI 解读体检报告
 
 ---
 
