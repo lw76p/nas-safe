@@ -251,7 +251,7 @@ def probe_system() -> SystemProfile:
         )
     if not profile.has_httm:
         profile.warnings.append(
-            "未检测到 httm，单文件取回将使用内置的降级方案（直接浏览快照目录）。"
+            "提示：未安装快速取回组件（httm），恢复单个文件时将改为直接浏览快照目录选取，功能不受影响。"
         )
     if profile.has_qcli and not profile.has_btrfs_cmd and not profile.has_zfs_cmd:
         profile.fs_available.append("qnap")
