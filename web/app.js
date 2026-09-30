@@ -170,15 +170,19 @@ function updateOverview() {
   $("ovUnits").textContent = units || "0";
   $("ovSnaps").textContent = snaps || "0";
 
-  const guard = $("ovGuard");
+  // 防护状态卡：颜色跟随真实状态（绿=全部已保护；琥珀=有待保护项），避免固定琥珀色被误读为告警
+  const guardCard = $("ovGuard").closest(".ov-card");
   if (!units) {
     guard.textContent = "—"; guard.className = "ov-num";
+    guardCard.className = "ov-card zone-guard";
   } else if (unprotected) {
     guard.textContent = `${unprotected} 个待保护`;
     guard.className = "ov-num is-bad";
+    guardCard.className = "ov-card zone-guard";
   } else {
     guard.textContent = "健康";
     guard.className = "ov-num is-ok";
+    guardCard.className = "ov-card zone-monitor";
   }
 
   const mon = $("ovMonitor");
