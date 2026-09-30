@@ -1843,19 +1843,129 @@ $("alertBanner").style.cursor = "pointer";
 $("alertBanner").title = "点击查看异常详情";
 
 // 异常主动提醒：电脑弹窗授权 + 三个开关（本地 AI 文案 / 电脑弹窗 / 远端通道）
+// 电脑弹窗权限引导：浏览器不给自动同意的口子（尤其 http 地址连询问框都不弹），
+// 这里用一个弹框把「怎么允许」讲清楚，并给出「已允许 → 点我验证」的按钮，不让用户自己瞎找。
+async function notifyPermState() {
+  if (!("Notification" in window)) return "unsupported";
+  try {
+    if (navigator.permissions && navigator.permissions.query) {
+      const st = await navigator.permissions.query({ name: "notifications" });
+      if (st && st.state) return st.state; // granted / prompt / denied
+    }
+  } catch (_) { /* 部分浏览器不支持 permissions.query，回退下面的值 */ }
+  return Notification.permission;
+}
+
+function showNotifyPermGuide(why) {
+  const isHttps = location.protocol === "https:";
+  const steps = isHttps
+    ? `<p>点击下面「立即允许」，浏览器会弹一个询问框，选「允许」即可。</p>`
+    : `<p class="muted">当前地址是 <b>http</b>（不是 https），浏览器默认不给网页弹询问框，
+       所以要你在浏览器设置里手动允许一次。<b>只需要做一次，之后永久生效。</b></p>
+       <ol class="perm-steps">
+         <li>看浏览器<b>地址栏最左边</b>，点那个 ⓘ（或「调节」小图标）</li>
+         <li>点 <b>网站设置</b>（有的浏览器叫「权限」）</li>
+         <li>找到 <b>通知</b>，把它改成 <b>允许</b></li>
+         <li>回到这个窗口，点右下角 <b>「我已在浏览器里允许，点击验证」</b></li>
+       </ol>
+       <p class="muted">如果上面找不到，也可以复制这段地址到地址栏打开（Edge 换成 edge://）：
+         <code>chrome://settings/content/notifications</code>，
+         然后把 <b>${escapeHtml(location.host)}</b> 加进「允许发送通知」名单。</p>`;
+  const body = `
+    <p>${escapeHtml(why || "")}</p>
+    ${steps}
+    <div id="permState" class="notice" style="margin-top:10px">正在检查当前权限…</div>`;
+
+  const foot = `
+    <button class="btn ghost" data-act="agent">改用桌面小助手</button>
+    <button class="btn ghost" data-act="close">稍后再说</button>
+    <button class="btn primary" data-act="verify">我已在浏览器里允许，点击验证</button>`;
+
+  const refresh = async () => {
+    const box = $("permState");
+    if (!box) return;
+    const st = await notifyPermState();
+    if (st === "granted") {
+      box.className = "notice ok";
+      box.textContent = "✅ 已经生效，可以正常收到电脑弹窗提醒了。";
+    } else if (st === "denied") {
+      box.className = "notice warn";
+      box.textContent = "⚠ 浏览器里仍是「已拒绝」。请按上面 1–4 步在网站设置里改成「允许」，再点验证。";
+    } else {
+      box.className = "notice";
+      box.textContent = `当前状态：${st === "unsupported" ? "浏览器不支持桌面通知" : "尚未授权"}。改完设置后点右下角验证即可。`;
+    }
+    return st;
+  };
+
+  openModal("🔔 开启电脑弹窗提醒", body, foot, {
+    verify: async () => {
+      let st = await notifyPermState();
+      if (st === "prompt") {
+        // 还有救：浏览器允许弹询问框时就直接问一次（https 或 localhost 场景）
+        st = await Notification.requestPermission();
+      }
+      if (st === "granted") {
+        localStorage.setItem("nassafe_desk_notify", "1");
+        $("deskNotifyChk").checked = true;
+        closeModal();
+        toast("已授权电脑弹窗提醒", "ok");
+        return;
+      }
+      await refresh();
+    },
+    agent: () => showDesktopAgentGuide(),
+  });
+  refresh();
+}
+
+// 关掉网页也想收到提醒 → 桌面小助手（本机常驻，不依赖浏览器）
+function showDesktopAgentGuide() {
+  const cmd = `pythonw "${(location.origin + "/desktop_agent.py").replace(/^/, "")}" --nas ${location.origin}`;
+  openModal(
+    "🖥 用桌面小助手（关掉网页也能弹）",
+    `<p>浏览器权限只能让「网页开着时」弹窗。想彻底关掉网页也收到提醒，用这个本机常驻小程序：</p>
+     <ol class="perm-steps">
+       <li>在本机 NAS Safe 目录找到 <code>scripts/desktop_agent.py</code></li>
+       <li>命令行运行（后台静默）：
+         <div class="code-box"><code>pythonw scripts/desktop_agent.py --nas ${escapeHtml(location.origin)}</code></div></li>
+       <li>它会在后台定时查 NAS 状态，有异常直接弹 Windows 通知中心提醒，不需要开网页</li>
+     </ol>
+     <p class="muted">小助手只用 Python 自带库，不用装任何东西；退出就是关掉对应进程。</p>`,
+    `<button class="btn ghost" data-act="copy">复制命令</button>
+     <button class="btn primary" data-act="close">知道了</button>`,
+    {
+      copy: () => {
+        const text = `pythonw scripts/desktop_agent.py --nas ${location.origin}`;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(
+            () => toast("命令已复制", "ok"),
+            () => toast("复制失败，请手动选中复制", "warn")
+          );
+        } else toast("复制失败，请手动选中复制", "warn");
+      },
+    }
+  );
+  void cmd;
+}
+
 if ("Notification" in window) {
   $("notifyPermBtn").onclick = async () => {
-    const p = await Notification.requestPermission();
-    if (p === "granted") { toast("已授权电脑弹窗提醒", "ok"); return; }
-    if (location.protocol !== "https:") {
-      // 非安全来源（http 且非 localhost）浏览器不弹询问框、直接拒绝，需手动在站点设置里允许
-      toast("浏览器要求手动允许：点地址栏左侧 ⓘ → 网站设置 → 通知 → 允许，然后回到这里再点一次测试", "warn", 8000);
-    } else {
-      toast("被浏览器拒绝：点地址栏左侧 ⓘ → 网站设置 → 通知 → 允许，即可恢复", "warn", 8000);
+    const st = await notifyPermState();
+    if (st === "granted") { toast("已授权电脑弹窗提醒", "ok"); return; }
+    if (st === "prompt") {
+      const p = await Notification.requestPermission();
+      if (p === "granted") {
+        localStorage.setItem("nassafe_desk_notify", "1");
+        $("deskNotifyChk").checked = true;
+        toast("已授权电脑弹窗提醒", "ok");
+        return;
+      }
     }
+    showNotifyPermGuide("浏览器要求你亲手允许通知权限（网页无法代替用户点同意）。");
   };
 } else {
-  $("notifyPermBtn").onclick = () => toast("当前浏览器不支持桌面通知", "warn");
+  $("notifyPermBtn").onclick = () => showNotifyPermGuide("当前浏览器不支持桌面通知。");
 }
 $("deskNotifyChk").checked = localStorage.getItem("nassafe_desk_notify") === "1";
 $("aiNotifyChk").checked = localStorage.getItem("nassafe_ai_notify") !== "0";

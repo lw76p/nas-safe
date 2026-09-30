@@ -826,3 +826,19 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .zone-snapshot { background: linear-gradient(180deg, rgba(155,140,255,.14), rgba(21,27,39,.78) 46%); }
 .zone-monitor  { background: linear-gradient(180deg, rgba(47,224,160,.13), rgba(21,27,39,.78) 46%); }
 .zone-guard    { background: linear-gradient(180deg, rgba(255,183,77,.13), rgba(21,27,39,.78) 46%); }
+
+/* --------------------- 权限引导弹框 --------------------- */
+.perm-steps { margin: 8px 0 0; padding-left: 20px; line-height: 1.9; }
+.perm-steps li { margin: 2px 0; }
+.notice.ok   { border-color: var(--ok, #2fe0a0); color: var(--ok, #2fe0a0); }
+.notice.warn { border-color: var(--warn, #ffb74d); color: var(--warn, #ffb74d); }
+.code-box {
+  margin: 6px 0; padding: 8px 10px; border-radius: 8px; font-size: 12.5px;
+  background: var(--surface-2, rgba(127,140,170,.12)); border: 1px solid var(--line, rgba(127,140,170,.25));
+  overflow-x: auto; user-select: all; word-break: break-all;
+}
+code {
+  font-family: ui-monospace, Consolas, "Cascadia Mono", monospace;
+  padding: 1px 5px; border-radius: 5px; font-size: 12.5px;
+  background: var(--surface-2, rgba(127,140,170,.12));
+}
