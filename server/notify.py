@@ -335,6 +335,40 @@ def dispatch(alerts: list = None, events: list = None) -> dict:
     return {"enabled": True, "sent": results}
 
 
+# 触达速度优先级：越靠前越能让用户第一时间看到（微信服务号=微信内强提醒 > 手机推送 > 群机器人 > 邮件）
+_SPEED_ORDER = ["wechat_service_account", "bark", "ntfy", "webhook", "relay", "email"]
+
+
+def push_alert(title: str, detail: str = "", level: str = "warn") -> dict:
+    """主动推送一条异常提醒：按「最快触达」自动优选通道，失败自动降级到下一个。
+
+    用户同时关注了服务号/配置了多个通道时，优先用最快的那个；
+    前一个失败会继续尝试下一个，保证提醒不丢。
+    """
+    cfg = load_config()
+    if not cfg.get("enabled", False):
+        return {"ok": False, "msg": "通知总开关未开启"}
+    channels = [c for c in cfg.get("channels", []) if c.get("type")]
+    if not channels:
+        return {"ok": False, "msg": "未配置任何通知通道"}
+    alerts = [{"level": level, "title": title, "detail": detail}]
+    text = _plain(alerts, [])
+    ordered = sorted(
+        channels,
+        key=lambda c: _SPEED_ORDER.index(c["type"]) if c.get("type") in _SPEED_ORDER else 99,
+    )
+    tried = []
+    for ch in ordered:
+        fn = _CHANNEL_DISPATCH.get(ch.get("type"))
+        if not fn:
+            continue
+        ok, msg = fn(ch, text, alerts, [])
+        tried.append({"channel": ch.get("type"), "ok": ok, "msg": msg})
+        if ok:
+            return {"ok": True, "channel": ch.get("type"), "msg": msg, "tried": tried}
+    return {"ok": False, "msg": "所有通道均发送失败", "tried": tried}
+
+
 def send_test(channel: dict) -> dict:
     """测试单个通道配置是否可用。"""
     kind = channel.get("type")

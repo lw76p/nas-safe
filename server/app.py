@@ -552,6 +552,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise StorageError("缺少 channel 配置")
                 self._send_json({"ok": True, **notify.send_test(channel)})
 
+            elif route == "/api/notify/alert":
+                # 异常主动推送：按最快触达自动优选通道（微信服务号 > 手机推送 > 群机器人 > 邮件）
+                title = str(payload.get("title") or "NAS Safe 异常提醒")
+                detail = str(payload.get("detail") or "")
+                level = str(payload.get("level") or "warn")
+                self._send_json({"ok": True, **notify.push_alert(title, detail, level)})
+
             elif route == "/api/ai/config":
                 cfg = payload
                 if not isinstance(cfg, dict):

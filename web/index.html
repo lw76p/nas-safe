@@ -278,6 +278,20 @@
     <h3 class="sub-h">外观（护眼）</h3>
     <label class="chk-inline"><input type="checkbox" id="autoThemeChk"> 随日出日落自动调整界面颜色（白天浅色、夜间深色，不伤眼）</label>
     <p class="muted" style="margin:6px 0 0">按本机时间自动切换（日出约 6 点、日落约 18 点半，随季节微调），每分钟检查一次；关闭则始终使用当前深色界面。</p>
+
+    <h3 class="sub-h">异常主动提醒</h3>
+    <label class="chk-inline"><input type="checkbox" id="deskNotifyChk"> 开启电脑弹窗提醒（异常时弹出系统通知）</label>
+    <label class="chk-inline"><input type="checkbox" id="aiNotifyChk"> 用本地 AI 生成提醒文案（AI 供应商为「本地 AI」时生效，数据不出本机）</label>
+    <label class="chk-inline"><input type="checkbox" id="remoteNotifyChk"> 同时推送到微信 / 邮件（同时配置多个时自动选最快到达的通道）</label>
+    <div class="set-actions">
+      <button class="btn ghost" id="notifyPermBtn">授权电脑弹窗</button>
+      <button class="btn ghost" id="pushTestBtn">发一条测试提醒</button>
+    </div>
+    <p class="muted" style="margin-top:8px; line-height:1.8">
+      电脑弹窗需要网页保持运行（可最小化、切到别的标签）。若需要「完全关闭网页也能提醒」：
+      本地模型请运行桌面小助手（常驻任务栏，关网页照样弹）；云端 AI 请保持上面的「微信 / 邮件」通道开启，
+      异常会自动走微信服务号或小程序，谁最快用谁。
+    </p>
   </section>
 </main>
 

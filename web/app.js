@@ -535,8 +535,51 @@ function checkAnomalies(m) {
   if (fresh.length) {
     fresh.forEach((a) => knownAnoms.add(a.key));
     toast(`⚠ 检测到 ${fresh.length} 项异常，点击顶部提示查看`, "err");
+    pushAnomalyAlert(fresh); // 主动提醒：本地模型→电脑弹窗；云端/已配通道→微信等最快通道
   }
   renderBanners(); // 横幅统一由此刷新（勒索告警优先，其次硬件/容量异常）
+}
+
+// 主动提醒分发：① 电脑弹窗（系统通知，需网页保持运行）② 远端通道（微信/邮件，按最快自动优选）
+async function pushAnomalyAlert(list) {
+  const worst = list.slice().sort((a, b) => b.sev - a.sev)[0];
+  const summary = list.map((a) => a.title).join("；");
+  const wantDesk = localStorage.getItem("nassafe_desk_notify") === "1";
+  const wantRemote = localStorage.getItem("nassafe_remote_notify") === "1";
+
+  if (wantDesk && "Notification" in window && Notification.permission === "granted") {
+    let body = summary;
+    // AI 供应商 = 本地模型时，用本地 AI 把异常写成一句人话提醒（数据不出本机）
+    const provider = ($("aiProvider") && $("aiProvider").value) || "";
+    if (provider === "ollama" && localStorage.getItem("nassafe_ai_notify") !== "0") {
+      try {
+        const d = await api("/api/ai/ask", {
+          method: "POST",
+          body: JSON.stringify({
+            question: `请用一句通俗中文（30 字以内）提醒电脑前的用户：${summary}。只输出提醒文案，不要解释。`,
+          }),
+        });
+        if (d && d.text) body = d.text.trim().slice(0, 60);
+      } catch (e) { /* AI 不可用时退回原始摘要 */ }
+    }
+    try {
+      const n = new Notification("NAS Safe 异常提醒", { body, tag: "nassafe-anom", requireInteraction: true });
+      n.onclick = () => { window.focus(); openAnomalyModal(); };
+    } catch (e) { /* 部分浏览器限制非 HTTPS 通知，忽略 */ }
+  }
+
+  if (wantRemote) {
+    try {
+      await api("/api/notify/alert", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "NAS Safe 异常提醒",
+          detail: summary,
+          level: worst.sev >= 2 ? "critical" : "warn",
+        }),
+      });
+    } catch (e) { /* 推送失败不打断页面 */ }
+  }
 }
 
 // 无勒索告警时，用硬件/容量类异常横幅顶置（点击打开异常面板）
@@ -1797,6 +1840,28 @@ $("aiDiscoverBtn").onclick = aiDiscover;
 $("alertBanner").onclick = () => openAnomalyModal();
 $("alertBanner").style.cursor = "pointer";
 $("alertBanner").title = "点击查看异常详情";
+
+// 异常主动提醒：电脑弹窗授权 + 三个开关（本地 AI 文案 / 电脑弹窗 / 远端通道）
+if ("Notification" in window) {
+  $("notifyPermBtn").onclick = async () => {
+    const p = await Notification.requestPermission();
+    toast(p === "granted" ? "已授权电脑弹窗提醒" : (p === "denied" ? "被浏览器拒绝，请在地址栏权限里允许" : "未授权"), p === "granted" ? "ok" : "warn");
+  };
+} else {
+  $("notifyPermBtn").onclick = () => toast("当前浏览器不支持桌面通知", "warn");
+}
+$("deskNotifyChk").checked = localStorage.getItem("nassafe_desk_notify") === "1";
+$("aiNotifyChk").checked = localStorage.getItem("nassafe_ai_notify") !== "0";
+$("remoteNotifyChk").checked = localStorage.getItem("nassafe_remote_notify") === "1";
+$("deskNotifyChk").onchange = () => localStorage.setItem("nassafe_desk_notify", $("deskNotifyChk").checked ? "1" : "0");
+$("aiNotifyChk").onchange = () => localStorage.setItem("nassafe_ai_notify", $("aiNotifyChk").checked ? "1" : "0");
+$("remoteNotifyChk").onchange = () => localStorage.setItem("nassafe_remote_notify", $("remoteNotifyChk").checked ? "1" : "0");
+$("pushTestBtn").onclick = async () => {
+  try {
+    const r = await api("/api/notify/alert", { method: "POST", body: JSON.stringify({ title: "NAS Safe 测试提醒", detail: "这是一条异常提醒通道的测试消息", level: "warn" }) });
+    toast(r && r.ok ? `已推送（通道：${r.channel}）` : `推送失败：${(r && r.msg) || "未知"}`, r && r.ok ? "ok" : "err");
+  } catch (e) { toast("推送失败：" + e.message, "err"); }
+};
 // 时间轴页：卷切换下拉框 —— 不用回总览，直接换卷看时间轴
 $("tlVolumeSel").onchange = () => {
   const key = $("tlVolumeSel").value;
