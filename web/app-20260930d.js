@@ -1,4 +1,5 @@
 /* NAS Safe — 前端逻辑 */
+const APP_JS_VER = "20260930d";
 
 const $ = (id) => document.getElementById(id);
 
@@ -1999,7 +2000,6 @@ if ("Notification" in window) {
 // 小助手在本机 127.0.0.1:18765 提供 /ping（在线检测）与 /stop（请求退出）；
 // 启动走 nassafe-agent:// 自定义协议（安装时注册），浏览器会弹一次「打开？」确认。
 const AGENT_CTRL = "http://127.0.0.1:18765";
-const APP_JS_VER = "20260930c";
 
 function setTestResult(t) {
   const el = document.getElementById("testResult");
