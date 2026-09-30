@@ -105,13 +105,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._reply(502, json.dumps({"ok": False, "error": str(e)[:300]}))
         if p == "/callback":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            sig = (q.get("signature", [""])[0], q.get("timestamp", [""])[0], q.get("nonce", [""])[0])
+            echostr = q.get("echostr", [""])[0]
             token = os.environ.get("WECHAT_CB_TOKEN", "")
-            if token:
-                calc = hashlib.sha1("".join(sorted([token, sig[1], sig[2]])).encode()).hexdigest()
-                if calc != sig[0]:
-                    return self._reply(403, "bad signature", "text/plain")
-            return self._reply(200, q.get("echostr", ["ok"])[0], "text/plain")
+            if echostr:
+                # 微信服务器验签请求：校验签名后原样返回 echostr
+                sig = (q.get("signature", [""])[0], q.get("timestamp", [""])[0], q.get("nonce", [""])[0])
+                if token:
+                    calc = hashlib.sha1("".join(sorted([token, sig[1], sig[2]])).encode()).hexdigest()
+                    if calc != sig[0]:
+                        return self._reply(403, "bad signature", "text/plain")
+                return self._reply(200, echostr, "text/plain")
+            # 非验签访问（浏览器直开）→ 友好提示
+            return self._reply(200, "wechat callback endpoint ready", "text/plain")
         return self._reply(404, json.dumps({"ok": False, "error": "not found"}))
 
     def do_POST(self):  # noqa: N802
