@@ -1928,22 +1928,25 @@ function showNotifyPermGuide(why) {
   refresh();
 }
 
-// 关掉网页也想收到提醒 → 桌面小助手（本机常驻，不依赖浏览器）
+// 关掉网页也想收到提醒 → 桌面小助手一键安装：下载 setup.bat → 双击 → 弹窗确认即完成
 function showDesktopAgentGuide() {
-  const cmd = `pythonw "${(location.origin + "/desktop_agent.py").replace(/^/, "")}" --nas ${location.origin}`;
   openModal(
-    "🖥 用桌面小助手（关掉网页也能弹）",
-    `<p>浏览器权限只能让「网页开着时」弹窗。想彻底关掉网页也收到提醒，用这个本机常驻小程序：</p>
+    "🖥 安装桌面小助手（关掉网页也能弹）",
+    `<p>浏览器权限只能让「网页开着时」弹窗。装上这个本机小助手后，<b>彻底关掉网页也能收到 Windows 通知</b>，还会开机自启、自动守护。</p>
      <ol class="perm-steps">
-       <li>在本机 NAS Safe 目录找到 <code>scripts/desktop_agent.py</code></li>
-       <li>命令行运行（后台静默）：
-         <div class="code-box"><code>pythonw scripts/desktop_agent.py --nas ${escapeHtml(location.origin)}</code></div></li>
-       <li>它会在后台定时查 NAS 状态，有异常直接弹 Windows 通知中心提醒，不需要开网页</li>
+       <li>点右下角 <b>「⬇ 下载一键安装包」</b>，浏览器会下载一个 <code>NAS-Safe-agent-setup.bat</code></li>
+       <li><b>双击</b>刚下载的这个文件（会自动下载小助手并寻找 Python）</li>
+       <li>弹出确认窗口：<b>选你的 NAS 地址，点「安装并开机自启」</b> —— 完成！</li>
      </ol>
-     <p class="muted">小助手只用 Python 自带库，不用装任何东西；退出就是关掉对应进程。</p>`,
-    `<button class="btn ghost" data-act="copy">复制命令</button>
-     <button class="btn primary" data-act="close">知道了</button>`,
+     <p class="muted">安装后它会弹一条「已安装」通知；以后 NAS 有异常直接弹 Windows 通知，跟网页开不开无关。<br>
+     需要本机装有 Python 3（没装的话脚本会自动打开下载页）；卸载只需在弹窗里选停止。</p>`,
+    `<button class="btn ghost" data-act="copy">复制手动命令</button>
+     <button class="btn primary" data-act="download">⬇ 下载一键安装包</button>`,
     {
+      download: () => {
+        window.open("/agent/setup.bat", "_blank");
+        toast("已开始下载，下载完成后双击运行即可", "ok");
+      },
       copy: () => {
         const text = `pythonw scripts/desktop_agent.py --nas ${location.origin}`;
         if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1955,7 +1958,6 @@ function showDesktopAgentGuide() {
       },
     }
   );
-  void cmd;
 }
 
 if ("Notification" in window) {
@@ -1976,6 +1978,103 @@ if ("Notification" in window) {
 } else {
   $("notifyPermBtn").onclick = () => showNotifyPermGuide("当前浏览器不支持桌面通知。");
 }
+// ------------------------- 桌面小助手：设置页开关直控 -------------------------
+// 小助手在本机 127.0.0.1:18765 提供 /ping（在线检测）与 /stop（请求退出）；
+// 启动走 nassafe-agent:// 自定义协议（安装时注册），浏览器会弹一次「打开？」确认。
+const AGENT_CTRL = "http://127.0.0.1:18765";
+
+function fetchT(url, ms) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  return fetch(url, { signal: ctl.signal }).finally(() => clearTimeout(t));
+}
+
+async function agentPing(ms = 1500) {
+  try {
+    const r = await fetchT(`${AGENT_CTRL}/ping`, ms);
+    return (await r.json()).agent === "nassafe";
+  } catch (_) {
+    return false;
+  }
+}
+
+function setAgentState(text, running) {
+  const el = $("agentState");
+  if (el) {
+    el.textContent = text;
+    el.style.color = running === true ? "var(--z-monitor,#2fe0a0)" : running === false ? "var(--text-3,#8892a6)" : "";
+  }
+}
+
+async function refreshAgentState() {
+  const on = await agentPing();
+  const chk = $("agentChk");
+  if (chk) {
+    chk.checked = on;
+    chk.disabled = false;
+  }
+  setAgentState(on ? "● 运行中" : "未运行", on);
+  // 小助手在跑时，电脑提醒全部由它接管，网页弹窗备选自动隐藏
+  const webRow = $("webNotifyRow");
+  if (webRow) webRow.hidden = on;
+  localStorage.setItem("nassafe_agent_enabled", on ? "1" : "0");
+  return on;
+}
+
+async function onAgentToggle() {
+  const chk = $("agentChk");
+  if (chk.disabled) return;
+  chk.disabled = true;
+  try {
+    if (chk.checked) {
+      if (await agentPing()) {
+        setAgentState("● 运行中", true);
+        localStorage.setItem("nassafe_agent_enabled", "1");
+        toast("桌面小助手已在运行", "ok");
+        return;
+      }
+      setAgentState("正在启动…", null);
+      // 浏览器不允许网页直接执行本地程序，走自定义协议拉起（浏览器可能弹一次「打开？」）
+      try { location.href = "nassafe-agent://start"; } catch (_) { /* 忽略 */ }
+      await new Promise((r) => setTimeout(r, 4000));
+      if (await agentPing()) {
+        setAgentState("● 运行中", true);
+        localStorage.setItem("nassafe_agent_enabled", "1");
+        toast("桌面小助手已启动并开机自启", "ok");
+      } else {
+        chk.checked = false;
+        setAgentState("未安装", false);
+        showDesktopAgentGuide();
+      }
+    } else {
+      setAgentState("正在停止…", null);
+      let stopped = false;
+      try {
+        await fetchT(`${AGENT_CTRL}/stop`, 2500);
+        stopped = true;
+      } catch (_) { /* 进程可能本就不在 */ }
+      await new Promise((r) => setTimeout(r, 2500));
+      const still = await agentPing();
+      if (still) {
+        chk.checked = true;
+        setAgentState("● 运行中", true);
+        toast("小助手未响应停止请求，请稍后重试", "warn");
+      } else {
+        setAgentState(stopped ? "已停止" : "未运行", false);
+        localStorage.setItem("nassafe_agent_enabled", "0");
+        toast("桌面小助手已停止", "ok");
+      }
+    }
+  } finally {
+    chk.disabled = false;
+  }
+}
+
+$("agentChk").onchange = onAgentToggle;
+$("agentInstallBtn").onclick = showDesktopAgentGuide;
+refreshAgentState();
+setInterval(() => { if (!$("agentChk").disabled) refreshAgentState(); }, 30000);
+
 $("deskNotifyChk").checked = localStorage.getItem("nassafe_desk_notify") === "1";
 $("aiNotifyChk").checked = localStorage.getItem("nassafe_ai_notify") !== "0";
 $("remoteNotifyChk").checked = localStorage.getItem("nassafe_remote_notify") === "1";

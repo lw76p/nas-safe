@@ -61,6 +61,47 @@ PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
 WEB_DIR = os.environ.get("NASSAFE_WEB_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web"
 )
+SCRIPTS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"
+)
+
+
+def _gen_setup_bat(base_url: str) -> str:
+    """生成 Windows 一键安装脚本（纯 ASCII + CRLF，cmd 兼容）。
+
+    用户双击后：下载 desktop_agent.py 到 %APPDATA%\\NASSafeAgent\\，
+    寻找本机 pythonw 并以 --install 启动（探测/确认地址 + 开机自启 + 注册协议）。
+    """
+    bat = """@echo off
+setlocal EnableExtensions
+title NAS Safe Agent Setup
+set "DIR=%APPDATA%\\NASSafeAgent"
+set "URL=__BASE__"
+set "PYW="
+echo [NAS Safe] Downloading agent...
+mkdir "%DIR%" 2>nul
+powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; try{Invoke-WebRequest -UseBasicParsing -Uri '%URL%/agent/desktop_agent.py' -OutFile '%DIR%\\desktop_agent.py' -TimeoutSec 30}catch{exit 1}"
+if errorlevel 1 (
+  echo [NAS Safe] Download failed. Please check the NAS address: %URL%
+  pause
+  exit /b 1
+)
+for /f "delims=" %%P in ('where pythonw.exe 2^>nul') do if not defined PYW set "PYW=%%P"
+for /f "delims=" %%P in ('where pyw.exe 2^>nul') do if not defined PYW set "PYW=%%P"
+if not defined PYW if exist "%LOCALAPPDATA%\\Programs\\Python\\Python313\\pythonw.exe" set "PYW=%LOCALAPPDATA%\\Programs\\Python\\Python313\\pythonw.exe"
+if not defined PYW if exist "%LOCALAPPDATA%\\Programs\\Python\\Python312\\pythonw.exe" set "PYW=%LOCALAPPDATA%\\Programs\\Python\\Python312\\pythonw.exe"
+if not defined PYW (
+  echo [NAS Safe] Python was not found on this PC.
+  echo Please install Python 3 from the page that is opening, then run this file again.
+  start "" "https://www.python.org/downloads/"
+  pause
+  exit /b 1
+)
+echo [NAS Safe] Installing... A setup window will appear. Choose your NAS and click the button.
+start "" "%PYW%" "%DIR%\\desktop_agent.py" --nas "%URL%" --install
+exit /b 0
+"""
+    return bat.replace("__BASE__", base_url).replace("\n", "\r\n")
 
 # 快照名允许的字符
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -480,6 +521,26 @@ class Handler(BaseHTTPRequestHandler):
                     if not path:
                         raise StorageError("缺少 path 或 snapshot_id 参数")
                     self._send_json(build_browse(unquote(path)))
+            elif route.startswith("/agent/"):
+                # 桌面小助手分发：py 脚本静态下载；setup.bat 按当前 Host 动态生成
+                name = route[len("/agent/"):]
+                if name == "desktop_agent.py":
+                    self._send_file(os.path.join(SCRIPTS_DIR, "desktop_agent.py"))
+                elif name == "setup.bat":
+                    host = self.headers.get("Host") or ""
+                    base = f"http://{host}" if host else ""
+                    data = _gen_setup_bat(base).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header(
+                        "Content-Disposition",
+                        'attachment; filename="NAS-Safe-agent-setup.bat"',
+                    )
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self._send_json({"ok": False, "error": "未知文件"}, 404)
             elif route.startswith("/api/"):
                 self._send_json({"ok": False, "error": f"未知接口: {route}"}, 404)
             else:
