@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.9"
+AGENT_VER = "1.0.6.10"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -427,20 +427,20 @@ class ToastManager:
         except Exception:
             bar = None
 
-        # 标题（粗体 accent）
+        # 标题（粗体 accent）；必须带 WS_VISIBLE，否则子控件永久隐藏（曾致气泡只有底板没文字）
         title_w = u32.CreateWindowExW(
             0, "Static", "",
-            0x40000000 | 0x00000000,                    # WS_CHILD | SS_LEFT
+            0x40000000 | 0x10000000,                    # WS_CHILD | WS_VISIBLE
             16, 12, w - 32, 24, hwnd, None, self._hinst, None)
         if title_w:
             u32.SetWindowTextW(title_w, str(title))
             u32.SendMessageW(title_w, 0x0030, self._font_title, 1)   # WM_SETFONT
             self._colors[int(title_w)] = _TOAST_ACCENT
 
-        # 正文（常规浅色，自动换行）
+        # 正文（常规浅色，自动换行）；同样必须 WS_VISIBLE
         body_w = u32.CreateWindowExW(
             0, "Static", "",
-            0x40000000 | 0x00000020 | 0x00000080,        # WS_CHILD|SS_WORDBREAK|SS_NOPREFIX
+            0x40000000 | 0x10000000 | 0x00000020 | 0x00000080,   # WS_CHILD|WS_VISIBLE|SS_WORDBREAK|SS_NOPREFIX
             16, 40, w - 32, h - 52, hwnd, None, self._hinst, None)
         if body_w:
             u32.SetWindowTextW(body_w, str(body))
