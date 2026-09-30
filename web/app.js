@@ -347,7 +347,7 @@ function renderMetrics(m) {
       sata.map((d, i) => chip(d, `HDD ${i + 1}`)).join("")}</div></div>`;
   }
   const card4 = (m.disks || []).length ? `
-    <div class="metric-card mc-${GRADE[g4][0]}">
+    <div class="metric-card metric-card-wide mc-${GRADE[g4][0]}">
       ${cardHead("磁盘", g4, `<span class="muted">（${m.disks.length} 块）</span>`)}
       ${diskGroups}
     </div>` : "";

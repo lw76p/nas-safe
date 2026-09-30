@@ -139,13 +139,18 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .tab.active[data-view="settings"] { background: var(--z-guard-soft); border-color: var(--z-guard); }
 
 /* --------------------------- 系统仪表盘 --------------------------- */
+/* flex 布局：同排卡片等宽等高，内容自适应；磁盘卡独占整行，无网格幽灵空列问题 */
 .metrics-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 14px;
-  align-items: start;   /* 隐藏卡片不破格：剩余卡片自动补位铺满 */
+  align-items: stretch;
 }
 .metric-card {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-left: 3px solid var(--green);
@@ -154,6 +159,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 }
 .metric-card.mc-warn { border-left-color: var(--amber); }
 .metric-card.mc-bad { border-left-color: var(--red); }
+.metric-card-wide { flex: 1 1 100%; }  /* 磁盘卡独占一整行，芯片横向铺开 */
 .metric-card h4 {
   margin: 0 0 10px;
   font-size: 13px;
@@ -224,7 +230,8 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 }
 .disk-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  /* auto-fit + 1fr：盘少时均分整行横向铺满；盘多时每块缩到最小宽度再换行 */
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 8px;
 }
 .disk-chip {
@@ -245,7 +252,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .chip-temp.ok { color: var(--green); }
 .chip-temp.warn { color: var(--amber); }
 .chip-temp.bad { color: var(--red); }
-.chip-io { font-family: var(--font-mono); font-size: 10px; white-space: nowrap; }
+.chip-io { font-family: var(--font-mono); font-size: 10px; white-space: normal; word-break: break-all; line-height: 1.3; }
 
 /* --------------------------- 弹窗选择器（监控路径 / AI 服务） --------------------------- */
 .pick-row {
