@@ -1779,6 +1779,12 @@ async function saveAI() {
     base_url: ($("aiBase").value || "").trim(),
     model: ($("aiModel").value || "").trim(),
   };
+  // 本地地址/模型输入框只在「本地 AI」时显示；云端供应商一律清空这两个值，
+  // 防止之前试本地 AI 时残留的 192.168.x.x:11434 地址串进云端配置（曾致云端 404）
+  if (prov !== "ollama") {
+    cfg.base_url = "";
+    cfg.model = "";
+  }
   // 空值或脱敏占位 *** 都不传 api_key，由后端保留旧 Key
   if (keyVal && keyVal !== "***") cfg.api_key = keyVal;
   try {
