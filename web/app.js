@@ -272,20 +272,21 @@ function renderMetrics(m) {
       <div class="metric-kv"><span>运行时间</span><b>${up.days || 0} 天 ${up.hours || 0} 小时 ${up.minutes || 0} 分</b></div>
     </div>`;
 
-  // 卡2：硬件信息 —— 温度/风扇/负载清单，逐项状态灯
+  // 卡2：硬件信息 —— 温度/风扇/负载清单，逐项状态灯；一样都没有就整卡隐藏
   const fanRows = m.fan || {};
   const hwRow = (label, val, g) =>
     `<div class="metric-kv hw"><span>${label}</span><span class="hw-val">${val}${dot(g)}</span></div>`;
-  const hasFan = cap.fan && (fanRows.fan_rpm || fanRows.cpu_fan_rpm);
-  const card2 = `
+  const hwRows = [
+    cap.cpu_temp ? hwRow("CPU 温度", `${m.cpu.temp_c}°C`, gTemp) : "",
+    cap.fan && fanRows.cpu_fan_rpm ? hwRow("CPU 风扇", `${fanRows.cpu_fan_rpm} RPM`, 0) : "",
+    cap.fan && fanRows.fan_rpm ? hwRow("系统风扇", `${fanRows.fan_rpm} RPM`, 0) : "",
+    m.cpu && m.cpu.load1 != null ? hwRow("系统负载", `${m.cpu.load1}`, gLoad) : "",
+  ].join("");
+  const card2 = hwRows ? `
     <div class="metric-card metric-card-sm mc-${GRADE[g1][0]}">
       ${cardHead("硬件信息", g1)}
-      ${cap.cpu_temp ? hwRow("CPU 温度", `${m.cpu.temp_c}°C`, gTemp) : ""}
-      ${cap.fan && fanRows.cpu_fan_rpm ? hwRow("CPU 风扇", `${fanRows.cpu_fan_rpm} RPM`, 0) : ""}
-      ${cap.fan && fanRows.fan_rpm ? hwRow("系统风扇", `${fanRows.fan_rpm} RPM`, 0) : ""}
-      ${m.cpu && m.cpu.load1 != null ? hwRow("系统负载", `${m.cpu.load1}`, gLoad) : ""}
-      ${!cap.cpu_temp && !hasFan ? `<p class="muted">此系统未提供硬件传感器</p>` : ""}
-    </div>`;
+      ${hwRows}
+    </div>` : "";
 
   // 卡3：资源监控 —— CPU/RAM 环形图 + 网卡下拉切换
   const gCpu = cap.cpu_percent ? grade(m.cpu.percent, 80, 95) : 0;
@@ -322,8 +323,8 @@ function renderMetrics(m) {
       ${netBlock || `<p class="muted">未检测到网卡</p>`}
     </div>`;
 
-  // 卡4：存储 —— 卷下拉切换 + 大环形占用图 + 趋势提示
-  const vols = m.volumes || [];
+  // 卡4：存储 —— 卷下拉切换 + 大环形占用图 + 趋势提示；脏数据卷过滤
+  const vols = (m.volumes || []).filter((v) => v && v.mount && v.total_kb > 0);
   let card4 = "";
   if (vols.length) {
     const g3 = vols.reduce((g, v) => Math.max(g, grade(v.percent, 75, 90)), 0);
@@ -333,7 +334,7 @@ function renderMetrics(m) {
     };
     if (!selVol || !vols.some((v) => v.mount === selVol)) selVol = vols[0].mount;
     const cur = vols.find((v) => v.mount === selVol) || vols[0];
-    const pct = Math.max(0, Math.min(100, cur.percent));
+    const pct = Math.max(0, Math.min(100, Number(cur.percent) || 0));
     const gSel = grade(cur.percent, 75, 90);
     const trend = (m.trends || []).find((t) => t.mount === cur.mount);
     const trendHtml = trend
@@ -343,7 +344,7 @@ function renderMetrics(m) {
       : "";
     const volOpts = vols.map((v) =>
       `<option value="${escapeHtml(v.mount)}" ${v.mount === cur.mount ? "selected" : ""}>${escapeHtml(volLabel(v))}</option>`).join("");
-    const avail = cur.available_kb != null ? cur.available_kb : cur.total_kb - cur.used_kb;
+    const avail = Math.max(0, cur.available_kb != null ? cur.available_kb : cur.total_kb - cur.used_kb);
     card4 = `
       <div class="metric-card metric-card-lg mc-${GRADE[g3][0]}">
         ${cardHead("存储", g3)}
@@ -360,28 +361,31 @@ function renderMetrics(m) {
       </div>`;
   }
 
-  // 卡5：磁盘 —— 独占整行，汇总"n/n 正常" + 按类型分组横向铺开
+  // 卡5：磁盘 —— 独占整行，汇总"n/n 正常" + 按类型分组横向铺开；脏数据整行过滤
+  const disks = (m.disks || []).filter((d) => d && d.name);
   const gDisk = (d) => d.temp_c == null ? 0 : grade(d.temp_c, 50, 60);
-  const g4 = (m.disks || []).reduce((g, d) => Math.max(g, gDisk(d)), 0);
-  const okCount = (m.disks || []).filter((d) => gDisk(d) === 0).length;
+  const g4 = disks.reduce((g, d) => Math.max(g, gDisk(d)), 0);
+  const okCount = disks.filter((d) => gDisk(d) === 0).length;
   const ioTxt = (d) => {
     if (d.read_bps == null && d.write_bps == null) return "";
     return `<span class="chip-io">↓${fmtBps(d.read_bps)} ↑${fmtBps(d.write_bps)}</span>`;
   };
   const chip = (d, label) => {
-    const tb = (d.size_b / 1024**4).toFixed(1);
+    const hasSize = d.size_b != null && d.size_b > 0;
+    const tb = hasSize ? `<span>${(d.size_b / 1024**4).toFixed(1)}TB</span>` : "";
     const gd = gDisk(d);
     const temp = d.temp_c != null ? `<span class="chip-temp ${GRADE[gd][0]}">${d.temp_c}°C</span>` : "";
+    const title = d.model ? ` title="${escapeHtml(d.model)}${hasSize ? " " + (d.size_b / 1024**4).toFixed(1) + "TB" : ""}"` : "";
     return `
-      <div class="disk-chip" title="${escapeHtml(d.model)} ${tb}TB">
+      <div class="disk-chip"${title}>
         <b>${label}</b>
-        <span>${tb}TB</span>
+        ${tb}
         ${temp}
         ${ioTxt(d)}
       </div>`;
   };
-  const nvme = (m.disks || []).filter((d) => d.name.startsWith("nvme"));
-  const sata = (m.disks || []).filter((d) => !d.name.startsWith("nvme"));
+  const nvme = disks.filter((d) => d.name.startsWith("nvme"));
+  const sata = disks.filter((d) => !d.name.startsWith("nvme"));
   let diskGroups = "";
   if (nvme.length) {
     diskGroups += `<div class="bay-group"><span class="bay-label">M.2</span><div class="disk-grid">${
@@ -391,9 +395,9 @@ function renderMetrics(m) {
     diskGroups += `<div class="bay-group"><span class="bay-label">3.5"/SATA</span><div class="disk-grid">${
       sata.map((d, i) => chip(d, `HDD ${i + 1}`)).join("")}</div></div>`;
   }
-  const card5 = (m.disks || []).length ? `
+  const card5 = disks.length ? `
     <div class="metric-card metric-card-wide mc-${GRADE[g4][0]}">
-      ${cardHead("磁盘", g4, `<span class="muted">${okCount}/${m.disks.length} 正常</span>`)}
+      ${cardHead("磁盘", g4, `<span class="muted">${okCount}/${disks.length} 正常</span>`)}
       ${diskGroups}
     </div>` : "";
 

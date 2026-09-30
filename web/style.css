@@ -198,7 +198,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .metric-kv.net { font-family: var(--font-mono); font-size: 15px; color: var(--text); }
 .donut-row { display: flex; gap: 18px; align-items: center; margin: 4px 0 8px; }
 .donut { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.donut-label { font-size: 12px; color: var(--text-2); font-weight: 600; }
+.donut-label { font-size: 12px; color: var(--text-2); font-weight: 600; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vol-meter { margin-bottom: 10px; }
 .vol-meter-head { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
 .vol-meter-head span:first-child { color: var(--text); font-weight: 600; }

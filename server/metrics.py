@@ -81,14 +81,20 @@ cat /proc/net/dev 2>/dev/null
 echo "#DF"
 df -kP 2>/dev/null
 echo "#BLK"
-for d in /sys/block/sd? /sys/block/nvme?n? /sys/block/hd?; do
+for d in /sys/block/*; do
+  n=$(basename "$d")
+  case "$n" in loop*|ram*|zram*|dm-*|md*|sr*|drbd*|nbd*) continue ;; esac
   [ -e "$d" ] || continue
-  echo "$(basename "$d")|$(cat "$d/size" 2>/dev/null)|$(cat "$d/device/model" 2>/dev/null | tr -d '\t')"
+  m=$(cat "$d/device/model" 2>/dev/null)
+  [ -n "$m" ] || m=$(cat "$d/device/name" 2>/dev/null)
+  echo "$n|$(cat "$d/size" 2>/dev/null)|$(echo "$m" | tr -d '\\t')"
 done
 echo "#DISKSTAT"
-for d in /sys/block/sd? /sys/block/nvme?n?; do
+for d in /sys/block/*; do
+  n=$(basename "$d")
+  case "$n" in loop*|ram*|zram*|dm-*|md*|sr*|drbd*|nbd*) continue ;; esac
   [ -e "$d" ] || continue
-  echo "$(basename "$d")|$(cat "$d/stat" 2>/dev/null)"
+  echo "$n|$(cat "$d/stat" 2>/dev/null)"
 done
 echo "#TEMP"
 for h in /sys/class/hwmon/hwmon*; do
