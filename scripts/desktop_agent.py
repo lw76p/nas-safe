@@ -10,7 +10,7 @@
     不判断用户是否坐在电脑前（判断空闲既易误判、又要常驻检测，不划算）
   · 小助手被用户关闭：自动上报离线，改由 NAS 服务端看门狗继续发微信/邮件，提醒不丢
   · 常驻形态：系统托盘图标（右下角通知区域）—— 产品蓝盾牌，悬停显示「NAS Safe 桌面助手 · 快照保护中」；
-    有未读告警时蓝色圆中央出现红色感叹号，左键看未读、右键菜单可全部已读或退出
+    有未读告警时蓝色盾牌中央出现红色感叹号，左键看未读、右键菜单可全部已读或退出
 
 阅读规则（按用户要求）：
   · 同一条异常**只弹一次**，异常恢复后才可能再弹
@@ -54,6 +54,17 @@ PROTOCOL = "nassafe-agent"  # 浏览器拉起本机小助手的自定义协议
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
 
+# 托盘单例（通知气球用）
+_TRAY = None
+
+
+def _res_path(name):
+    """取资源文件路径：PyInstaller 单文件运行时从临时目录取，开发时从脚本目录取。"""
+    if getattr(sys, "frozen", False):
+        return os.path.join(getattr(sys, "_MEIPASS", ""), name)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+
+
 
 def http_json(url, timeout=15, method="GET", body=None):
     data = None
@@ -67,54 +78,20 @@ def http_json(url, timeout=15, method="GET", body=None):
 
 
 # --------------------------------------------------------------------------
-# Windows 通知（Toast，自动消失并进通知中心）；失败回退气泡
+# Windows 通知：优先走托盘气球（不调用 PowerShell，避免安全软件拦截）
 # --------------------------------------------------------------------------
-def notify(title, text):
-    safe_t = str(title).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    safe_x = str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    ps_toast = f"""
-$ErrorActionPreference='Stop'
-try {{
-  [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime]
-  [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime]
-  $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-  $xml.LoadXml('<toast scenario="reminder"><visual><binding template="ToastGeneric"><text>{safe_t}</text><text>{safe_x}</text></binding></visual></toast>')
-  $t = New-Object Windows.UI.Notifications.ToastNotification $xml
-  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('NAS Safe 桌面助手').Show($t)
-  exit 0
-}} catch {{ exit 1 }}
-"""
+def notify(title, text, level="info"):
+    """通过托盘图标弹出气球提示；若托盘尚未启动，改用系统弹窗兜底。"""
+    if _TRAY and getattr(_TRAY, "hwnd", None):
+        _TRAY.balloon(title, text, level)
+        return True
+    # 兜底：仅用于安装失败等极罕见场景，平时不会走到这里
     try:
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
-             "-Command", ps_toast],
-            capture_output=True, timeout=25, creationflags=CREATE_NO_WINDOW,
-        )
-        if r.returncode == 0:
-            return True
+        ctypes.windll.user32.MessageBoxW(None, str(text), str(title), 0x00000030 | 0x00001000)
     except Exception:
         pass
-    ps_balloon = f"""
-Add-Type -AssemblyName System.Windows.Forms
-$n = New-Object System.Windows.Forms.NotifyIcon
-$n.Icon = [System.Drawing.SystemIcons]::Information
-$n.BalloonTipTitle = '{safe_t}'
-$n.BalloonTipText = '{safe_x}'
-$n.Visible = $true
-$n.ShowBalloonTip(10000)
-Start-Sleep -Seconds 6
-$n.Dispose()
-"""
-    try:
-        subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
-             "-Command", ps_balloon],
-            capture_output=True, timeout=30, creationflags=CREATE_NO_WINDOW,
-        )
-        return True
-    except Exception as e:
-        print("通知失败：", e, file=sys.stderr)
-        return False
+    return False
+
 
 
 # --------------------------------------------------------------------------
@@ -490,6 +467,14 @@ def self_install_flow(base_hint=""):
     try:
         os.makedirs(dst_dir, exist_ok=True)
         shutil.copy2(src, dst)
+        # 同时复制图标资源，安装后运行能找到 ICO 文件
+        for ico in ("nassafe_agent.ico", "nassafe_agent_alert.ico"):
+            src_ico = _res_path(ico)
+            if os.path.isfile(src_ico):
+                try:
+                    shutil.copy2(src_ico, os.path.join(dst_dir, ico))
+                except Exception:
+                    pass
     except Exception as e:
         print("复制到安装目录失败：", e, file=sys.stderr)
         notify("NAS Safe 安装未完成",
@@ -747,13 +732,21 @@ def install_wizard(base_hint=""):
 # 系统托盘图标（ctypes + Win32，纯标准库，零第三方依赖）
 #
 #   正常：产品蓝盾牌（与 NAS Safe 界面同色）；悬停提示「NAS Safe · 快照保护中」
-#   告警：蓝色圆中央出现红色感叹号；悬停提示未读条数
+#   告警：蓝色盾牌中央出现红色感叹号；悬停提示未读条数
 #   左键：打开未读列表；右键：菜单（查看未读 / 全部已读 / 退出）
 # --------------------------------------------------------------------------
 class TrayIcon:
     WM_TRAY = 0x0400 + 1        # 托盘回调消息
     WM_UPDATE = 0x0400 + 2      # 主线程通知托盘线程刷新图标
+    WM_BALLOON = 0x0400 + 3     # 主线程通知托盘线程弹出气球
     ID_OPEN, ID_READ_ALL, ID_QUIT = 1001, 1002, 1003
+    NIF_ICON = 0x00000002
+    NIF_TIP = 0x00000004
+    NIF_INFO = 0x00000010
+    NIIF_INFO = 0x00000001
+    NIIF_WARNING = 0x00000002
+    IMAGE_ICON = 1
+    LR_LOADFROMFILE = 0x00000010
 
     def __init__(self, tip_normal="NAS Safe 桌面助手 · 快照保护中",
                  on_open=None, on_read_all=None, on_quit=None):
@@ -776,7 +769,11 @@ class TrayIcon:
         while waited < timeout and not self.hwnd and not self._failed:
             time.sleep(0.1)
             waited += 0.1
-        return bool(self.hwnd)
+        if self.hwnd:
+            global _TRAY
+            _TRAY = self
+            return True
+        return False
 
     def update(self, unread=0):
         """刷新图标与提示（未读数 > 0 显示红色感叹号）。"""
@@ -797,9 +794,40 @@ class TrayIcon:
         except Exception:
             pass
 
-    # ---------------- 图标绘制（自绘 32bpp，带 alpha 抗锯齿） ----------------
+    def balloon(self, title, body, level="info"):
+        """从任意线程调用: 让托盘线程弹出一个气球提示 (自动消失, 进通知中心)."""
+        if not self.hwnd:
+            return False
+        self._balloon_title = str(title)[:63]
+        self._balloon_body = str(body)[:255]
+        self._balloon_flags = self.NIIF_WARNING if level in ("warn", "critical") else self.NIIF_INFO
+        try:
+            ctypes.windll.user32.PostMessageW(self.hwnd, self.WM_BALLOON, 0, 0)
+        except Exception:
+            return False
+        return True
+
+    # ---------------- 托盘图标（优先读 ICO 资源，更清晰；失败回退自绘） ----------------
     @staticmethod
-    def _make_hicon(alert: bool, size: int = 32):
+    def _load_hicon(alert: bool):
+        """从同目录/打包资源里加载 ICO 图标 (16x16 用于托盘, 高 DPI 自动选帧)."""
+        try:
+            u32 = ctypes.windll.user32
+            name = "nassafe_agent_alert.ico" if alert else "nassafe_agent.ico"
+            path = _res_path(name)
+            if not os.path.isfile(path):
+                return None
+            # 取系统建议的小图标尺寸 (通常是 16)
+            size = u32.GetSystemMetrics(49) or 16  # SM_CXSMICON
+            hicon = u32.LoadImageW(None, path, TrayIcon.IMAGE_ICON,
+                                   size, size,
+                                   TrayIcon.LR_LOADFROMFILE | 0x00008000)  # LR_SHARED
+            return hicon or None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _make_hicon(alert: bool, size: int = 16):
         try:
             u32 = ctypes.windll.user32
             g32 = ctypes.windll.gdi32
@@ -922,8 +950,8 @@ class TrayIcon:
                                            ctypes.c_size_t, ctypes.c_ssize_t]
             u32.DefWindowProcW.restype = ctypes.c_ssize_t
 
-            hicon_ok = self._make_hicon(False)
-            hicon_alert = self._make_hicon(True)
+            hicon_ok = self._load_hicon(False) or self._make_hicon(False)
+            hicon_alert = self._load_hicon(True) or self._make_hicon(True)
             self._icons = [hicon_ok, hicon_alert]
 
             def _wndproc(hwnd, msg, wparam, lparam):
@@ -940,10 +968,21 @@ class TrayIcon:
                         nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
                         nid.hWnd = hwnd
                         nid.uID = 1
-                        nid.uFlags = 0x00000002 | 0x00000004   # NIF_ICON | NIF_TIP
+                        nid.uFlags = self.NIF_ICON | self.NIF_TIP
                         nid.hIcon = self._icons[1] if n > 0 else self._icons[0]
                         nid.szTip = (self.tip_normal if n <= 0
-                                     else f"NAS Safe 桌面助手 · {n} 条未读提醒（点击查看）")[:127]
+                                     else f"NAS Safe 桌面助手 · {n} 条未读提醒")[:127]
+                        s32.Shell_NotifyIconW(1, ctypes.byref(nid))   # NIM_MODIFY
+                    elif msg == self.WM_BALLOON:
+                        nid = NOTIFYICONDATAW()
+                        nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+                        nid.hWnd = hwnd
+                        nid.uID = 1
+                        nid.uFlags = self.NIF_INFO
+                        nid.szInfoTitle = getattr(self, "_balloon_title", "")[:63]
+                        nid.szInfo = getattr(self, "_balloon_body", "")[:255]
+                        nid.dwInfoFlags = getattr(self, "_balloon_flags", self.NIIF_INFO)
+                        nid.uTimeout = 12000
                         s32.Shell_NotifyIconW(1, ctypes.byref(nid))   # NIM_MODIFY
                     elif msg == 0x0111:                     # WM_COMMAND
                         if wparam == self.ID_OPEN and self.on_open:
@@ -979,7 +1018,7 @@ class TrayIcon:
             nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
             nid.hWnd = hwnd
             nid.uID = 1
-            nid.uFlags = 0x00000001 | 0x00000002 | 0x00000004  # MESSAGE | ICON | TIP
+            nid.uFlags = 0x00000001 | self.NIF_ICON | self.NIF_TIP  # MESSAGE | ICON | TIP
             nid.uCallbackMessage = self.WM_TRAY
             nid.hIcon = self._icons[0]
             nid.szTip = self.tip_normal
