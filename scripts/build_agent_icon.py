@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """生成 NAS Safe 桌面助手托盘/EXE 图标（多尺寸 ICO）。
 
-正常图标：蓝色盾牌；告警图标：蓝色盾牌正中红色感叹号。
-生成 16/24/32/48/256 多帧，确保托盘 16×16 也不糊成圆。
+正常图标：蓝色圆角盾牌 + 白色对勾；告警图标：蓝色圆角盾牌 + 红色感叹号。
+盾牌比例与网页 LOGO 一致，顶部圆角、两侧饱满、底部尖。
 """
 import io
 import os
@@ -12,53 +12,79 @@ import sys
 from PIL import Image, ImageDraw
 
 BLUE = (37, 99, 235)
+BLUE_DARK = (29, 78, 216)
+BLUE_LIGHT = (59, 130, 246)
 RED = (239, 68, 68)
-SHIELD_FILL = (37, 99, 235)
-SHIELD_STROKE = (29, 78, 216)
 
 
-def _shield_polygon(size):
-    """生成盾牌轮廓点（上宽下窄，底部尖），以左上角为 (0,0)。"""
+def _draw_shield(draw, size):
+    """画一个与网页 LOGO 一致的盾牌：顶部平、两侧微鼓、肩部明显、底部尖。"""
     s = size
-    # 顶部略低于最上沿，两侧留出边距
-    margin = s * 0.08
-    top = margin
-    left = margin
-    right = s - margin
-    # 肩高
-    shoulder = s * 0.32
-    # 底部尖点
-    tip_x = s / 2.0
-    tip_y = s - margin * 0.6
-    return [
-        (left, top),
-        (right, top),
-        (right, shoulder),
-        (tip_x, tip_y),
-        (left, shoulder),
+    cx = s / 2.0
+    pad = s * 0.08
+    top = pad
+    shoulder = s * 0.45
+    tip_y = s - pad * 0.5
+    top_w = s * 0.74  # 顶部宽度
+    shoulder_w = s * 0.86  # 肩部宽度
+
+    # 盾牌主体多边形：左上、右上、右肩、底尖、左肩
+    poly = [
+        (cx - top_w / 2, top),
+        (cx + top_w / 2, top),
+        (cx + shoulder_w / 2, shoulder),
+        (cx, tip_y),
+        (cx - shoulder_w / 2, shoulder),
     ]
+
+    # 阴影
+    shadow = [(x + 1, y + 1) for x, y in poly]
+    draw.polygon(shadow, fill=(0, 0, 0, 60))
+
+    # 主体
+    draw.polygon(poly, fill=BLUE + (255,))
+
+    # 描边
+    draw.polygon(poly, outline=BLUE_DARK + (200,), width=max(1, size // 26))
+
+    # 内部高光：小一号的同款盾牌，居上，营造立体感
+    if size >= 24:
+        inset_factor = 0.82
+        hi = [(cx + (x - cx) * inset_factor, y * inset_factor + s * 0.02) for x, y in poly]
+        draw.polygon(hi, fill=BLUE_LIGHT + (110,))
 
 
 def _draw_exclamation(draw, size):
     """在盾牌正中央画加粗红色感叹号。"""
     s = size
     cx = s / 2.0
-    cy = s / 2.0
-    bar_w = max(2.5, s * 0.17)
-    # 竖条：占据中上部分
-    bar_top = s * 0.27
-    bar_bottom = s * 0.62
+    bar_w = max(2.5, s * 0.16)
+    bar_top = s * 0.28
+    bar_bottom = s * 0.60
     draw.rounded_rectangle(
         [cx - bar_w / 2, bar_top, cx + bar_w / 2, bar_bottom],
         radius=max(1, s * 0.04),
         fill=RED,
     )
-    # 圆点
-    dot_r = max(1.8, s * 0.085)
-    dot_y = s * 0.77
+    dot_r = max(1.8, s * 0.08)
+    dot_y = s * 0.74
     draw.ellipse(
         [cx - dot_r, dot_y - dot_r, cx + dot_r, dot_y + dot_r],
         fill=RED,
+    )
+
+
+def _draw_check(draw, size):
+    """正常状态在盾牌正中画白色对勾（与网页 LOGO 一致）。"""
+    s = size
+    w = max(2.0, s * 0.12)
+    draw.line(
+        [(s * 0.32, s * 0.54), (s * 0.46, s * 0.68)],
+        fill=(255, 255, 255, 255), width=int(w),
+    )
+    draw.line(
+        [(s * 0.46, s * 0.68), (s * 0.70, s * 0.38)],
+        fill=(255, 255, 255, 255), width=int(w),
     )
 
 
@@ -66,21 +92,11 @@ def _render_frame(size, alert=False):
     """渲染单尺寸RGBA图像。"""
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-
-    poly = _shield_polygon(size)
-    # 画阴影/描边：让盾牌在浅色/深色任务栏都有边界感
-    if size >= 16:
-        shadow_poly = [(x + 1, y + 1) for x, y in poly]
-        draw.polygon(shadow_poly, fill=(0, 0, 0, 80))
-    draw.polygon(poly, fill=SHIELD_FILL + (255,))
-    # 内高光线，增强立体感
-    if size >= 24:
-        inset = [(x * 0.88 + size * 0.06, y * 0.88 + size * 0.06) for x, y in poly]
-        draw.polygon(inset, fill=(59, 130, 246, 160))
-    draw.polygon(poly, outline=SHIELD_STROKE + (160,), width=max(1, size // 24))
-
+    _draw_shield(draw, size)
     if alert:
         _draw_exclamation(draw, size)
+    else:
+        _draw_check(draw, size)
     return img
 
 
@@ -107,7 +123,6 @@ def _write_ico(path, imgs):
 
 def build_ico(out_path, alert=False, sizes=(16, 24, 32, 48, 256)):
     frames = [_render_frame(s, alert) for s in sizes]
-    # 最小尺寸放在最前面，Windows 会按 DPI 自动选择最合适的帧
     _write_ico(out_path, frames)
 
 

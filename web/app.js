@@ -2001,9 +2001,10 @@ function fetchT(url, ms) {
 async function agentPing(ms = 1500) {
   try {
     const r = await fetchT(`${AGENT_CTRL}/ping`, ms);
-    return (await r.json()).agent === "nassafe";
+    const data = await r.json();
+    return { ok: data.agent === "nassafe", ver: data.ver || "old", unread: data.unread || 0 };
   } catch (_) {
-    return false;
+    return { ok: false, ver: "", unread: 0 };
   }
 }
 
@@ -2016,13 +2017,14 @@ function setAgentState(text, running) {
 }
 
 async function refreshAgentState() {
-  const on = await agentPing();
+  const { ok: on, ver, unread } = await agentPing();
   const chk = $("agentChk");
   if (chk) {
     chk.checked = on;
     chk.disabled = false;
   }
-  setAgentState(on ? "● 运行中" : "未运行", on);
+  const verText = on ? `● 运行中${ver && ver !== "old" ? " · v" + ver : ""}${unread ? " · " + unread + " 条未读" : ""}` : "未运行";
+  setAgentState(verText, on);
   // 小助手在跑时，电脑提醒全部由它接管，网页弹窗备选自动隐藏
   const webRow = $("webNotifyRow");
   if (webRow) webRow.hidden = on;
@@ -2036,7 +2038,7 @@ async function onAgentToggle() {
   chk.disabled = true;
   try {
     if (chk.checked) {
-      if (await agentPing()) {
+      if ((await agentPing()).ok) {
         setAgentState("● 运行中", true);
         localStorage.setItem("nassafe_agent_enabled", "1");
         toast("桌面小助手已在运行", "ok");
@@ -2046,7 +2048,7 @@ async function onAgentToggle() {
       // 浏览器不允许网页直接执行本地程序，走自定义协议拉起（浏览器可能弹一次「打开？」）
       try { location.href = "nassafe-agent://start"; } catch (_) { /* 忽略 */ }
       await new Promise((r) => setTimeout(r, 4000));
-      if (await agentPing()) {
+      if ((await agentPing()).ok) {
         setAgentState("● 运行中", true);
         localStorage.setItem("nassafe_agent_enabled", "1");
         toast("桌面小助手已启动并开机自启", "ok");
@@ -2064,7 +2066,7 @@ async function onAgentToggle() {
       } catch (_) { /* 进程可能本就不在 */ }
       await new Promise((r) => setTimeout(r, 2500));
       const still = await agentPing();
-      if (still) {
+      if (still.ok) {
         chk.checked = true;
         setAgentState("● 运行中", true);
         toast("小助手未响应停止请求，请稍后重试", "warn");
@@ -2090,7 +2092,7 @@ $("pushTestBtn").onclick = async () => {
   try {
     // 桌面助手在线时优先本机直推（瞬间到达托盘），再同步走服务端通道
     let localOk = false;
-    if (await agentPing()) {
+    if ((await agentPing()).ok) {
       try {
         const lr = await fetch(`${AGENT_CTRL}/notify`, {
           method: "POST",

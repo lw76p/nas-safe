@@ -53,6 +53,7 @@ CTRL_PORT = 18765          # 本机控制端口（只监听 127.0.0.1，不外�
 PROTOCOL = "nassafe-agent"  # 浏览器拉起本机小助手的自定义协议
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
+AGENT_VER = "1.0.5"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -201,7 +202,7 @@ class _CtrlHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/ping":
-            body = json.dumps({"ok": True, "agent": "nassafe", "ver": 3,
+            body = json.dumps({"ok": True, "agent": "nassafe", "ver": AGENT_VER,
                                "unread": len(load_unread())}).encode()
             self.send_response(200)
             self._cors()
