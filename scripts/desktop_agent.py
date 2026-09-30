@@ -9,7 +9,7 @@
   · 桌面端与微信端**同步发**：小助手在线时，本机弹窗与微信/邮件同一时刻发出；
     不判断用户是否坐在电脑前（判断空闲既易误判、又要常驻检测，不划算）
   · 小助手被用户关闭：自动上报离线，改由 NAS 服务端看门狗继续发微信/邮件，提醒不丢
-  · 常驻形态：系统托盘图标（右下角通知区域）—— 产品蓝盾牌，悬停显示「NAS Safe · 快照保护中」；
+  · 常驻形态：系统托盘图标（右下角通知区域）—— 产品蓝盾牌，悬停显示「NAS Safe 桌面助手 · 快照保护中」；
     有未读告警时蓝色圆中央出现红色感叹号，左键看未读、右键菜单可全部已读或退出
 
 阅读规则（按用户要求）：
@@ -44,6 +44,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NAS-Safe-Agent"}
+APP_NAME = "NAS Safe 桌面助手"      # 显示名（托盘提示 / 通知 / 注册表）
+APP_DIR = "NAS Safe 桌面助手"       # 安装目录名（%APPDATA% 下）
+APP_EXE = "桌面助手.exe"            # 主程序文件名
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # 调 PowerShell 不闪黑框
 DEFAULT_INTERVAL = 120
 CTRL_PORT = 18765          # 本机控制端口（只监听 127.0.0.1，不外泄）
@@ -77,7 +80,7 @@ try {{
   $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
   $xml.LoadXml('<toast scenario="reminder"><visual><binding template="ToastGeneric"><text>{safe_t}</text><text>{safe_x}</text></binding></visual></toast>')
   $t = New-Object Windows.UI.Notifications.ToastNotification $xml
-  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('NAS Safe').Show($t)
+  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('NAS Safe 桌面助手').Show($t)
   exit 0
 }} catch {{ exit 1 }}
 """
@@ -119,7 +122,7 @@ $n.Dispose()
 # --------------------------------------------------------------------------
 def config_dir():
     base = os.environ.get("APPDATA") if os.name == "nt" else None
-    return os.path.join(base or os.path.expanduser("~"), "NASSafeAgent")
+    return os.path.join(base or os.path.expanduser("~"), APP_DIR)
 
 
 def _config_path():
@@ -357,7 +360,7 @@ def ensure_autostart(base, interval, exe=None):
         cmd = (f'"{exe}"' if exe else _self_cmd()) + f' --nas "{base}" --interval {interval}'
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                              r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
-        winreg.SetValueEx(key, "NASSafeAgent", 0, winreg.REG_SZ, cmd)
+        winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
         return True
     except Exception as e:
@@ -372,10 +375,11 @@ def remove_autostart():
         import winreg
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                              r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
-        try:
-            winreg.DeleteValue(key, "NASSafeAgent")
-        except FileNotFoundError:
-            pass
+        for _name in (APP_NAME, "NASSafeAgent"):   # 兼容清理旧英文版项
+            try:
+                winreg.DeleteValue(key, _name)
+            except FileNotFoundError:
+                pass
         winreg.CloseKey(key)
         return True
     except Exception as e:
@@ -453,7 +457,7 @@ def collect(m):
 def install_dir() -> str:
     """小助手的固定安装位置（当前用户目录下，不需要管理员权限）。"""
     base = os.environ.get("APPDATA") if os.name == "nt" else None
-    return os.path.join(base or os.path.expanduser("~"), "NASSafeAgent")
+    return os.path.join(base or os.path.expanduser("~"), APP_DIR)
 
 
 def self_install_flow(base_hint=""):
@@ -466,7 +470,7 @@ def self_install_flow(base_hint=""):
     frozen = getattr(sys, "frozen", False)
     src = sys.executable if frozen else os.path.abspath(__file__)
     dst_dir = install_dir()
-    dst = os.path.join(dst_dir, "NASSafeAgent.exe" if frozen else "desktop_agent.py")
+    dst = os.path.join(dst_dir, APP_EXE if frozen else "desktop_agent.py")
     if os.path.abspath(os.path.dirname(src)) == os.path.abspath(dst_dir):
         return None  # 已经是安装后的副本，正常守护即可
 
@@ -493,6 +497,7 @@ def self_install_flow(base_hint=""):
         return False
 
     # 4) 写配置 / 开机自启 / 协议（都指向安装后的副本）
+    remove_autostart()  # 顺带清掉旧英文版残留的自启项
     interval = int(load_config().get("interval") or DEFAULT_INTERVAL)
     save_config({"nas": base, "interval": interval})
     ensure_autostart(base, interval, exe=dst)
@@ -603,10 +608,10 @@ def install_progress(base):
     except Exception:
         return
     try:
-        root, body = _modern_window("安装 NAS Safe 助手", 460, 236)
+        root, body = _modern_window("安装 NAS Safe 桌面助手", 460, 236)
         root.attributes("-topmost", True)
 
-        tk.Label(body, text="正在安装 NAS Safe 助手", bg=BG, fg=TEXT,
+        tk.Label(body, text="正在安装 NAS Safe 桌面助手", bg=BG, fg=TEXT,
                  font=(FONT, 14, "bold")).pack(pady=(22, 4))
         st = tk.Label(body, text="准备中…", bg=BG, fg=ACCENT, font=(FONT, 10))
         st.pack()
@@ -662,10 +667,10 @@ def install_wizard(base_hint=""):
         return None
     result = {"url": None, "manual": None}
 
-    root, body = _modern_window("安装 NAS Safe 助手", 540, 366)
+    root, body = _modern_window("安装 NAS Safe 桌面助手", 540, 366)
     root.attributes("-topmost", True)
 
-    tk.Label(body, text="安装 NAS Safe 助手", bg=BG, fg=TEXT,
+    tk.Label(body, text="安装 NAS Safe 桌面助手", bg=BG, fg=TEXT,
              font=(FONT, 14, "bold")).pack(pady=(18, 3))
     status = tk.Label(body, text="正在查找局域网内的 NAS Safe…", bg=BG, fg=ACCENT,
                       font=(FONT, 10))
@@ -750,7 +755,7 @@ class TrayIcon:
     WM_UPDATE = 0x0400 + 2      # 主线程通知托盘线程刷新图标
     ID_OPEN, ID_READ_ALL, ID_QUIT = 1001, 1002, 1003
 
-    def __init__(self, tip_normal="NAS Safe · 快照保护中",
+    def __init__(self, tip_normal="NAS Safe 桌面助手 · 快照保护中",
                  on_open=None, on_read_all=None, on_quit=None):
         self.tip_normal = tip_normal
         self.on_open = on_open
@@ -840,16 +845,15 @@ class TrayIcon:
                         continue
                     a = 1.0 if a > 1 else a
                     r, g, b = blue
-                    if alert and d <= r_in:
-                        r, g, b = red
-                        a = 1.0 if d <= r_in - 0.8 else a
-                    # 白色感叹号（竖条 + 点），画在红圆内
+                    # 告警：盾牌正中间直接画一个红色感叹号（不叠红圆底，保持图标本色）
                     if alert:
-                        bw = max(2.0, size * 0.11)
-                        if abs(dx) <= bw / 2 and (cy - size * 0.20) <= y <= (cy + size * 0.10):
-                            r = g = b = 255
-                        if abs(dx) <= bw / 2 and (cy + size * 0.16) <= y <= (cy + size * 0.25):
-                            r = g = b = 255
+                        bw = max(2.5, size * 0.13)
+                        if abs(dx) <= bw / 2 and (cy - size * 0.19) <= y <= (cy + size * 0.09):
+                            r, g, b = red
+                            a = 1.0
+                        if abs(dx) <= bw / 2 and (cy + size * 0.15) <= y <= (cy + size * 0.24):
+                            r, g, b = red
+                            a = 1.0
                     # 盾牌轮廓（下缘两侧轻微收窄，看起来像盾不是圆）
                     o = (y - cy) / (size / 2.0)
                     if o > 0.35 and abs(dx) > (r_out - 1.2) * (1.0 - (o - 0.35) * 0.9):
@@ -939,7 +943,7 @@ class TrayIcon:
                         nid.uFlags = 0x00000002 | 0x00000004   # NIF_ICON | NIF_TIP
                         nid.hIcon = self._icons[1] if n > 0 else self._icons[0]
                         nid.szTip = (self.tip_normal if n <= 0
-                                     else f"NAS Safe · {n} 条未读提醒（点击查看）")[:127]
+                                     else f"NAS Safe 桌面助手 · {n} 条未读提醒（点击查看）")[:127]
                         s32.Shell_NotifyIconW(1, ctypes.byref(nid))   # NIM_MODIFY
                     elif msg == 0x0111:                     # WM_COMMAND
                         if wparam == self.ID_OPEN and self.on_open:
@@ -1012,6 +1016,8 @@ class TrayIcon:
             u32.GetCursorPos(ctypes.byref(pt))
             menu = u32.CreatePopupMenu()
             n = len(load_unread())
+            u32.AppendMenuW(menu, 0x00000003, 0, "NAS Safe 桌面助手")
+            u32.AppendMenuW(menu, 0x00000800, 0, None)
             u32.AppendMenuW(menu, 0x00000000, self.ID_OPEN, f"查看未读提醒（{n}）")
             u32.AppendMenuW(menu, 0x00000000, self.ID_READ_ALL, "全部标记已读")
             u32.AppendMenuW(menu, 0x00000800, 0, None)          # MF_SEPARATOR
@@ -1045,11 +1051,11 @@ def show_inbox_window(on_change=None):
         try:
             import tkinter as tk
         except Exception:
-            notify("NAS Safe", "未读提醒：" + "；".join(
+            notify(APP_NAME, "未读提醒：" + "；".join(
                 i.get("text", "") for i in load_unread()[:3]))
             return
         try:
-            root, body = _modern_window("NAS Safe · 未读提醒", 580, 400)
+            root, body = _modern_window("NAS Safe 桌面助手 · 未读提醒", 580, 400)
             root.attributes("-topmost", True)
 
             hdr = tk.Frame(body, bg=BG)
@@ -1374,13 +1380,13 @@ def handle_protocol(raw):
         base = load_config().get("nas") or ""
         if agent_stop_remote():
             remove_autostart()
-            notify("NAS Safe 小助手已停止", "不再后台守护；异常提醒将改由微信 / 邮件发送")
+            notify(APP_NAME + " 已停止", "不再后台守护；异常提醒将改由微信 / 邮件发送")
         else:
             remove_autostart()
         report_offline(base)  # 立即让 NAS 端看门狗接管
         return
     if agent_online():
-        notify("NAS Safe 小助手已在运行", "无需重复启动")
+        notify(APP_NAME + " 已在运行", "无需重复启动")
         return
     base = load_config().get("nas") or ""
     if not base:
@@ -1425,7 +1431,7 @@ def run_agent(base, interval, first=False, once=False, no_ui=False):
             _refresh()
     if tray:
         if first:
-            notify("NAS Safe 小助手已启动", "已缩到右下角托盘，异常时图标会亮红感叹号")
+            notify(APP_NAME + " 已启动", "已缩到右下角托盘，异常时图标会亮红感叹号")
         poll_loop(base, interval, TraySink(tray), seen)
         tray.stop()
         return
@@ -1434,14 +1440,14 @@ def run_agent(base, interval, first=False, once=False, no_ui=False):
     ui = AgentUI(base)
     if ui.available():
         if first:
-            notify("NAS Safe 小助手已启动", f"正在守护 {base}，异常会在这里提醒你")
+            notify(APP_NAME + " 已启动", f"正在守护 {base}，异常会在这里提醒你")
         threading.Thread(target=poll_loop, args=(base, interval, ui, seen), daemon=True).start()
         ui.run()
         return
 
     # 兜底 2：纯后台（只弹 Windows 通知）
     if first:
-        notify("NAS Safe 小助手已启动", f"正在守护 {base}，异常会在这里提醒你")
+        notify(APP_NAME + " 已启动", f"正在守护 {base}，异常会在这里提醒你")
     poll_loop(base, interval, NullUI(), seen)
 
 

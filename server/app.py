@@ -39,7 +39,7 @@ import threading
 import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, quote
 
 # 让脚本可以独立运行
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -69,6 +69,7 @@ SCRIPTS_DIR = os.path.join(
 AGENT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent"
 )
+AGENT_EXE = "桌面助手.exe"   # 主程序中文文件名（URL 路由仍用 ASCII）
 
 
 _AGENT_README = (
@@ -76,7 +77,7 @@ _AGENT_README = (
     "\r\n"
     "【安装只要两步】\r\n"
     "1. 解压本压缩包到任意文件夹\r\n"
-    "2. 双击 NASSafeAgent.exe：会自动弹出「安装 NAS Safe 助手」窗口并显示安装进度，\r\n"
+    "2. 双击 桌面助手.exe：会自动弹出「安装 NAS Safe 桌面助手」窗口并显示安装进度，\r\n"
     "   几秒后提示「安装完成」，不需要你选择或填写任何东西\r\n"
     "\r\n"
     "【装好后它长什么样】\r\n"
@@ -107,13 +108,13 @@ def _gen_agent_zip(host: str) -> bytes:
     import io as _io
     import zipfile as _zip
 
-    exe = os.path.join(AGENT_DIR, "NASSafeAgent.exe")
+    exe = os.path.join(AGENT_DIR, AGENT_EXE)
     if not os.path.isfile(exe):
         return b""
     base = f"http://{host}" if host else ""
     buf = _io.BytesIO()
     with _zip.ZipFile(buf, "w", _zip.ZIP_STORED) as z:
-        z.write(exe, "NASSafeAgent.exe")
+        z.write(exe, AGENT_EXE)
         z.writestr("config.json", json.dumps(
             {"nas": base, "interval": 120}, ensure_ascii=False).encode("utf-8"))
         z.writestr("安装说明.txt", _AGENT_README.encode("utf-8-sig"))
@@ -598,7 +599,8 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_header("Content-Type", "application/zip")
                         self.send_header(
                             "Content-Disposition",
-                            'attachment; filename="NASSafeAgent.zip"',
+                            "attachment; filename=\"NASSafeAgent.zip\"; "
+                            f"filename*=UTF-8''{quote('桌面助手.zip')}\"",
                         )
                         self.send_header("Content-Length", str(len(data)))
                         self.send_header("Cache-Control", "no-store")
@@ -606,7 +608,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(data)
                 elif name == "NASSafeAgent.exe":
                     # 备选：直接下载 exe（无预置地址，首次运行会弹向导让选 NAS）
-                    path = os.path.join(AGENT_DIR, name)
+                    path = os.path.join(AGENT_DIR, AGENT_EXE)
                     if not os.path.isfile(path):
                         self._send_json(
                             {"ok": False, "error": "安装包未随本版本分发，请改用 Python 脚本方式"}, 404)
@@ -617,7 +619,8 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_header("Content-Type", "application/octet-stream")
                         self.send_header(
                             "Content-Disposition",
-                            f'attachment; filename="{name}"',
+                            f'attachment; filename="{name}"; '
+                            f"filename*=UTF-8''{quote(AGENT_EXE)}",
                         )
                         self.send_header("Content-Length", str(len(data)))
                         self.send_header("Cache-Control", "no-store")

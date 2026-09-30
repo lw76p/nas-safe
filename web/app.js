@@ -1936,8 +1936,8 @@ function showDesktopAgentGuide() {
     `<p>装上这个本机小助手后，<b>彻底关掉网页也能收到提醒</b>：它缩在电脑右下角的托盘图标里，
        有异常时图标中间亮起红色感叹号并弹一次通知；开机自启，一直守护。</p>
      <ol class="perm-steps">
-       <li>点右下角 <b>「⬇ 下载安装包（zip）」</b>，得到 <code>NASSafeAgent.zip</code>（已内置本机 NAS 地址）</li>
-       <li><b>右键解压</b>到任意文件夹，双击里面的 <code>NASSafeAgent.exe</code></li>
+       <li>点右下角 <b>「⬇ 下载安装包（zip）」</b>，得到 <code>桌面助手.zip</code>（已内置本机 NAS 地址）</li>
+       <li><b>右键解压</b>到任意文件夹，双击里面的 <code>桌面助手.exe</code></li>
        <li>自动弹出「安装 NAS Safe 助手」窗口并显示进度，几秒后提示「安装完成」——
            <b>不用选地址、不用填任何东西</b></li>
        <li>右下角出现蓝色盾牌图标（和软件同色），鼠标放上去显示「NAS Safe · 快照保护中」</li>
@@ -1948,10 +1948,10 @@ function showDesktopAgentGuide() {
     `<button class="btn ghost" data-act="exe">直接下载 exe（不解压）</button>
      <button class="btn primary" data-act="download">⬇ 下载安装包（zip）</button>`,
     {
-      download: () => triggerDownload("/agent/NASSafeAgent.zip", "NASSafeAgent.zip",
-        "已开始下载 zip，解压后双击 NASSafeAgent.exe"),
-      exe: () => triggerDownload("/agent/NASSafeAgent.exe", "NASSafeAgent.exe",
-        "已开始下载 exe（若被浏览器拦截，请改用 zip）"),
+      download: () => triggerDownload("/agent/NASSafeAgent.zip", "桌面助手.zip",
+        "已开始下载，解压后双击「桌面助手.exe」即可"),
+      exe: () => triggerDownload("/agent/NASSafeAgent.exe", "桌面助手.exe",
+        "已开始下载「桌面助手.exe」（若被浏览器拦截，请改用 zip）"),
     }
   );
   void hasZip;
