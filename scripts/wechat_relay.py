@@ -4,9 +4,12 @@
   1. GET  /health      健康检查
   2. GET  /token       返回 access_token（带缓存，提前 300s 刷新）
   3. POST /send        发送模板消息 {touser, template_id, data, url?, miniprogram?}
-  4. GET/POST /callback  微信服务器配置回调：GET 验签 echostr；POST 收关注/取关事件，openid 落盘
+  4. GET/POST /callback  微信服务器配置回调：GET 验签 echostr；POST 收关注/取关/消息/菜单点击事件，openid 落盘
+  5. GET/POST /menu      菜单管理：GET 查询当前菜单；POST(带共享密钥) 创建菜单
+  6. POST /cs            发送客服消息(带共享密钥) {touser, content}
 安全：仅监听 127.0.0.1:18841，外网经 nginx 反代（配共享 token 后再开放）。
 AppSecret 经环境变量 WECHAT_APPID / WECHAT_SECRET 注入，不落代码。
+菜单点击自动回复文案存 STATE_DIR/menu_texts.json（key → 文本），改文案无需改代码。
 """
 import json, os, time, hashlib, threading, urllib.request, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +20,7 @@ RELAY_TOKEN = os.environ.get("RELAY_TOKEN", "")  # /send 共享密钥（防公�
 STATE_DIR = os.environ.get("RELAY_STATE", "/opt/wechat-relay")
 TOKEN_CACHE_FILE = os.path.join(STATE_DIR, "token_cache.json")
 OPENIDS_FILE = os.path.join(STATE_DIR, "openids.json")
+MENU_TEXTS_FILE = os.path.join(STATE_DIR, "menu_texts.json")
 UA = "Mozilla/5.0 (compatible; NAS-Safe-Relay/1.0)"
 
 _lock = threading.Lock()
@@ -82,6 +86,26 @@ def send_template(payload):
     return code, body
 
 
+def send_cs_text(openid, content):
+    """客服消息文本（仅 48h 内互动过的粉丝可发）。"""
+    token = get_token()
+    url = f"https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token={token}"
+    payload = {"touser": openid, "msgtype": "text", "text": {"content": content}}
+    return _http(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), method="POST")
+
+
+def create_menu(buttons):
+    token = get_token()
+    url = f"https://api.weixin.qq.com/cgi-bin/menu/create?access_token={token}"
+    return _http(url, data=json.dumps({"button": buttons}, ensure_ascii=False).encode("utf-8"), method="POST")
+
+
+def get_menu():
+    token = get_token()
+    url = f"https://api.weixin.qq.com/cgi-bin/get_current_selfmenu_info?access_token={token}"
+    return _http(url)
+
+
 class Handler(BaseHTTPRequestHandler):
     def _reply(self, code, text, ctype="application/json; charset=utf-8"):
         b = text.encode("utf-8") if isinstance(text, str) else text
@@ -103,6 +127,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._reply(200, json.dumps({"ok": True, "access_token": get_token()}))
             except Exception as e:  # noqa: BLE001
                 return self._reply(502, json.dumps({"ok": False, "error": str(e)[:300]}))
+        if p == "/menu":
+            code, body = get_menu()
+            return self._reply(200, json.dumps({"wechat_status": code, "resp": body}))
         if p == "/callback":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             echostr = q.get("echostr", [""])[0]
@@ -138,13 +165,38 @@ class Handler(BaseHTTPRequestHandler):
                 return self._reply(200, json.dumps({"wechat_status": code, "resp": json.loads(body) if body.startswith("{") else body}))
             except Exception as e:  # noqa: BLE001
                 return self._reply(502, json.dumps({"ok": False, "error": str(e)[:300]}))
+        if p == "/menu":
+            if not self._check_relay_token():
+                return self._reply(403, json.dumps({"ok": False, "error": "bad relay token"}))
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+                buttons = payload.get("button") or payload.get("buttons")
+                if not buttons:
+                    return self._reply(400, json.dumps({"ok": False, "error": "missing button"}))
+                code, body = create_menu(buttons)
+                return self._reply(200, json.dumps({"wechat_status": code, "resp": json.loads(body) if body.startswith("{") else body}))
+            except Exception as e:  # noqa: BLE001
+                return self._reply(502, json.dumps({"ok": False, "error": str(e)[:300]}))
+        if p == "/cs":
+            if not self._check_relay_token():
+                return self._reply(403, json.dumps({"ok": False, "error": "bad relay token"}))
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+                openid, content = payload.get("touser", ""), payload.get("content", "")
+                if not openid or not content:
+                    return self._reply(400, json.dumps({"ok": False, "error": "missing touser/content"}))
+                code, body = send_cs_text(openid, content)
+                return self._reply(200, json.dumps({"wechat_status": code, "resp": json.loads(body) if body.startswith("{") else body}))
+            except Exception as e:  # noqa: BLE001
+                return self._reply(502, json.dumps({"ok": False, "error": str(e)[:300]}))
         if p == "/callback":
-            # 微信事件推送（XML）：关注/取关/模板发送结果 → 提取 openid 落盘
+            # 微信事件推送（XML）：关注/取关/消息/菜单点击 → 提取 openid 落盘；CLICK 事件后台自动回复
             import re as _re
             text = raw.decode("utf-8", "replace")
             m = _re.search(r"<FromUserName><!\[CDATA\[(.+?)\]\]></FromUserName>", text)
             ev = _re.search(r"<MsgType><!\[CDATA\[(.+?)\]\]></MsgType>", text)
             evt = _re.search(r"<Event><!\[CDATA\[(.+?)\]\]></Event>", text)
+            ek = _re.search(r"<EventKey><!\[CDATA\[(.+?)\]\]></EventKey>", text)
             if m:
                 store = _load_json(OPENIDS_FILE, {})
                 store[m.group(1)] = {
@@ -152,8 +204,22 @@ class Handler(BaseHTTPRequestHandler):
                     "time": time.strftime("%FT%T"),
                 }
                 _save_json(OPENIDS_FILE, store)
+                # 菜单点击 → 按 menu_texts.json 自动回复客服消息（后台线程，不阻塞应答）
+                if evt and evt.group(1) == "CLICK" and ek and m.group(1):
+                    reply = _load_json(MENU_TEXTS_FILE, {}).get(ek.group(1))
+                    if reply:
+                        threading.Thread(
+                            target=send_cs_text, args=(m.group(1), reply), daemon=True
+                        ).start()
             return self._reply(200, "success", "text/plain")
         return self._reply(404, json.dumps({"ok": False, "error": "not found"}))
+
+    def _check_relay_token(self):
+        if not RELAY_TOKEN:
+            return True
+        supplied = (self.headers.get("X-Relay-Token", "")
+                    or self.headers.get("Authorization", "").replace("Bearer ", "").strip())
+        return supplied == RELAY_TOKEN
 
 
 if __name__ == "__main__":
