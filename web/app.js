@@ -2088,8 +2088,33 @@ $("deskNotifyChk").checked = localStorage.getItem("nassafe_desk_notify") === "1"
 $("deskNotifyChk").onchange = () => localStorage.setItem("nassafe_desk_notify", $("deskNotifyChk").checked ? "1" : "0");
 $("pushTestBtn").onclick = async () => {
   try {
+    // 桌面助手在线时优先本机直推（瞬间到达托盘），再同步走服务端通道
+    let localOk = false;
+    if (await agentPing()) {
+      try {
+        const lr = await fetch(`${AGENT_CTRL}/notify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "NAS Safe 测试提醒",
+            detail: "这是一条异常提醒通道的测试消息",
+            level: "warn",
+            key: "test-" + Date.now()
+          })
+        });
+        localOk = lr.ok;
+      } catch (_) { localOk = false; }
+    }
     const r = await api("/api/notify/alert", { method: "POST", body: JSON.stringify({ title: "NAS Safe 测试提醒", detail: "这是一条异常提醒通道的测试消息", level: "warn" }) });
-    toast(r && r.ok ? `已推送（通道：${r.channel}）` : `推送失败：${(r && r.msg) || "未知"}`, r && r.ok ? "ok" : "err");
+    const remoteOk = r && r.ok;
+    const parts = [];
+    if (localOk) parts.push("桌面助手");
+    if (remoteOk) parts.push(r.channel || "服务端通道");
+    if (!localOk && !remoteOk) {
+      toast(`推送失败：${(r && r.msg) || "未知"}`, "err");
+    } else {
+      toast(`已推送（${parts.join(" + ")}）`, "ok");
+    }
   } catch (e) { toast("推送失败：" + e.message, "err"); }
 };
 // 时间轴页：卷切换下拉框 —— 不用回总览，直接换卷看时间轴

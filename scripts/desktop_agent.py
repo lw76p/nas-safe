@@ -161,7 +161,7 @@ def save_unread(items):
 class _CtrlHandler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Access-Control-Allow-Private-Network", "true")
 
@@ -169,6 +169,34 @@ class _CtrlHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self._cors()
         self.end_headers()
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        if path == "/notify":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8") if length else "{}"
+                msg = json.loads(body)
+                title = str(msg.get("title") or "NAS Safe 提醒")
+                detail = str(msg.get("detail") or "")
+                level = str(msg.get("level") or "info")
+                notify(title, detail, level)
+                if _TRAY:
+                    key = str(msg.get("key") or f"manual-{time.time()}")
+                    _TRAY.add_unread(key, detail or title)
+                out = json.dumps({"ok": True}).encode()
+            except Exception as e:
+                out = json.dumps({"ok": False, "error": str(e)}).encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+        else:
+            self.send_response(404)
+            self._cors()
+            self.end_headers()
 
     def do_GET(self):
         path = self.path.split("?")[0]
