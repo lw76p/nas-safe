@@ -53,7 +53,7 @@ CTRL_PORT = 18765          # 本机控制端口（只监听 127.0.0.1，不外�
 PROTOCOL = "nassafe-agent"  # 浏览器拉起本机小助手的自定义协议
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6"
+AGENT_VER = "1.0.6.1"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -154,6 +154,17 @@ def save_unread(items):
     cfg = load_config()
     cfg["unread"] = items[-50:]  # 最多保留 50 条
     save_config(cfg)
+
+
+def push_unread(key, text):
+    """去重追加一条未读提醒并落盘，返回最新条数（供托盘/小窗/收件箱共用）。"""
+    with LOCK:
+        items = load_unread()
+        if any(i.get("key") == key for i in items):
+            return len(items)
+        items.append({"key": key, "text": text, "ts": time.strftime("%m-%d %H:%M")})
+        save_unread(items)
+        return len(items)
 
 
 # --------------------------------------------------------------------------
@@ -872,6 +883,12 @@ class TrayIcon:
             return False
         return True
 
+    def add_unread(self, key, text):
+        """保存未读并同步刷新图标（未读>0 时显示红感叹号）。"""
+        n = push_unread(key, text)
+        self.update(n)
+        return n
+
     # ---------------- 托盘图标（优先读 ICO 资源，更清晰；失败回退自绘） ----------------
     @staticmethod
     def _load_hicon(alert: bool):
@@ -1025,6 +1042,9 @@ class TrayIcon:
                         if lparam in (0x0202, 0x0203):      # 左键单击 / 双击
                             if self.on_open:
                                 threading.Thread(target=self.on_open, daemon=True).start()
+                        elif lparam == 0x0405:              # NIN_BALLOONUSERCLICK（点击气泡/通知中心消息）
+                            if self.on_open:
+                                threading.Thread(target=self.on_open, daemon=True).start()
                         elif lparam == 0x0205:              # 右键
                             self._popup_menu(hwnd)
                     elif msg == self.WM_UPDATE:
@@ -1146,17 +1166,38 @@ class TraySink:
         self.tray = tray
 
     def add_unread(self, key, text):
-        self.tray.update(len(load_unread()))
+        n = push_unread(key, text)
+        self.tray.update(n)
+
+
+_INBOX_LOCK = threading.Lock()
+_INBOX_THREAD = None
 
 
 def show_inbox_window(on_change=None):
     """弹出未读提醒列表（tkinter，独立线程；点一条即标记已读）。"""
+    global _INBOX_THREAD
+    with _INBOX_LOCK:
+        if _INBOX_THREAD and _INBOX_THREAD.is_alive():
+            # 已有窗口在运行：发送一次"唤醒"请求，由线程内把窗口提到最前
+            try:
+                _INBOX_THREAD.raise_focus = True
+            except Exception:
+                pass
+            return
+
     def _run():
+        global _INBOX_THREAD
+        with _INBOX_LOCK:
+            _INBOX_THREAD = threading.current_thread()
+            _INBOX_THREAD.raise_focus = False
         try:
             import tkinter as tk
         except Exception:
             notify(APP_NAME, "未读提醒：" + "；".join(
                 i.get("text", "") for i in load_unread()[:3]))
+            with _INBOX_LOCK:
+                _INBOX_THREAD = None
             return
         try:
             root, body = _modern_window("NAS Safe 桌面助手 · 未读提醒", 580, 400)
@@ -1228,9 +1269,28 @@ def show_inbox_window(on_change=None):
 
             _btn(foot, "全部标记已读", primary=False, cmd=read_all).pack(side="left")
             _btn(foot, "关闭", primary=True, cmd=root.destroy).pack(side="right")
+
+            def _lift_if_asked():
+                try:
+                    cur = threading.current_thread()
+                    if getattr(cur, "raise_focus", False):
+                        cur.raise_focus = False
+                        root.deiconify()
+                        root.attributes("-topmost", True)
+                        root.lift()
+                        root.attributes("-topmost", True)
+                except Exception:
+                    pass
+                if root.winfo_exists():
+                    root.after(300, _lift_if_asked)
+
+            root.after(300, _lift_if_asked)
             root.mainloop()
         except Exception as e:
             print("消息窗口失败：", e, file=sys.stderr)
+        finally:
+            with _INBOX_LOCK:
+                _INBOX_THREAD = None
 
     threading.Thread(target=_run, daemon=True).start()
 
