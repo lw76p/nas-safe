@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.5"
+AGENT_VER = "1.0.6.6"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -85,9 +85,11 @@ def http_json(url, timeout=15, method="GET", body=None):
 # Windows 通知：优先走托盘气球（不调用 PowerShell，避免安全软件拦截）
 # --------------------------------------------------------------------------
 def notify(title, text, level="info"):
-    """通过托盘图标弹出气球提示；若托盘尚未启动，改用系统弹窗兜底。"""
+    """弹出提醒：优先自定义 toast 弹窗（必现，不依赖系统通知权限），
+    同时尝试托盘气球作为补充；若托盘尚未启动，改用系统弹窗兜底。"""
     if _TRAY and getattr(_TRAY, "hwnd", None):
         _TRAY.balloon(title, text, level)
+        show_toast(title, text, on_click=getattr(_TRAY, "on_open", None))
         return True
     # 兜底：仅用于安装失败等极罕见场景，平时不会走到这里
     try:
@@ -95,6 +97,67 @@ def notify(title, text, level="info"):
     except Exception:
         pass
     return False
+
+
+# --------------------------------------------------------------------------
+# 自定义 Toast 弹窗（右下角、必现、可点击；不依赖 Windows 通知子系统，
+# 规避 Win10/11 对非打包 Win32 程序 classic 气球静默吞掉的问题）
+# --------------------------------------------------------------------------
+_TOAST_SEQ = 0
+_TOAST_LOCK = threading.Lock()
+
+
+def show_toast(title, body, on_click=None, timeout_ms=6000):
+    """右下角弹出自定义提醒框；自动消失，点击可触发 on_click（通常是打开收件箱）。"""
+    def _run():
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            root.overrideredirect(True)
+            root.attributes("-topmost", True)
+            try:
+                root.attributes("-toolwindow", True)  # 不进任务栏 / Alt-Tab
+            except Exception:
+                pass
+            root.configure(bg="#0f172a")
+
+            w, h = 320, 104
+            sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+            with _TOAST_LOCK:
+                global _TOAST_SEQ
+                seq = _TOAST_SEQ % 4
+                _TOAST_SEQ += 1
+            # 多弹窗时向上错开，避免完全重叠
+            root.geometry(f"{w}x{h}+{sw - w - 20}+{sh - h - 60 - seq * (h + 8)}")
+
+            frame = tk.Frame(root, bg="#0f172a")
+            frame.pack(fill="both", expand=True, padx=12, pady=10)
+
+            tk.Label(frame, text=title, bg="#0f172a", fg="#38bdf8",
+                     font=("Microsoft YaHei UI", 11, "bold"),
+                     anchor="w", justify="left").pack(fill="x")
+            tk.Label(frame, text=body, bg="#0f172a", fg="#e2e8f0",
+                     font=("Microsoft YaHei UI", 10),
+                     anchor="w", justify="left", wraplength=w - 24).pack(fill="x", pady=(6, 0))
+
+            def _close():
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
+
+            def _click(e=None):
+                _close()
+                if on_click:
+                    threading.Thread(target=on_click, daemon=True).start()
+
+            root.bind("<Button-1>", _click)
+            root.after(timeout_ms, _close)
+            root.mainloop()
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 

@@ -1,5 +1,5 @@
 /* NAS Safe — 前端逻辑 */
-const APP_JS_VER = "20260930d";
+const APP_JS_VER = "20260930e";
 
 const $ = (id) => document.getElementById(id);
 
@@ -80,6 +80,21 @@ async function boot() {
     }
 
     await loadVolumes();
+    // 启动即恢复上次选中的卷（不强制跳转视图）：刷新后勒索行为扫描等
+    // 依赖 state.activeVolume 的功能才不会报「请先选择一个卷」。
+    const savedVol = localStorage.getItem("nassafe_volume");
+    if (savedVol && !state.activeVolume) {
+      const v = state.volumes.find(
+        (x) => x.mountpoint === savedVol || String(x.id) === savedVol
+      );
+      if (v) {
+        state.activeVolume = v;
+        const wp = $("watchPaths");
+        if (wp && wp.value.trim() === "") wp.value = v.mountpoint;
+        const sel = $("tlVolumeSel");
+        if (sel) sel.value = v.mountpoint ?? String(v.id);
+      }
+    }
   } catch (err) {
     setStatus("连接失败", "err");
     showBanner("error", "无法连接到 NAS Safe 服务", err.message);
