@@ -1,5 +1,5 @@
 /* NAS Safe — 前端逻辑 */
-const APP_JS_VER = "20260930e";
+const APP_JS_VER = "20260930f";
 
 const $ = (id) => document.getElementById(id);
 
@@ -26,7 +26,7 @@ function isQnapSnap(snap) {
 
 /* ------------------------- 网络 ------------------------- */
 
-async function api(path, options = {}, timeoutMs = 10000) {
+async function api(path, options = {}, timeoutMs = 30000) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
@@ -115,7 +115,7 @@ async function loadVolumes() {
   const box = $("volumeList");
   box.innerHTML = `<p class="muted"><span class="spinner"></span>正在扫描存储单元…</p>`;
 
-  const data = await api("/api/volumes");
+  const data = await api("/api/volumes", {}, 60000);
   state.volumes = data.volumes;
 
   // 时间轴页的卷切换下拉框：选项 = 所有存储卷
