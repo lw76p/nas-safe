@@ -97,6 +97,11 @@ async function loadVolumes() {
   const data = await api("/api/volumes");
   state.volumes = data.volumes;
 
+  // 用户当前停在时间轴页但还没选过卷（如刷新后），卷列表到位后自动补选
+  if (!state.activeVolume && (localStorage.getItem("nassafe_view") || "home") === "snapshots") {
+    autoSelectVolume();
+  }
+
   if (!state.volumes.length) {
     box.innerHTML = `<p class="muted">
       未发现可快照的存储单元。请确认存储池使用的是 btrfs 或 ZFS 文件系统。<br>
@@ -200,13 +205,24 @@ function showView(name) {
   if (!VIEWS.includes(name)) name = "home";
   localStorage.setItem("nassafe_view", name);
   applyView();
+  // 直接点进时间轴页但还没选过卷：恢复上次选的卷，没记录就自动选第一个
+  if (name === "snapshots" && !state.activeVolume) autoSelectVolume();
   window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+async function autoSelectVolume() {
+  let vol = null;
+  const saved = localStorage.getItem("nassafe_volume");
+  if (saved) vol = state.volumes.find((v) => v.mountpoint === saved || String(v.id) === saved);
+  if (!vol && state.volumes.length) vol = state.volumes[0];
+  if (vol) await selectVolume(vol, true);
 }
 
 /* ------------------------- 时间轴 ------------------------- */
 
 async function selectVolume(vol, keepSnapshot) {
   state.activeVolume = vol;
+  localStorage.setItem("nassafe_volume", vol.mountpoint ?? String(vol.id));
   $("tlTitle").textContent = `快照时间轴 — ${vol.name}`;
   $("tlSubtitle").textContent = vol.mountpoint;
   $("browseBtn").disabled = true;
