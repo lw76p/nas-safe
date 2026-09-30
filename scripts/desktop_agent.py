@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.8"
+AGENT_VER = "1.0.6.9"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -84,9 +84,22 @@ def http_json(url, timeout=15, method="GET", body=None):
 # --------------------------------------------------------------------------
 # Windows 通知：优先走托盘气球（不调用 PowerShell，避免安全软件拦截）
 # --------------------------------------------------------------------------
+def _open_inbox_window():
+    """点击气泡（或托盘）时打开未读提醒界面；托盘不存在时也能直接打开。"""
+    def _ref():
+        if _TRAY is not None:
+            _TRAY.update(len(load_unread()))
+    try:
+        show_inbox_window(_ref)
+    except Exception:
+        pass
+
+
 def notify(title, text, level="info"):
     """弹出提醒：优先 Win32 自定义弹窗（必现、可控、不依赖系统通知权限），
     同时尝试托盘气球作补充；若弹窗初始化失败，回退系统 MessageBoxW 保证"至少有提醒"。
+
+    气泡只承载"标题消息 + 点击查看"：完整内容由未读界面展示，点击气泡/托盘即打开。
 
     返回 channel 字符串，供 HTTP 接口如实反馈：
       "toast"     = Win32 自定义弹窗已显示
@@ -100,8 +113,7 @@ def notify(title, text, level="info"):
         except Exception:
             pass
     try:
-        status = _TOAST.show(title, text,
-                             on_click=getattr(_TRAY, "on_open", None) if _TRAY else None)
+        status = _TOAST.show(title, text, on_click=_open_inbox_window)
     except Exception:
         try:
             ToastManager._fallback(title, text)
@@ -560,7 +572,12 @@ class _CtrlHandler(BaseHTTPRequestHandler):
                 title = str(msg.get("title") or "NAS Safe 提醒")
                 detail = str(msg.get("detail") or "")
                 level = str(msg.get("level") or "info")
-                channel = notify(title, detail, level)
+                # 气泡只显示标题 + 简短预览 + 点击查看，完整内容落未读界面
+                preview = (detail or title)
+                if len(preview) > 30:
+                    preview = preview[:29] + "…"
+                bubble = preview + "  ·  点击查看详情 ›"
+                channel = notify(title, bubble, level)
                 if _TRAY:
                     key = str(msg.get("key") or f"manual-{time.time()}")
                     _TRAY.add_unread(key, detail or title)
@@ -1975,20 +1992,17 @@ def poll_loop(base, interval, ui, seen):
                                     "keys": [f.get("key") for f in fresh]})
                 except Exception as e:
                     print("远端推送跳过：", e)
-                # 本机弹一次（之后只留右下角感叹号，不重复弹）
-                text = summary
-                try:
-                    cfg = http_json(f"{base}/api/ai/config") or {}
-                    if cfg.get("enabled") and str(cfg.get("provider", "")).startswith("ollama"):
-                        q = f"请用一句通俗中文（30 字以内）提醒电脑前的用户：{summary}。只输出提醒文案。"
-                        r = http_json(f"{base}/api/ai/ask", method="POST", timeout=120, body={"question": q})
-                        if r.get("text"):
-                            text = r["text"].strip()[:60]
-                except Exception:
-                    pass
-                notify("NAS Safe 异常提醒", text)
-                ui.add_unread(fresh[0].get("key"), text)
-                print("[提醒]", text)
+                # 本机弹一次（气泡只显示"标题消息 + 点击查看"，完整内容放在未读列表）
+                n = len(fresh)
+                head = fresh[0].get("title", "NAS Safe 异常提醒")
+                if len(head) > 26:
+                    head = head[:25] + "…"
+                cta = (head + f"  等 {n} 项" if n > 1 else head) + "  ·  点击查看详情 ›"
+                notify("NAS Safe 异常提醒", cta)
+                # 每条异常作为一条未读落盘，点击气泡/托盘即可在未读界面看到全部内容
+                for f in fresh:
+                    ui.add_unread(f.get("key"), f.get("title", "NAS Safe 异常提醒"))
+                print("[提醒]", summary)
         except Exception as e:
             print("轮询失败（下次重试）：", e)
         # 分片睡眠：停止指令秒级生效

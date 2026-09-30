@@ -29,8 +29,8 @@
   }
   .fake-taskbar .tray {
     margin-left: auto; width: 60px; height: 22px; border-radius: 6px;
-    background: rgba(56,189,248,.18); border: 1px solid rgba(56,189,248,.4);
-    display: flex; align-items: center; justify-content: center; font-size: 12px; color: #bae6fd;
+    background: rgba(239,68,68,.18); border: 1px solid rgba(239,68,68,.5);
+    display: flex; align-items: center; justify-content: center; font-size: 12px; color: #fecaca;
   }
   /* ---------- 真正的 Toast 卡片（与桌面 EXE 弹出样式一致） ---------- */
   .toast {
@@ -51,6 +51,7 @@
     margin: 0 0 4px; letter-spacing: .2px;
   }
   .toast .text { color: var(--fg); font-size: 13.5px; line-height: 19px; margin: 0; }
+  .toast .cta { color: var(--muted); font-size: 12px; margin-top: 6px; }
   /* 多条时自下而上堆叠 */
   .toast.t1 { bottom: 20px; }
   .toast.t2 { bottom: 132px; }
@@ -70,49 +71,107 @@
     padding: 9px 16px; font-size: 14px; font-weight: 600;
   }
   .btn:hover { filter: brightness(1.06); }
+  .btn.ghost { background: #475569; color: #e2e8f0; }
   .note { color: var(--muted); font-size: 12px; margin-top: 10px; }
+
+  /* ---------- 点击后弹出的「未读提醒」窗口（mock，与 EXE 内 tkinter 窗口一致） ---------- */
+  .inbox {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%) scale(.96);
+    width: 520px; max-height: 70vh; background: #f6f8fc; border-radius: 12px; overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5); opacity: 0; pointer-events: none;
+    transition: opacity .18s ease, transform .18s ease; z-index: 10000; display: flex; flex-direction: column;
+  }
+  .inbox.show { opacity: 1; transform: translate(-50%,-50%) scale(1); pointer-events: auto; }
+  .inbox .hd { background: #2563eb; color: #fff; height: 44px; display: flex; align-items: center; padding: 0 14px; font-weight: 600; font-size: 14px; }
+  .inbox .hd .x { margin-left: auto; cursor: pointer; font-size: 16px; opacity: .85; }
+  .inbox .bd { padding: 14px 18px; overflow: auto; }
+  .inbox .row { background: #fff; border: 1px solid #e6e9f0; border-radius: 9px; padding: 11px 13px; margin-bottom: 10px; font-size: 13.5px; color: #111827; line-height: 19px; }
+  .inbox .row .ts { color: #6b7280; font-size: 12px; margin-right: 8px; }
+  .inbox .empty { text-align: center; color: #16a34a; padding: 40px 0; }
+  .inbox .ft { display: flex; justify-content: space-between; padding: 10px 18px 16px; }
+  .inbox .ft button { border: none; border-radius: 8px; padding: 8px 16px; font-size: 13px; cursor: pointer; font-weight: 600; }
+  .inbox .ft .all { background: #eef1f7; color: #111827; }
+  .inbox .ft .close { background: #2563eb; color: #fff; }
 </style>
 </head>
 <body>
   <div class="panel">
     <h1>桌面小助手 · 提醒气泡（新版预览）</h1>
     <p>修复后：弹窗固定在<b>屏幕右下角</b>（距右边/下边各 20px，多条自下而上堆叠），不再出现在屏幕正中央。</p>
-    <p>外观：深色卡片 + 左侧 <code>accent</code> 强调条，标题加粗高亮、正文浅色自动换行，点击即关闭——与之前系统默认 MessageBox（居中、带标题栏、难看）彻底不同。</p>
+    <p>外观：深色卡片 + 左侧 <code>accent</code> 强调条。气泡只承载<b>「标题消息 + 点击查看详情」</b>——<b>完整内容点击后在未读界面查看</b>，与之前系统默认 MessageBox（居中、带标题栏、难看）彻底不同。</p>
     <button class="btn" id="send">发送一条测试提醒</button>
-    <button class="btn" id="send3" style="background:#475569;color:#e2e8f0;">连发 3 条（看堆叠）</button>
-    <p class="note">说明：此为网页预览，仅用于确认样式与位置；真实弹窗由桌面 EXE（Win32 自绘）弹出，效果一致。</p>
+    <button class="btn ghost" id="send3">连发 3 条（看堆叠）</button>
+    <p class="note">说明：此为网页预览，仅用于确认样式与位置；真实弹窗由桌面 EXE（Win32 自绘）弹出，效果一致。点击气泡会打开本地「未读提醒」窗口。</p>
+  </div>
+
+  <!-- 点击气泡后打开的「未读提醒」窗口（mock） -->
+  <div class="inbox" id="inbox">
+    <div class="hd">NAS Safe 桌面助手 · 未读提醒<span class="x" id="inboxX">✕</span></div>
+    <div class="bd" id="inboxBody"></div>
+    <div class="ft">
+      <button class="all" id="inboxAll">全部标记已读</button>
+      <button class="close" id="inboxClose">关闭</button>
+    </div>
   </div>
 
   <div class="fake-taskbar">
     <span>NAS Safe · 快照保护中</span>
-    <span class="tray">🛡 托盘</span>
+    <span class="tray">🛡 1 条未读</span>
   </div>
 
   <script>
+    // 模拟未读数据：每条都是「完整内容」，气泡里只显示标题
+    const UNREAD = [
+      { ts: "09-30 14:02", text: "「我的文件」空间即将用尽（已用 95%）：请尽快清理或扩容，避免快照写入失败。" },
+      { ts: "09-30 13:50", text: "CPU 温度过高（92°C）：检查散热风扇与风道，持续高温可能触发降频或关机。" },
+      { ts: "09-30 13:30", text: "检测到异常批量写入行为，已自动创建锁快照 auto-202609301330，可在时间轴回滚。" }
+    ];
     let seq = 0;
-    function pop(title, text, cls) {
+    function pop(title, headline, n, cls) {
       const el = document.createElement('div');
       el.className = 'toast ' + (cls || '');
+      const cta = (n > 1) ? `等 ${n} 项  ·  点击查看详情 ›` : `点击查看详情 ›`;
       el.innerHTML =
         '<div class="bar"></div>' +
-        '<div class="body"><p class="title"></p><p class="text"></p></div>';
+        '<div class="body"><p class="title"></p><p class="text"></p><p class="cta"></p></div>';
       el.querySelector('.title').textContent = title;
-      el.querySelector('.text').textContent = text;
+      el.querySelector('.text').textContent = headline;
+      el.querySelector('.cta').textContent = cta;
       document.body.appendChild(el);
       requestAnimationFrame(() => el.classList.add('show'));
-      el.addEventListener('click', () => dismiss(el));
-      // 真实弹窗 6s 后自动销毁
+      el.addEventListener('click', () => { dismiss(el); openInbox(); });
       setTimeout(() => dismiss(el), 6000);
     }
     function dismiss(el) {
       el.classList.remove('show');
       setTimeout(() => el.remove(), 240);
     }
-    document.getElementById('send').onclick = () => pop('NAS Safe 提醒', '检测到异常写入行为，已自动创建锁快照。点击查看详情。');
+    function openInbox() {
+      const body = document.getElementById('inboxBody');
+      body.innerHTML = '';
+      if (!UNREAD.length) {
+        body.innerHTML = '<div class="empty">✓ 没有未读提醒<br><span style="color:#6b7280;font-size:12px">一切正常，有异常会在这里告诉你</span></div>';
+      } else {
+        UNREAD.forEach(u => {
+          const d = document.createElement('div');
+          d.className = 'row';
+          d.innerHTML = `<span class="ts">${u.ts}</span>${u.text}`;
+          body.appendChild(d);
+        });
+      }
+      document.getElementById('inbox').classList.add('show');
+    }
+    function closeInbox() { document.getElementById('inbox').classList.remove('show'); }
+    document.getElementById('inboxX').onclick = closeInbox;
+    document.getElementById('inboxClose').onclick = closeInbox;
+    document.getElementById('inboxAll').onclick = () => { UNREAD.length = 0; openInbox(); };
+
+    document.getElementById('send').onclick = () =>
+      pop('NAS Safe 异常提醒', '「我的文件」空间即将用尽（已用 95%）', 1);
     document.getElementById('send3').onclick = () => {
-      pop('NAS Safe 提醒 1', '这是第 1 条测试消息，出现在最底部。', 't1');
-      setTimeout(() => pop('NAS Safe 提醒 2', '这是第 2 条，向上堆叠。', 't2'), 400);
-      setTimeout(() => pop('NAS Safe 提醒 3', '这是第 3 条，继续向上。', 't3'), 800);
+      pop('NAS Safe 异常提醒', '「我的文件」空间即将用尽（已用 95%）', 3, 't1');
+      setTimeout(() => pop('NAS Safe 异常提醒', 'CPU 温度过高（92°C）', 3, 't2'), 400);
+      setTimeout(() => pop('NAS Safe 异常提醒', '检测到异常批量写入行为', 3, 't3'), 800);
     };
   </script>
 </body>
