@@ -986,7 +986,7 @@ function renderAiChat() {
   const log = $("aiChatLog");
   if (!log) return;
   if (!aiChatHistory.length) {
-    log.innerHTML = `<div class="muted" style="text-align:center;padding:40px 10px 30px;margin-top:16px">💬 用大白话问 NAS 相关问题<br><span style="font-size:12px">支持连续追问、随时补充信息，AI 记得本次对话内容</span></div>`;
+    log.innerHTML = `<div class="muted" style="text-align:center;padding:4px 10px 18px;margin-top:0">💬 用大白话问 NAS 相关问题<br><span style="font-size:12px">支持连续追问、随时补充信息，AI 记得本次对话内容</span></div>`;
     return;
   }
   log.innerHTML = aiChatHistory.map((m) => {
@@ -1005,8 +1005,8 @@ function aiAsk() {
   aiChatHistory = []; // 每次打开开新会话；会话内多轮共享上下文
   openModal(
     "🤖 问 AI",
-    `<div id="aiChatLog" style="flex:1 1 auto;min-height:120px;max-height:54vh;overflow-y:auto;padding:6px 2px 10px;margin-bottom:10px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;"></div>
-     <textarea id="aiChatInput" class="text-input" rows="3" style="display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:86px;line-height:1.6"
+    `<div id="aiChatLog" style="flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 2px 10px;margin-bottom:10px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;justify-content:flex-start"></div>
+     <textarea id="aiChatInput" class="text-input" rows="3" style="display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:86px;line-height:1.6;flex:none"
        placeholder="输入问题，回车发送（Shift+回车换行）。AI 答完可继续追问或补充信息。"></textarea>
      <p class="muted" style="margin:8px 0 0">回答基于当前系统状态与告警，仅供参考；关键操作请以人工判断为准。</p>`,
     `<button class="btn ghost" data-act="newchat">新话题</button>
@@ -1020,7 +1020,9 @@ function aiAsk() {
   );
   // 聊天弹窗加宽加高（inline 只在此弹窗设置，closeModal 统一还原，不影响其它弹窗）
   const box = $("modalBox");
-  if (box) { box.style.maxWidth = "880px"; box.style.width = "94vw"; box.style.maxHeight = "88vh"; }
+  if (box) { box.style.maxWidth = "880px"; box.style.width = "94vw"; box.style.maxHeight = "88vh"; box.style.height = "88vh"; }
+  const mbody = $("modalBody");
+  if (mbody) { mbody.style.display = "flex"; mbody.style.flexDirection = "column"; mbody.style.overflowY = "hidden"; }
   renderAiChat();
   const ta = $("aiChatInput");
   if (ta) {
@@ -1462,7 +1464,9 @@ function openModal(title, body, foot, actions, opts) {
 function closeModal() {
   modalSticky = false;
   const box = $("modalBox");
-  if (box) { box.style.maxWidth = ""; box.style.width = ""; box.style.maxHeight = ""; } // 还原「问AI」聊天弹窗的加宽
+  if (box) { box.style.maxWidth = ""; box.style.width = ""; box.style.maxHeight = ""; box.style.height = ""; } // 还原「问AI」聊天弹窗的加宽
+  const mbody2 = $("modalBody");
+  if (mbody2) { mbody2.style.display = ""; mbody2.style.flexDirection = ""; mbody2.style.overflowY = ""; }
   $("modalRoot").hidden = true;
   $("modalBox").dataset.mode = "";
   $("modalBody").innerHTML = "";
