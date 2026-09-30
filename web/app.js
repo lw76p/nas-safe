@@ -797,9 +797,30 @@ async function callLocalAI(question, context) {
 }
 
 // 统一入口：ollama 走浏览器直连；其它供应商走后端（保护密钥）。
+// 本地 AI 兜底通道：浏览器直连被 CORS 拦时，改由 NAS 后端中转调用用户电脑的 Ollama
+async function callLocalAIViaNAS(question, context) {
+  const base = (($("aiBase") && $("aiBase").value) || "").trim();
+  const model = (($("aiModel") && $("aiModel").value) || "").trim();
+  const body = { question, base_url: base, model };
+  if (context) body.context = context;
+  const data = await api("/api/ai/local", { method: "POST", body: JSON.stringify(body) }, 120000);
+  return data.text;
+}
+
 async function routeAI(question, cloudEndpoint, context) {
   const prov = ($("aiProvider") && $("aiProvider").value) || "";
-  if (prov === "ollama") return await callLocalAI(question, context || "");
+  if (prov === "ollama") {
+    try {
+      return await callLocalAI(question, context || "");
+    } catch (directErr) {
+      // 直连失败（最常见 = 未设系统级 OLLAMA_ORIGINS 被 CORS 拦），自动改走 NAS 中转
+      try {
+        return await callLocalAIViaNAS(question, context || "");
+      } catch (relayErr) {
+        throw new Error(directErr.message + "\n[NAS 中转也失败] " + relayErr.message);
+      }
+    }
+  }
   let body;
   if (cloudEndpoint === "/api/ai/interpret") body = { text: question };
   else body = context ? { question, context } : { question };
@@ -1755,9 +1776,8 @@ function aiProviderChanged() {
   if (isOllama) {
     hint.innerHTML =
       "本地 AI 跑在你自己的电脑上（Ollama / LM Studio 等），数据不出本机，无需密钥。" +
-      "已装 Ollama？启动前先设 <code>OLLAMA_ORIGINS=*</code>（允许本站点访问），" +
-      "再点「自动搜索」即可一键接入；服务地址默认 <code>http://localhost:11434/v1</code>。" +
-      "LM Studio 用户请在设置里打开 CORS。";
+      "直连失败会自动改走 NAS 中转，此时需把服务地址填成电脑的局域网地址（如 <code>http://192.168.8.242:11434/v1</code>，Ollama 需开启「Expose to network」）。" +
+      "若想浏览器直连，请以管理员设置系统变量 <code>OLLAMA_ORIGINS=*</code> 后重启 Ollama。";
   } else {
     const urls = {
       deepseek: "https://platform.deepseek.com",

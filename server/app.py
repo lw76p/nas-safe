@@ -895,6 +895,30 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send_json({"ok": True, "text": result})
 
+            elif route == "/api/ai/local":
+                # 本地 AI 中转：浏览器直连用户电脑 Ollama 被 CORS 拦时的兜底通道。
+                # 后端直接调用户电脑的 Ollama（须监听 0.0.0.0，仅限 11434 端口防滥用）。
+                question = (payload.get("question") or "").strip()
+                if not question:
+                    raise StorageError("请先输入问题")
+                base = (payload.get("base_url") or "").strip().rstrip("/")
+                model = (payload.get("model") or "").strip()
+                if not base:
+                    raise StorageError("请先到「设置 → AI」填写本地 AI 服务地址（如 http://192.168.8.242:11434/v1）")
+                if ":11434" not in base:
+                    raise StorageError("本地 AI 中转仅支持 Ollama 服务地址（须含 :11434 端口）")
+                ctx = (payload.get("context") or "").strip()
+                messages = []
+                if ctx:
+                    messages.append({"role": "system", "content": "你是 NAS 数据安全助手，用通俗中文回答。背景：" + ctx})
+                messages.append({"role": "user", "content": question})
+                local_cfg = {"provider": "ollama", "base_url": base, "model": model or "qwen2.5:7b"}
+                text, err = ai._chat(messages, local_cfg, timeout=120)
+                if err:
+                    self._send_json({"ok": False, "error": "本地 AI（NAS 中转）：" + err}, 400)
+                else:
+                    self._send_json({"ok": True, "text": text, "via": "nas-relay"})
+
             elif route == "/api/autosnapshot":
                 if not isinstance(payload, dict):
                     raise StorageError("配置格式错误")
