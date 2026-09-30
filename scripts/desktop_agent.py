@@ -51,9 +51,12 @@ CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # 调 PowerShell 不闪
 DEFAULT_INTERVAL = 120
 CTRL_PORT = 18765          # 本机控制端口（只监听 127.0.0.1，不外泄）
 PROTOCOL = "nassafe-agent"  # 浏览器拉起本机小助手的自定义协议
+# 旧版残留识别标记（用于清理自启项/目录时不限旧版名，避免"杀不净"）
+_LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
+                   "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.3"
+AGENT_VER = "1.0.6.4"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -439,23 +442,47 @@ def ensure_autostart(base, interval, exe=None):
         return False
 
 
-def remove_autostart():
+def _scan_and_remove_autostart():
+    """扫描 HKCU/HKLM 的开机自启项，删除所有指向本程序的项（按命令内容匹配，不限旧版名）。"""
     if os.name != "nt":
-        return False
+        return
     try:
         import winreg
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
-        for _name in (APP_NAME, "NASSafeAgent"):   # 兼容清理旧英文版项
-            try:
-                winreg.DeleteValue(key, _name)
-            except FileNotFoundError:
-                pass
-        winreg.CloseKey(key)
-        return True
-    except Exception as e:
-        print("移除开机自启失败：", e, file=sys.stderr)
-        return False
+    except Exception:
+        return
+    run_paths = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Run"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Run"),
+    ]
+    for hkey, sub in run_paths:
+        try:
+            key = winreg.OpenKey(hkey, sub, 0, winreg.KEY_READ | winreg.KEY_WRITE)
+            vals = []
+            i = 0
+            while True:
+                try:
+                    nm, data, _ = winreg.EnumValue(key, i)
+                    vals.append((nm, data))
+                    i += 1
+                except OSError:
+                    break
+            for nm, data in vals:
+                if any(m in data for m in _LEGACY_MARKERS):
+                    try:
+                        winreg.DeleteValue(key, nm)
+                        print("清理旧自启项：", sub, nm, file=sys.stderr)
+                    except Exception:
+                        pass
+            winreg.CloseKey(key)
+        except Exception:
+            pass
+
+
+def remove_autostart():
+    """移除本程序注册的开机自启（并顺手清理所有旧版残留自启项）。"""
+    _scan_and_remove_autostart()
+    return True
 
 
 def register_protocol(exe=None):
@@ -555,14 +582,19 @@ def self_install_flow(base_hint=""):
     # 2) 强制结束所有正在运行的旧实例（旧版不会自己停，/stop 对旧版可能无效）
     terminate_existing_agents()
 
-    # 2.5) 清理旧版安装目录与自启项（旧版目录名 NASSafeAgent 与新版不同）
+    # 2.5) 清理旧版安装目录与自启项（不限旧版名，避免"杀不净"反复复活）
     try:
-        old_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "NASSafeAgent")
-        if os.path.isdir(old_dir):
-            shutil.rmtree(old_dir, ignore_errors=True)
+        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+        for nm in os.listdir(appdata):
+            full = os.path.join(appdata, nm)
+            if os.path.isdir(full) and any(m in nm for m in _LEGACY_MARKERS):
+                # 当前安装目录（APP_DIR）会由下方复制覆盖，跳过删除
+                if nm == APP_DIR:
+                    continue
+                shutil.rmtree(full, ignore_errors=True)
     except Exception:
         pass
-    remove_autostart()      # 顺带清掉旧英文版残留的自启项
+    remove_autostart()      # 扫描清理所有旧版自启项
 
     # 3) 复制到固定目录
     try:
