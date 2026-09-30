@@ -33,9 +33,17 @@
   </div>
 </header>
 
+<!-- 主导航：分区查看，避免单页过长 -->
+<nav class="tabs" id="mainTabs" aria-label="主导航">
+  <button class="tab active" data-view="home">▦ 总览</button>
+  <button class="tab" data-view="snapshots">◷ 快照时间轴</button>
+  <button class="tab" data-view="monitor">◉ 实时监控</button>
+  <button class="tab" data-view="settings">⚙ 设置</button>
+</nav>
+
 <main class="layout">
 
-  <!-- 顶栏式风险横幅（命中即红色/琥珀色顶置） -->
+  <!-- 顶栏式风险横幅（全局常驻，命中即红色/琥珀色顶置） -->
   <section class="alert-banner" id="alertBanner" hidden>
     <div class="alert-icon"></div>
     <div>
@@ -45,7 +53,7 @@
   </section>
 
   <!-- 一眼概览 -->
-  <section class="overview" id="overview">
+  <section class="overview" id="overview" data-view="home">
     <div class="ov-card zone-storage">
       <span class="ov-ico">▦</span>
       <div class="ov-body">
@@ -77,7 +85,7 @@
   </section>
 
   <!-- 功能区一：存储单元 -->
-  <section class="panel zone zone-storage" id="storageZone">
+  <section class="panel zone zone-storage" id="storageZone" data-view="home">
     <div class="panel-head">
       <div class="zone-head">
         <span class="zone-ico">▦</span>
@@ -94,7 +102,7 @@
   </section>
 
   <!-- 功能区二：快照时间轴 -->
-  <section class="panel zone zone-snapshot" id="timelinePanel" hidden>
+  <section class="panel zone zone-snapshot" id="timelinePanel" data-view="snapshots" hidden>
     <div class="panel-head">
       <div class="zone-head">
         <span class="zone-ico">◷</span>
@@ -123,7 +131,7 @@
   </section>
 
   <!-- 功能区三：防勒索实时监控 -->
-  <section class="panel zone zone-monitor" id="monitorPanel">
+  <section class="panel zone zone-monitor" id="monitorPanel" data-view="monitor">
     <div class="panel-head">
       <div class="zone-head">
         <span class="zone-ico">◉</span>
@@ -158,7 +166,7 @@
   </section>
 
   <!-- 功能区四：通知与 AI 设置 -->
-  <section class="panel zone zone-monitor" id="settingsPanel">
+  <section class="panel zone zone-monitor" id="settingsPanel" data-view="settings">
     <div class="panel-head">
       <div class="zone-head">
         <span class="zone-ico">⚙</span>

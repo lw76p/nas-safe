@@ -107,6 +107,37 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .status.err .dot { background: var(--red); box-shadow: 0 0 0 3px var(--red-bg); }
 
 /* --------------------------- 布局 / 概览 --------------------------- */
+
+/* 主导航标签页 */
+.tabs {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 14px 30px 0;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tab {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  font: 600 14px/1 var(--font-body);
+  padding: 11px 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all .18s var(--ease);
+}
+.tab:hover { color: var(--text); border-color: var(--border-strong); background: var(--surface); }
+.tab.active {
+  color: var(--text);
+  background: var(--z-storage-soft);
+  border-color: var(--z-storage);
+}
+.tab.active[data-view="snapshots"] { background: var(--z-snapshot-soft); border-color: var(--z-snapshot); }
+.tab.active[data-view="monitor"] { background: var(--z-monitor-soft); border-color: var(--z-monitor); }
+.tab.active[data-view="settings"] { background: var(--z-guard-soft); border-color: var(--z-guard); }
+
 .layout {
   max-width: 1120px;
   margin: 0 auto;
@@ -474,6 +505,8 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 @media (max-width: 620px) {
   .layout { padding: 16px 15px 50px; }
   .topbar { padding: 13px 16px; }
+  .tabs { padding: 12px 15px 0; gap: 6px; }
+  .tab { padding: 9px 13px; font-size: 13px; }
   .panel { padding: 17px; }
   .panel-head { flex-direction: column; }
   .vol-meta { display: none; }

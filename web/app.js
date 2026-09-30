@@ -180,12 +180,33 @@ function updateOverview() {
   }
 }
 
+/* ------------------------- 主导航视图切换 ------------------------- */
+
+// 顶栏标签页：总览 / 快照时间轴 / 实时监控 / 设置；风险横幅全局常驻。
+const VIEWS = ["home", "snapshots", "monitor", "settings"];
+
+function applyView() {
+  const view = localStorage.getItem("nassafe_view") || "home";
+  if (!VIEWS.includes(view)) return;
+  document.querySelectorAll("#mainTabs .tab").forEach((t) => {
+    t.classList.toggle("active", t.dataset.view === view);
+  });
+  document.querySelectorAll("main [data-view]").forEach((sec) => {
+    sec.hidden = sec.dataset.view !== view;
+  });
+}
+
+function showView(name) {
+  if (!VIEWS.includes(name)) name = "home";
+  localStorage.setItem("nassafe_view", name);
+  applyView();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 /* ------------------------- 时间轴 ------------------------- */
 
 async function selectVolume(vol, keepSnapshot) {
   state.activeVolume = vol;
-  $("timelinePanel").hidden = false;
-  $("monitorPanel").hidden = false;
   $("tlTitle").textContent = `快照时间轴 — ${vol.name}`;
   $("tlSubtitle").textContent = vol.mountpoint;
   $("browseBtn").disabled = true;
@@ -196,6 +217,8 @@ async function selectVolume(vol, keepSnapshot) {
 
   document.querySelectorAll(".volume-card").forEach((c) => c.classList.remove("active"));
   await loadSnapshots();
+  // 选中卷后跳到时间轴页
+  showView("snapshots");
 }
 
 async function loadSnapshots() {
@@ -1062,6 +1085,12 @@ restoreAutoMonitor();
 loadSettings();
 // 按当前供应商显示 AI 引导提示（Ollama 附安装指引）
 aiProviderChanged();
+
+// 主导航：绑定标签页点击并恢复上次所在视图（localStorage 持久化）
+document.querySelectorAll("#mainTabs .tab").forEach((t) => {
+  t.onclick = () => showView(t.dataset.view);
+});
+applyView();
 
 // 篡改检测告警轮询：每 30s 拉一次 /api/alerts，发现异常则顶栏告警
 pollAlerts();
