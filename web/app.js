@@ -1870,7 +1870,13 @@ function showNotifyPermGuide(why) {
        </ol>
        <p class="muted">如果上面找不到，也可以复制这段地址到地址栏打开（Edge 换成 edge://）：
          <code>chrome://settings/content/notifications</code>，
-         然后把 <b>${escapeHtml(location.host)}</b> 加进「允许发送通知」名单。</p>`;
+         然后把 <b>${escapeHtml(location.host)}</b> 加进「允许发送通知」名单。</p>
+       <div class="notice warn" style="margin-top:8px">
+         如果你在网站设置里看到「通知」的选项是<b>灰色的、改不了</b>（显示"已屏蔽相应权限"）——
+         那不是你操作错了：新版浏览器对 <b>http</b> 地址会直接锁死通知权限。
+         这种情况只能等正式域名 <b>https://nassafe.tsetch.com</b> 上线后一键授权；
+         在此期间请点下方<b>「改用桌面小助手」</b>，关掉网页也能收到提醒。
+       </div>`;
   const body = `
     <p>${escapeHtml(why || "")}</p>
     ${steps}
