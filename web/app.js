@@ -339,12 +339,12 @@ function renderMetrics(m) {
   const sata = (m.disks || []).filter((d) => !d.name.startsWith("nvme"));
   let diskGroups = "";
   if (nvme.length) {
-    diskGroups += `<div class="bay-group"><span class="bay-label">M.2</span>${
-      nvme.map((d, i) => chip(d, `SSD ${i + 1}`)).join("")}</div>`;
+    diskGroups += `<div class="bay-group"><span class="bay-label">M.2</span><div class="disk-grid">${
+      nvme.map((d, i) => chip(d, `SSD ${i + 1}`)).join("")}</div></div>`;
   }
   if (sata.length) {
-    diskGroups += `<div class="bay-group"><span class="bay-label">3.5"/SATA</span>${
-      sata.map((d, i) => chip(d, `HDD ${i + 1}`)).join("")}</div>`;
+    diskGroups += `<div class="bay-group"><span class="bay-label">3.5"/SATA</span><div class="disk-grid">${
+      sata.map((d, i) => chip(d, `HDD ${i + 1}`)).join("")}</div></div>`;
   }
   const card4 = (m.disks || []).length ? `
     <div class="metric-card mc-${GRADE[g4][0]}">

@@ -210,14 +210,22 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 }
 .meter i.warn { background: var(--amber); }
 .meter i.danger { background: var(--red); }
-.bay-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.bay-group { margin-bottom: 10px; }
+.bay-group:last-child { margin-bottom: 0; }
 .bay-label {
+  display: inline-block;
   font-size: 11px;
   color: var(--text-3);
   border: 1px dashed var(--border-strong);
   border-radius: 6px;
   padding: 2px 7px;
+  margin-bottom: 6px;
   white-space: nowrap;
+}
+.disk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px;
 }
 .disk-chip {
   display: flex;
