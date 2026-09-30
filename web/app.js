@@ -295,22 +295,36 @@ function renderMetrics(m) {
   const hasNet = m.net && m.net.ifaces && m.net.ifaces.length;
   let netBlock = "";
   if (hasNet) {
-    // 只列物理网卡（过滤 docker/veth 虚拟口），用户可下拉切换
-    const phys = m.net.ifaces.filter((i) => !i.iface.startsWith("veth") && !i.iface.startsWith("docker"));
-    const pool = phys.length ? phys : m.net.ifaces;
+    // 只显示实体网卡：白名单认物理口，其余（docker/br-/lxcbr/veth/bond 等虚拟口）全部排除
+    // 白名单为空时逐级回退，保证任何系统都不会出现空下拉
+    const VIRT = /^(veth|docker|br-|lxcbr|virbr|tun|tap|sit|zt|wg)/;
+    const PHYS = /^(eth|en|em|wl|lan|xgbe|sfc|mlx|bcm|bond)/;
+    let pool = m.net.ifaces.filter((i) => PHYS.test(i.iface) && !VIRT.test(i.iface));
+    if (!pool.length) pool = m.net.ifaces.filter((i) => !VIRT.test(i.iface));
+    if (!pool.length) pool = m.net.ifaces;
+    const ifaceName = (n) => {
+      if (/^eth\d+$/.test(n)) return `网卡 ${Number(n.slice(3)) + 1}`;
+      if (/^en/.test(n)) return `网口 ${n}`;
+      if (/^wl/.test(n)) return `无线 ${n}`;
+      if (/^bond/.test(n)) return `聚合网卡 ${n}`;
+      return n;
+    };
     if (!selIface || !pool.some((i) => i.iface === selIface)) {
       selIface = pool.reduce((a, b) =>
         ((b.rx_bps || 0) + (b.tx_bps || 0) > (a.rx_bps || 0) + (a.tx_bps || 0) ? b : a), pool[0]).iface;
     }
     const cur = pool.find((i) => i.iface === selIface) || pool[0];
-    const opts = pool.map((i) =>
-      `<option value="${escapeHtml(i.iface)}" ${i.iface === cur.iface ? "selected" : ""}>${escapeHtml(i.iface)}</option>`).join("");
+    const opts = pool.map((i) => {
+      const cn = ifaceName(i.iface);
+      return `<option value="${escapeHtml(i.iface)}" ${i.iface === cur.iface ? "selected" : ""}>${
+        cn === i.iface ? escapeHtml(cn) : `${escapeHtml(cn)}（${escapeHtml(i.iface)}）`}</option>`;
+    }).join("");
     netBlock = `
       <div class="net-sel-row">
         <select id="ifaceSel" class="mc-select">${opts}</select>
         <div class="metric-kv net"><span>↓ ${fmtBps(cur.rx_bps)}</span><span>↑ ${fmtBps(cur.tx_bps)}</span></div>
       </div>
-      ${m.net.ifaces.length > phys.length ? `<p class="muted" style="margin:4px 0 0">另有 ${m.net.ifaces.length - phys.length} 个虚拟网卡未列出</p>` : ""}`;
+      ${m.net.ifaces.length > pool.length ? `<p class="muted" style="margin:4px 0 0">另有 ${m.net.ifaces.length - pool.length} 个虚拟网卡未列出</p>` : ""}`;
   }
   const card3 = `
     <div class="metric-card mc-${GRADE[g2][0]}">
@@ -328,9 +342,19 @@ function renderMetrics(m) {
   let card4 = "";
   if (vols.length) {
     const g3 = vols.reduce((g, v) => Math.max(g, grade(v.percent, 75, 90)), 0);
+    // 卷名中文化：优先用 /api/volumes 的真实名称（QNAP 的 mountpoint 是卷 ID，
+    // 路径 /share/CACHEDEVn_DATA 中的 n 即 ID）；其他品牌路径直接匹配
     const volLabel = (v) => {
+      const byId = (id) => state.volumes.find((x) => String(x.mountpoint) === id || String(x.volume_id) === id);
+      const m = String(v.mount).match(/CACHEDEV(\d+)_DATA/i);
+      if (m) {
+        const hit = byId(m[1]);
+        if (hit) return hit.name;
+        return `存储卷 ${m[1]}`;
+      }
       const known = state.volumes.find((x) => x.mountpoint === v.mount);
-      return known ? known.name : v.mount.split("/").pop() || v.mount;
+      if (known) return known.name;
+      return v.mount.split("/").pop() || v.mount;
     };
     if (!selVol || !vols.some((v) => v.mount === selVol)) selVol = vols[0].mount;
     const cur = vols.find((v) => v.mount === selVol) || vols[0];
@@ -388,12 +412,12 @@ function renderMetrics(m) {
   const sata = disks.filter((d) => !d.name.startsWith("nvme"));
   let diskGroups = "";
   if (nvme.length) {
-    diskGroups += `<div class="bay-group"><span class="bay-label">M.2</span><div class="disk-grid">${
-      nvme.map((d, i) => chip(d, `SSD ${i + 1}`)).join("")}</div></div>`;
+    diskGroups += `<div class="bay-group"><span class="bay-label">固态硬盘（M.2）</span><div class="disk-grid">${
+      nvme.map((d, i) => chip(d, `固态 ${i + 1}`)).join("")}</div></div>`;
   }
   if (sata.length) {
-    diskGroups += `<div class="bay-group"><span class="bay-label">3.5"/SATA</span><div class="disk-grid">${
-      sata.map((d, i) => chip(d, `HDD ${i + 1}`)).join("")}</div></div>`;
+    diskGroups += `<div class="bay-group"><span class="bay-label">机械硬盘（SATA）</span><div class="disk-grid">${
+      sata.map((d, i) => chip(d, `硬盘 ${i + 1}`)).join("")}</div></div>`;
   }
   const card5 = disks.length ? `
     <div class="metric-card metric-card-wide mc-${GRADE[g4][0]}">

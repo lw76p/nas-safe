@@ -161,7 +161,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .metric-card-lg { flex: 1.3 1 280px; } /* 存储：宽卡放环形图 */
 .metric-card.mc-warn { border-left-color: var(--amber); }
 .metric-card.mc-bad { border-left-color: var(--red); }
-.metric-card-wide { flex: 1 1 100%; }  /* 磁盘卡独占一整行，芯片横向铺开 */
+.metric-card-wide { flex: 1 1 100%; padding: 10px 14px; }  /* 磁盘卡独占一整行且紧凑 */
 .metric-card h4 {
   margin: 0 0 10px;
   font-size: 13px;
@@ -218,38 +218,39 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 }
 .meter i.warn { background: var(--amber); }
 .meter i.danger { background: var(--red); }
-.bay-group { margin-bottom: 10px; }
+.bay-group { margin-bottom: 6px; }
 .bay-group:last-child { margin-bottom: 0; }
 .bay-label {
   display: inline-block;
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-3);
   border: 1px dashed var(--border-strong);
-  border-radius: 6px;
-  padding: 2px 7px;
-  margin-bottom: 6px;
+  border-radius: 5px;
+  padding: 1px 6px;
+  margin-bottom: 4px;
   white-space: nowrap;
 }
 .disk-grid {
   display: grid;
   /* auto-fit + 1fr：盘少时均分整行横向铺满；盘多时每块缩到最小宽度再换行 */
-  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 6px;
 }
 .disk-chip {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 74px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1px 6px;
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-top: 2px solid var(--green);
   border-radius: var(--radius-xs);
-  padding: 7px 9px;
-  font-size: 11px;
+  padding: 4px 8px;
+  font-size: 10.5px;
   color: var(--text-2);
 }
-.disk-chip b { color: var(--text); font-size: 12px; }
+.disk-chip b { color: var(--text); font-size: 11px; }
 .chip-temp { font-weight: 700; }
 .chip-temp.ok { color: var(--green); }
 .chip-temp.warn { color: var(--amber); }
