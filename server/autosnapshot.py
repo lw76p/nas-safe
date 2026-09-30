@@ -141,17 +141,55 @@ def run_once() -> dict:
     return {"ok": True, "created": created, "cleaned": cleaned, "errors": errors}
 
 
+def _latest_auto_snapshot_time() -> "datetime.datetime | None":
+    """返回所有卷中最新的 auto- 快照时间，用于首次启动时对齐周期，防止重启洪水。"""
+    latest = None
+    try:
+        volumes = list_all_volumes()
+    except Exception:  # noqa: BLE001
+        return None
+    for vol in volumes:
+        try:
+            snaps = list_all_snapshots(vol)
+        except Exception:  # noqa: BLE001
+            continue
+        for s in snaps:
+            name = s.name or ""
+            if not name.startswith(AUTO_PREFIX):
+                continue
+            dt = _stamp_to_dt(name)
+            if dt and dt != datetime.datetime.min:
+                if latest is None or dt > latest:
+                    latest = dt
+    return latest
+
+
 def start_scheduler() -> "threading.Thread":
-    """后台守护线程：按 interval_hours 周期执行 run_once。"""
+    """后台守护线程：按 interval_hours 周期执行 run_once。
+
+    首次启动会等 60s 后检查最新 auto- 快照：如果它还在当前周期内，
+    则睡到周期满再打，避免每次容器/服务重启都额外产生一张快照。
+    """
     def loop() -> None:
         first = True
         while True:
             cfg = load_config()
             interval = max(1, int(cfg.get("interval_hours", DEFAULT_INTERVAL_HOURS))) * 3600
             if first:
-                # 首次启动延迟 60s，避免重启后立即打一批快照；之后按周期执行
+                # 首次启动延迟 60s，避免重启后立即打一批快照
                 time.sleep(60)
                 first = False
+                # 防重启洪水：若最新 auto 快照仍在周期内，额外对齐到周期末尾
+                try:
+                    latest = _latest_auto_snapshot_time()
+                    if latest is not None:
+                        elapsed = (datetime.datetime.now() - latest).total_seconds()
+                        if elapsed < interval:
+                            wait_more = interval - elapsed
+                            print(f"[autosnapshot] 首次启动对齐：最新快照 {latest.isoformat()} 在周期内，额外等待 {wait_more:.0f}s")
+                            time.sleep(wait_more)
+                except Exception:  # noqa: BLE001
+                    traceback.print_exc()
             else:
                 time.sleep(interval)
             try:

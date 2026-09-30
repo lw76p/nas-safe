@@ -583,7 +583,7 @@ async function pushAnomalyAlert(list) {
           body: JSON.stringify({
             question: `请用一句通俗中文（30 字以内）提醒电脑前的用户：${summary}。只输出提醒文案，不要解释。`,
           }),
-        });
+        }, 120000);
         if (d && d.text) body = d.text.trim().slice(0, 60);
       } catch (e) { /* AI 不可用时退回原始摘要 */ }
     }
@@ -659,7 +659,7 @@ async function askAiFix(a) {
     const data = await api("/api/ai/ask", {
       method: "POST",
       body: JSON.stringify({ question: a.q }),
-    });
+    }, 120000);
     openModal("🤖 AI 修复方案",
       `<p style="margin-top:0"><b>异常：</b>${escapeHtml(a.title)}</p>
        <div style="white-space:pre-wrap; line-height:1.8">${escapeHtml(data.text)}</div>
@@ -907,7 +907,7 @@ function aiAsk() {
           const data = await api("/api/ai/ask", {
             method: "POST",
             body: JSON.stringify({ question: q }),
-          });
+          }, 120000);
           openModal(
             "🤖 问 AI",
             `<p style="margin-top:0"><b>问：</b>${escapeHtml(q)}</p>
@@ -1307,7 +1307,8 @@ function openModal(title, body, foot, actions) {
   $("modalFoot").innerHTML = foot || "";
   $("modalRoot").hidden = false;
 
-  $("modalFoot").onclick = (ev) => {
+  // 监听整个弹窗：按钮可能放在 body（如异常列表的「查看/修复方案/忽略」）
+  $("modalRoot").onclick = (ev) => {
     const btn = ev.target.closest("button[data-act]");
     if (!btn) return;
     const act = btn.dataset.act;
@@ -1690,7 +1691,14 @@ function aiProviderChanged() {
       "手动配置：服务地址填 <code>http://NAS的IP:11434/v1</code> —— " +
       "注意别填 localhost：NAS Safe 跑在 Docker 里，容器内的 localhost 不是 NAS 本机。";
   } else {
-    hint.textContent = "去对应平台申请一个 API Key 粘贴到上面即可（DeepSeek 最便宜，国内直连）。数据将发送给该云端供应商。";
+    const urls = {
+      deepseek: "https://platform.deepseek.com",
+      openai: "https://platform.openai.com",
+      qwen: "https://dashscope.aliyun.com",
+      zhipu: "https://open.bigmodel.cn",
+      qiniu: "https://www.qiniu.com/products/ai",
+    };
+    hint.innerHTML = `去对应平台申请一个 API Key 粘贴到上面即可（<a href="${urls[prov] || '#'}" target="_blank" style="color:#38bdf8">${prov === "qiniu" ? "七牛云 AI" : "推荐 DeepSeek"}</a>）。数据将发送给该云端供应商。`;
   }
 }
 

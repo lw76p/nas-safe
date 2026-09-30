@@ -238,6 +238,14 @@ def build_system_info() -> dict:
     }
 
 
+def _volume_sort_key(vol: dict):
+    """按 volume_id 数值升序排列，无 ID 的排最后。"""
+    try:
+        return (0, int(vol.get("volume_id") or 0))
+    except (TypeError, ValueError):
+        return (1, str(vol.get("volume_id") or ""))
+
+
 def build_volume_list() -> dict:
     volumes = storage.list_all_volumes()
     result = []
@@ -262,6 +270,7 @@ def build_volume_list() -> dict:
             "protected": len(snaps) > 0,
         })
 
+    result.sort(key=_volume_sort_key)
     return {"ok": True, "volumes": result, "count": len(result)}
 
 

@@ -32,6 +32,7 @@ PROVIDERS = {
     "openai":   {"base_url": "https://api.openai.com/v1",   "model": "gpt-4o-mini",  "needs_key": True},
     "qwen":     {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus", "needs_key": True},
     "zhipu":    {"base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4-flash", "needs_key": True},
+    "qiniu":    {"base_url": "https://api.qnaigc.com/v1",  "model": "qiniu/deepseek-v3", "needs_key": True},
     "ollama":   {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:7b", "needs_key": False},
 }
 
@@ -270,7 +271,7 @@ def _ollama_default_base() -> str:
     return "http://localhost:11434/v1"
 
 
-def _chat(messages: list, cfg: dict, timeout: int = 30) -> (str, str):
+def _chat(messages: list, cfg: dict, timeout: int = 120) -> (str, str):
     prov = cfg.get("provider", "deepseek")
     info = PROVIDERS.get(prov, PROVIDERS["deepseek"])
     base = (cfg.get("base_url") or info["base_url"]).rstrip("/")
