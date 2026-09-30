@@ -581,13 +581,10 @@ async function loadSnapshots() {
       const isLatest = idx === sorted.length - 1;
       const node = document.createElement("div");
       node.className = "tl-node" + (isLatest ? " latest" : "");
-      const sizeTxt = String(snap.name || "").startsWith("auto-")
-        ? `<span class="muted">自动</span>`
-        : (snap.size_human || "");
       node.innerHTML = `
         <div class="tl-label">${formatShort(snap.created_at || snap.name)}</div>
         <div class="tl-dot"></div>
-        <div class="tl-size">${sizeTxt}${snap.protected ? ' <span class="lock" title="受 NAS Safe 保护">🔒</span>' : ""}</div>
+        <div class="tl-size">${snap.protected ? '<span class="lock" title="受 NAS Safe 保护">🔒</span>' : ""}</div>
       `;
       node.onclick = () => openSnapshotDetail(snap);
       tl.appendChild(node);
