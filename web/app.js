@@ -1005,8 +1005,8 @@ function aiAsk() {
   aiChatHistory = []; // 每次打开开新会话；会话内多轮共享上下文
   openModal(
     "🤖 问 AI",
-    `<div id="aiChatLog" style="max-height:46vh;overflow-y:auto;padding:4px 2px 8px;margin-bottom:8px;border-bottom:1px solid var(--border)"></div>
-     <textarea id="aiChatInput" class="text-input" rows="2" style="resize:vertical;min-height:48px"
+    `<div id="aiChatLog" style="min-height:200px;max-height:54vh;overflow-y:auto;padding:6px 2px 10px;margin-bottom:10px;border-bottom:1px solid var(--border)"></div>
+     <textarea id="aiChatInput" class="text-input" rows="3" style="display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:66px;line-height:1.6"
        placeholder="输入问题，回车发送（Shift+回车换行）。AI 答完可继续追问或补充信息。"></textarea>
      <p class="muted" style="margin:8px 0 0">回答基于当前系统状态与告警，仅供参考；关键操作请以人工判断为准。</p>`,
     `<button class="btn ghost" data-act="newchat">新话题</button>
@@ -1018,6 +1018,9 @@ function aiAsk() {
     },
     { stay: true }
   );
+  // 聊天弹窗加宽加高（inline 只在此弹窗设置，closeModal 统一还原，不影响其它弹窗）
+  const box = $("modalBox");
+  if (box) { box.style.maxWidth = "880px"; box.style.width = "94vw"; box.style.maxHeight = "88vh"; }
   renderAiChat();
   const ta = $("aiChatInput");
   if (ta) {
@@ -1458,6 +1461,8 @@ function openModal(title, body, foot, actions, opts) {
 
 function closeModal() {
   modalSticky = false;
+  const box = $("modalBox");
+  if (box) { box.style.maxWidth = ""; box.style.width = ""; box.style.maxHeight = ""; } // 还原「问AI」聊天弹窗的加宽
   $("modalRoot").hidden = true;
   $("modalBox").dataset.mode = "";
   $("modalBody").innerHTML = "";
