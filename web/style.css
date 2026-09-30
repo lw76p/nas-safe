@@ -50,6 +50,32 @@
 
 [hidden] { display: none !important; }
 
+/* 日间护眼主题：body.light 时覆盖变量（随日出日落自动切换，见 app.js 主题逻辑） */
+body.light {
+  --bg: #eef2f8;
+  --surface: #ffffff;
+  --surface-2: #f2f5fa;
+  --border: #dbe3ee;
+  --border-strong: #c2cddd;
+  --text: #1d2531;
+  --text-2: #46556a;
+  --text-3: #7e8ca0;
+  --z-storage: #2b7de9;  --z-storage-soft: rgba(43,125,233,.12);
+  --z-snapshot: #7466e8; --z-snapshot-soft: rgba(116,102,232,.13);
+  --z-monitor: #0da678;  --z-monitor-soft: rgba(13,166,120,.11);
+  --z-guard: #d98a1f;    --z-guard-soft: rgba(217,138,31,.13);
+  --green: #0e9f68; --green-bg: rgba(14,159,104,.12);
+  --amber: #c98a12; --amber-bg: rgba(201,138,18,.13);
+  --red: #d84c4c;   --red-bg: rgba(216,76,76,.10);
+  --sh-1: 0 1px 2px rgba(30,45,70,.08);
+  --sh-2: 0 8px 24px rgba(30,45,70,.10);
+  --sh-3: 0 20px 60px rgba(30,45,70,.16);
+  background:
+    radial-gradient(1200px 620px at 85% -12%, rgba(75,149,255,.07) 0%, rgba(75,149,255,0) 60%),
+    radial-gradient(900px 520px at 0% 0%, rgba(47,224,160,.06) 0%, rgba(47,224,160,0) 55%),
+    var(--bg);
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
@@ -170,6 +196,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   align-items: center;
   gap: 8px;
 }
+.bay-ico { flex: none; display: inline-block; vertical-align: -4px; margin-right: 3px; }
 .mc-pill {
   margin-left: auto;
   font-size: 11px;
@@ -396,6 +423,26 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .zone-head .sub { margin-top: 2px; }
 .panel-actions { display: flex; gap: 9px; flex: none; }
 
+/* 仪表盘紧凑化：头部与卡片整体缩小，避免"头重脚轻" */
+#dashboardPanel .panel-head { margin-bottom: 10px; }
+#dashboardPanel .zone-head { gap: 10px; }
+#dashboardPanel .zone-ico { width: 28px; height: 28px; border-radius: 8px; font-size: 13px; }
+#dashboardPanel .panel-head h2 { font-size: 14.5px; }
+#dashboardPanel .zone-head .sub { font-size: 11.5px; margin-top: 1px; }
+#dashboardPanel .panel-actions .btn { padding: 6px 12px; font-size: 12.5px; }
+#dashboardPanel .metrics-grid { gap: 10px; }
+#dashboardPanel .metric-card { padding: 10px 12px; }
+#dashboardPanel .metric-card h4 { margin-bottom: 6px; font-size: 12.5px; }
+#dashboardPanel .metric-kv { font-size: 12.5px; padding: 2px 0; }
+#dashboardPanel .grade-big { font-size: 21px; letter-spacing: 2px; margin: 1px 0 5px; }
+#dashboardPanel .donut-row { gap: 12px; margin: 2px 0 4px; }
+#dashboardPanel .donut-label { font-size: 11.5px; }
+#dashboardPanel .meter { height: 7px; }
+
+/* 主导航标签：随仪表盘一起收窄 */
+.tabs { padding: 9px 30px 0; gap: 7px; }
+.tab { font: 600 13px/1 var(--font-body); padding: 8px 14px; }
+
 /* ----------------------------- 按钮 ----------------------------- */
 .btn {
   font: inherit; font-size: 13px; font-weight: 500;
@@ -543,7 +590,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .modal-body { padding: 22px; overflow-y: auto; flex: 1; }
 .modal-foot {
   padding: 15px 22px; border-top: 1px solid var(--border);
-  display: flex; justify-content: flex-end; gap: 9px; background: #11161f;
+  display: flex; justify-content: flex-end; gap: 9px; background: var(--surface-2);
 }
 
 /* ----------------------------- 文件浏览 ----------------------------- */
@@ -654,7 +701,8 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   align-items: center; pointer-events: none;
 }
 .toast {
-  padding: 11px 20px; border-radius: 999px; background: #2a3038; color: #fff;
+  padding: 11px 20px; border-radius: 999px; background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border-strong);
   font-size: 13px; animation: toastIn .2s ease-out; max-width: 84vw; box-shadow: var(--sh-2);
 }
 .toast.err { background: var(--red); }

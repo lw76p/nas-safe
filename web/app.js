@@ -213,7 +213,7 @@ function donut(label, percent, color) {
   const r = 34, c = 2 * Math.PI * r;
   return `
     <div class="donut">
-      <svg viewBox="0 0 84 84" width="84" height="84">
+      <svg viewBox="0 0 84 84" width="66" height="66">
         <circle cx="42" cy="42" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="9"/>
         <circle cx="42" cy="42" r="${r}" fill="none" stroke="${color}" stroke-width="9"
           stroke-linecap="round" stroke-dasharray="${(p / 100 * c).toFixed(1)} ${c.toFixed(1)}"
@@ -323,8 +323,7 @@ function renderMetrics(m) {
       <div class="net-sel-row">
         <select id="ifaceSel" class="mc-select">${opts}</select>
         <div class="metric-kv net"><span>↓ ${fmtBps(cur.rx_bps)}</span><span>↑ ${fmtBps(cur.tx_bps)}</span></div>
-      </div>
-      ${m.net.ifaces.length > pool.length ? `<p class="muted" style="margin:4px 0 0">另有 ${m.net.ifaces.length - pool.length} 个虚拟网卡未列出</p>` : ""}`;
+      </div>`;
   }
   const card3 = `
     <div class="metric-card mc-${GRADE[g2][0]}">
@@ -419,9 +418,21 @@ function renderMetrics(m) {
     diskGroups += `<div class="bay-group"><span class="bay-label">机械硬盘（SATA）</span><div class="disk-grid">${
       sata.map((d, i) => chip(d, `硬盘 ${i + 1}`)).join("")}</div></div>`;
   }
+  // 磁盘柜图标：随最差盘状态变色（绿=正常 / 琥珀=偏热 / 红=过热）
+  const bayIco = (g) => {
+    const c = g === 2 ? "var(--red)" : g === 1 ? "var(--amber)" : "var(--green)";
+    return `<svg class="bay-ico" viewBox="0 0 24 24" width="19" height="19" fill="none"
+      stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2"/>
+      <line x1="6.5" y1="8.5" x2="17.5" y2="8.5"/>
+      <line x1="6.5" y1="12.5" x2="17.5" y2="12.5"/>
+      <line x1="6.5" y1="16.5" x2="11.5" y2="16.5"/>
+      <circle cx="15.6" cy="16.5" r="1.4" fill="${c}" stroke="none"/>
+    </svg>`;
+  };
   const card5 = disks.length ? `
     <div class="metric-card metric-card-wide mc-${GRADE[g4][0]}">
-      ${cardHead("磁盘", g4, `<span class="muted">${okCount}/${disks.length} 正常</span>`)}
+      ${cardHead(`${bayIco(g4)}磁盘`, g4, `<span class="muted">${okCount}/${disks.length} 正常</span>`)}
       ${diskGroups}
     </div>` : "";
 
@@ -1580,6 +1591,36 @@ restoreAutoMonitor();
 loadSettings();
 // 按当前供应商显示 AI 引导提示（Ollama 附安装指引）
 aiProviderChanged();
+
+// ---- 护眼主题：随日出日落自动切换浅色/深色（设置页开关，localStorage 持久化）----
+// 日出日落近似计算（中纬度，误差约 ±15 分钟）：昼长随季节正弦变化
+function sunTimes(d) {
+  const doy = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000);
+  const daylight = 12 + 2.4 * Math.sin((2 * Math.PI * (doy - 81)) / 365);
+  return [12 - daylight / 2, 12 + daylight / 2]; // [日出, 日落]（小时）
+}
+function isDaylight(d = new Date()) {
+  const h = d.getHours() + d.getMinutes() / 60;
+  const [rise, set] = sunTimes(d);
+  return h >= rise && h < set;
+}
+function applyAutoTheme() {
+  const on = localStorage.getItem("nassafe_auto_theme") === "1";
+  document.body.classList.toggle("light", on && isDaylight());
+}
+const themeChk = $("autoThemeChk");
+if (themeChk) {
+  themeChk.checked = localStorage.getItem("nassafe_auto_theme") === "1";
+  themeChk.onchange = () => {
+    localStorage.setItem("nassafe_auto_theme", themeChk.checked ? "1" : "0");
+    applyAutoTheme();
+    if (typeof toast === "function") {
+      toast(themeChk.checked ? "已开启：白天浅色、夜间深色，自动切换" : "已关闭：始终使用当前配色", "ok");
+    }
+  };
+}
+applyAutoTheme();
+setInterval(applyAutoTheme, 60000); // 每分钟检查一次，跨过日出/日落自动换肤
 
 // 主导航：绑定标签页点击并恢复上次所在视图（localStorage 持久化）
 document.querySelectorAll("#mainTabs .tab").forEach((t) => {
