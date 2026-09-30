@@ -1928,36 +1928,45 @@ function showNotifyPermGuide(why) {
   refresh();
 }
 
-// 关掉网页也想收到提醒 → 桌面小助手一键安装：下载 setup.bat → 双击 → 弹窗确认即完成
+// 关掉网页也想收到提醒 → 桌面小助手：下载 zip → 解压 → 双击 → 安装窗口确认
 function showDesktopAgentGuide() {
+  const hasZip = true;
   openModal(
-    "🖥 安装桌面小助手（关掉网页也能弹）",
-    `<p>浏览器权限只能让「网页开着时」弹窗。装上这个本机小助手后，<b>彻底关掉网页也能收到 Windows 通知</b>，还会开机自启、自动守护。</p>
+    "🖥 安装桌面小助手（关掉网页也能提醒）",
+    `<p>装上这个本机小助手后，<b>彻底关掉网页也能收到提醒</b>：它缩在电脑右下角的托盘图标里，
+       有异常时图标中间亮起红色感叹号并弹一次通知；开机自启，一直守护。</p>
      <ol class="perm-steps">
-       <li>点右下角 <b>「⬇ 下载一键安装包」</b>，浏览器会下载一个 <code>NAS-Safe-agent-setup.bat</code></li>
-       <li><b>双击</b>刚下载的这个文件（会自动下载小助手并寻找 Python）</li>
-       <li>弹出确认窗口：<b>选你的 NAS 地址，点「安装并开机自启」</b> —— 完成！</li>
+       <li>点右下角 <b>「⬇ 下载安装包（zip）」</b>，得到 <code>NASSafeAgent.zip</code>（已内置本机 NAS 地址）</li>
+       <li><b>右键解压</b>到任意文件夹，双击里面的 <code>NASSafeAgent.exe</code></li>
+       <li>自动弹出「安装 NAS Safe 助手」窗口并显示进度，几秒后提示「安装完成」——
+           <b>不用选地址、不用填任何东西</b></li>
+       <li>右下角出现绿色盾牌图标，鼠标放上去显示「NAS Safe · 快照保护中」</li>
      </ol>
-     <p class="muted">安装后它会弹一条「已安装」通知；以后 NAS 有异常直接弹 Windows 通知，跟网页开不开无关。<br>
-     需要本机装有 Python 3（没装的话脚本会自动打开下载页）；卸载只需在弹窗里选停止。</p>`,
-    `<button class="btn ghost" data-act="copy">复制手动命令</button>
-     <button class="btn primary" data-act="download">⬇ 下载一键安装包</button>`,
+     <p class="muted">不需要安装 Python，也不需要管理员权限。<br>
+       若 Windows 提示「已保护你的电脑」：点 <b>更多信息 → 仍要运行</b>（未签名软件的正常提示）。<br>
+       以后在「设置 → 异常主动提醒」里可一键启停；主动退出后，提醒会自动改走微信服务号 / 邮件，不会丢。</p>`,
+    `<button class="btn ghost" data-act="exe">直接下载 exe（不解压）</button>
+     <button class="btn primary" data-act="download">⬇ 下载安装包（zip）</button>`,
     {
-      download: () => {
-        window.open("/agent/setup.bat", "_blank");
-        toast("已开始下载，下载完成后双击运行即可", "ok");
-      },
-      copy: () => {
-        const text = `pythonw scripts/desktop_agent.py --nas ${location.origin}`;
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).then(
-            () => toast("命令已复制", "ok"),
-            () => toast("复制失败，请手动选中复制", "warn")
-          );
-        } else toast("复制失败，请手动选中复制", "warn");
-      },
+      download: () => triggerDownload("/agent/NASSafeAgent.zip", "NASSafeAgent.zip",
+        "已开始下载 zip，解压后双击 NASSafeAgent.exe"),
+      exe: () => triggerDownload("/agent/NASSafeAgent.exe", "NASSafeAgent.exe",
+        "已开始下载 exe（若被浏览器拦截，请改用 zip）"),
     }
   );
+  void hasZip;
+}
+
+// 触发真实下载（a[download]，比 window.open 可靠，不会被当成弹窗拦掉）
+function triggerDownload(href, filename, okMsg) {
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  if (okMsg) toast(okMsg, "ok");
 }
 
 if ("Notification" in window) {

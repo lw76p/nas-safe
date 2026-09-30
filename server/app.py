@@ -55,6 +55,7 @@ import notify     # noqa: E402  多渠道告警通知（微信服务号/Webhook/
 import ai         # noqa: E402  AI 解读（多云供应商 + 本地 Ollama）
 import autosnapshot  # noqa: E402  自动快照调度器（每小时 vital 锁快照 + 保留清理）
 import metrics  # noqa: E402  系统指标采集（仪表盘：CPU/RAM/温度/网速/磁盘/卷容量）
+import anomalies  # noqa: E402  异常判定 + 主动推送看门狗（小助手关闭时接管微信提醒）
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
@@ -64,6 +65,59 @@ WEB_DIR = os.environ.get("NASSAFE_WEB_DIR") or os.path.join(
 SCRIPTS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"
 )
+# 打包好的 Windows 桌面小助手（PyInstaller 单文件 EXE，随镜像分发）
+AGENT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent"
+)
+
+
+_AGENT_README = (
+    "NAS Safe 桌面小助手 - 安装说明\r\n"
+    "\r\n"
+    "【安装只要两步】\r\n"
+    "1. 解压本压缩包到任意文件夹\r\n"
+    "2. 双击 NASSafeAgent.exe：会自动弹出「安装 NAS Safe 助手」窗口并显示安装进度，\r\n"
+    "   几秒后提示「安装完成」，不需要你选择或填写任何东西\r\n"
+    "\r\n"
+    "【装好后它长什么样】\r\n"
+    "- 自动缩到电脑右下角的托盘图标里（绿色盾牌），不占屏幕\r\n"
+    "- 鼠标放上去显示：NAS Safe · 快照保护中\r\n"
+    "- 有异常时：图标中间亮起红色感叹号，并弹一次 Windows 通知（自动消失）\r\n"
+    "- 左键点图标 = 查看未读提醒（点一条消一条）；右键 = 全部已读 / 退出\r\n"
+    "- 看完的不再提醒，没看的不重复弹，只在图标上留红色标记\r\n"
+    "\r\n"
+    "【跟微信提醒的关系】\r\n"
+    "- 小助手运行时：电脑弹窗和微信 / 邮件同时发，两边都不会漏\r\n"
+    "- 主动退出小助手后：NAS 自动接管，异常继续通过微信服务号 / 邮件送达\r\n"
+    "\r\n"
+    "【常见问题】\r\n"
+    "- 首次运行若 Windows 提示「已保护你的电脑」：点「更多信息」→「仍要运行」\r\n"
+    "  （未签名软件的正常提示，代码签名证书正在办理）\r\n"
+    "- 不需要安装 Python，不需要管理员权限，只写当前用户的开机自启\r\n"
+    "- 卸载：右键托盘图标 → 退出\r\n"
+)
+
+
+def _gen_agent_zip(host: str) -> bytes:
+    """动态生成小助手安装包：exe + 预置 NAS 地址（config.json）+ 说明。
+
+    预置地址来自用户当前访问的 Host，所以从这个 NAS 页面下载的包，
+    双击后无需用户再选择 NAS 地址，直接安装。
+    """
+    import io as _io
+    import zipfile as _zip
+
+    exe = os.path.join(AGENT_DIR, "NASSafeAgent.exe")
+    if not os.path.isfile(exe):
+        return b""
+    base = f"http://{host}" if host else ""
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w", _zip.ZIP_STORED) as z:
+        z.write(exe, "NASSafeAgent.exe")
+        z.writestr("config.json", json.dumps(
+            {"nas": base, "interval": 120}, ensure_ascii=False).encode("utf-8"))
+        z.writestr("安装说明.txt", _AGENT_README.encode("utf-8-sig"))
+    return buf.getvalue()
 
 
 def _gen_setup_bat(base_url: str) -> str:
@@ -451,6 +505,13 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:  # noqa: BLE001 指标采集失败不拖垮页面
                     self._send_json({"ok": False, "error": str(exc)})
 
+            elif route == "/api/anomalies":
+                # 统一异常列表（硬件/容量/趋势/防勒索告警），供网页端与桌面小助手共用同一套规则
+                self._send_json({"ok": True, "anomalies": anomalies.collect_anomalies(),
+                                 "agent": anomalies.agent_status()})
+            elif route == "/api/agent/status":
+                # 桌面小助手在线状态（离线时由服务端看门狗接管微信/邮件提醒）
+                self._send_json({"ok": True, "status": anomalies.agent_status()})
             elif route == "/api/list_dir":
                 # 只读：列出生产目录一级子目录（监控路径选择器用）。
                 # 安全校验：绝对路径、禁止 ..、必须落在已知卷挂载点范围内。
@@ -526,6 +587,42 @@ class Handler(BaseHTTPRequestHandler):
                 name = route[len("/agent/"):]
                 if name == "desktop_agent.py":
                     self._send_file(os.path.join(SCRIPTS_DIR, "desktop_agent.py"))
+                elif name == "NASSafeAgent.zip":
+                    # 首选分发方式：zip 包（exe + 预置地址 + 说明），浏览器不会拦截 zip
+                    data = _gen_agent_zip(self.headers.get("Host") or "")
+                    if not data:
+                        self._send_json(
+                            {"ok": False, "error": "安装包未随本版本分发，请改用 Python 脚本方式"}, 404)
+                    else:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/zip")
+                        self.send_header(
+                            "Content-Disposition",
+                            'attachment; filename="NASSafeAgent.zip"',
+                        )
+                        self.send_header("Content-Length", str(len(data)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.end_headers()
+                        self.wfile.write(data)
+                elif name == "NASSafeAgent.exe":
+                    # 备选：直接下载 exe（无预置地址，首次运行会弹向导让选 NAS）
+                    path = os.path.join(AGENT_DIR, name)
+                    if not os.path.isfile(path):
+                        self._send_json(
+                            {"ok": False, "error": "安装包未随本版本分发，请改用 Python 脚本方式"}, 404)
+                    else:
+                        with open(path, "rb") as fh:
+                            data = fh.read()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/octet-stream")
+                        self.send_header(
+                            "Content-Disposition",
+                            f'attachment; filename="{name}"',
+                        )
+                        self.send_header("Content-Length", str(len(data)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.end_headers()
+                        self.wfile.write(data)
                 elif name == "setup.bat":
                     host = self.headers.get("Host") or ""
                     base = f"http://{host}" if host else ""
@@ -597,6 +694,11 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     self._send_json(do_restore_file(snapshot_path, relative_file, destination))
 
+            elif route == "/api/agent/status":
+                # 桌面小助手上报在线/离线：离线时提醒改由服务端看门狗走微信/邮件
+                online = str(payload.get("online", "1")).lower() in ("1", "true", "yes", "on")
+                self._send_json({"ok": True, "status": anomalies.set_agent_online(
+                    online, str(payload.get("host") or ""))})
             elif route == "/api/notify/config":
                 # 保存通知配置（channels 列表 + enabled）
                 cfg = payload
@@ -618,6 +720,11 @@ class Handler(BaseHTTPRequestHandler):
                 title = str(payload.get("title") or "NAS Safe 异常提醒")
                 detail = str(payload.get("detail") or "")
                 level = str(payload.get("level") or "warn")
+                keys = payload.get("keys")
+                if isinstance(keys, list):
+                    anomalies.mark_sent([str(k) for k in keys])
+                elif payload.get("key"):
+                    anomalies.mark_sent([str(payload.get("key"))])
                 self._send_json({"ok": True, **notify.push_alert(title, detail, level)})
 
             elif route == "/api/ai/config":
@@ -792,6 +899,11 @@ def main() -> None:
         pass
     try:
         autosnapshot.start_scheduler()  # 自动快照守护线程（每小时 vital 锁快照）
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    try:
+        # 异常看门狗：小助手被关闭/网页没开时，接管微信服务号等远端提醒
+        anomalies.start_watchdog(int(os.environ.get("NASSAFE_WATCHDOG_INTERVAL", "120")))
     except Exception:  # noqa: BLE001
         traceback.print_exc()
     try:

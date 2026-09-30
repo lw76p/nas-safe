@@ -5,6 +5,13 @@
 平时缩在屏幕右下角（一个小盾牌图标，几乎不占资源），只在 NAS 出现异常
 或保护状态变动时主动弹一次 Windows 通知；通知会自动消失。
 
+提醒策略（按用户要求）：
+  · 桌面端与微信端**同步发**：小助手在线时，本机弹窗与微信/邮件同一时刻发出；
+    不判断用户是否坐在电脑前（判断空闲既易误判、又要常驻检测，不划算）
+  · 小助手被用户关闭：自动上报离线，改由 NAS 服务端看门狗继续发微信/邮件，提醒不丢
+  · 常驻形态：系统托盘图标（右下角通知区域）—— 绿色盾牌，悬停显示「NAS Safe · 快照保护中」；
+    有未读告警时绿色圆中央出现红色感叹号，左键看未读、右键菜单可全部已读或退出
+
 阅读规则（按用户要求）：
   · 同一条异常**只弹一次**，异常恢复后才可能再弹
   · 弹过但你**没看**的，不会重复弹，只在右下角图标上显示一个红色感叹号
@@ -22,6 +29,8 @@
     --once                                  # 只检测一次（调试）
 """
 import argparse
+import atexit
+import ctypes
 import json
 import os
 import socket
@@ -34,6 +43,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NAS-Safe-Agent"}
+CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # 调 PowerShell 不闪黑框
 DEFAULT_INTERVAL = 120
 CTRL_PORT = 18765          # 本机控制端口（只监听 127.0.0.1，不外泄）
 PROTOCOL = "nassafe-agent"  # 浏览器拉起本机小助手的自定义协议
@@ -72,8 +82,9 @@ try {{
 """
     try:
         r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_toast],
-            capture_output=True, timeout=25,
+            ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+             "-Command", ps_toast],
+            capture_output=True, timeout=25, creationflags=CREATE_NO_WINDOW,
         )
         if r.returncode == 0:
             return True
@@ -92,8 +103,9 @@ $n.Dispose()
 """
     try:
         subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_balloon],
-            capture_output=True, timeout=30,
+            ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+             "-Command", ps_balloon],
+            capture_output=True, timeout=30, creationflags=CREATE_NO_WINDOW,
         )
         return True
     except Exception as e:
@@ -128,6 +140,28 @@ def save_config(cfg):
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print("保存配置失败：", e, file=sys.stderr)
+
+
+def bundled_nas() -> str:
+    """读取安装包自带的 NAS 地址（与 exe 同目录的 config.json）。
+
+    从 NAS 网页下载的安装包里会预置这个地址，用户双击后直接安装，不用手动选。
+    """
+    try:
+        if getattr(sys, "frozen", False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+        p = os.path.join(base_dir, "config.json")
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            nas = str(cfg.get("nas") or "").strip()
+            if nas:
+                return nas.rstrip("/")
+    except Exception:
+        pass
+    return ""
 
 
 def load_unread():
@@ -415,8 +449,490 @@ def collect(m):
     return out
 
 
+def install_progress(base):
+    """自动安装：只显示进度窗口（约 2.6 秒自动关闭），不需要用户做任何选择。"""
+    try:
+        import tkinter as tk
+    except Exception:
+        return
+    try:
+        root = tk.Tk()
+        root.title("安装 NAS Safe 助手")
+        root.geometry("430x190")
+        root.resizable(False, False)
+        root.attributes("-topmost", True)
+        try:
+            root.eval("tk::PlaceWindow . center")
+        except Exception:
+            pass
+        tk.Label(root, text="安装 NAS Safe 助手",
+                 font=("Microsoft YaHei UI", 13, "bold")).pack(pady=(24, 6))
+        st = tk.Label(root, text="正在安装…", fg="#2563eb",
+                      font=("Microsoft YaHei UI", 10))
+        st.pack()
+        tk.Label(root, text=f"守护地址：{base}", fg="#666").pack(pady=(4, 10))
+        tk.Label(root, text="安装完成后会自动缩到右下角托盘图标里",
+                 fg="#888", font=("Microsoft YaHei UI", 8)).pack(side="bottom", pady=8)
+
+        def step2():
+            st.configure(text="正在写入开机自启…")
+            root.after(900, lambda: st.configure(text="安装完成 ✓", fg="#16a34a"))
+            root.after(1600, root.destroy)
+
+        root.after(600, step2)
+        root.mainloop()
+    except Exception:
+        pass
+
+
+def install_wizard(base_hint=""):
+    """首次运行：正规安装窗口。
+
+    先显示「正在安装 NAS Safe 助手…」，后台探测局域网里的 NAS Safe，
+    探测完在同一窗口列出候选让用户确认，点「安装并开机自启」即完成。
+    全程不需要管理员权限（只写当前用户的开机自启与协议）。
+    """
+    try:
+        import tkinter as tk
+    except Exception:
+        return None
+    result = {"url": None, "manual": None}
+
+    root = tk.Tk()
+    root.title("安装 NAS Safe 助手")
+    root.geometry("520x320")
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+    try:
+        root.eval("tk::PlaceWindow . center")
+    except Exception:
+        pass
+
+    tk.Label(root, text="安装 NAS Safe 助手", font=("Microsoft YaHei UI", 14, "bold")).pack(pady=(18, 4))
+    status = tk.Label(root, text="正在安装…", fg="#2563eb", font=("Microsoft YaHei UI", 10))
+    status.pack()
+    sub = tk.Label(root, text="正在查找局域网内的 NAS Safe 服务…", fg="#666")
+    sub.pack(pady=(0, 10))
+
+    frame = tk.Frame(root)
+    frame.pack(fill="both", expand=True, padx=18)
+    var = tk.StringVar(value="")
+    ent = {"box": None}
+
+    btn = tk.Button(root, text="安装并开机自启", width=24, bg="#2563eb", fg="white",
+                    state="disabled")
+    btn.pack(pady=6)
+    tk.Label(root, text="安装后缩到右下角托盘，只在异常时提醒，几乎不占资源。",
+             fg="#888", font=("Microsoft YaHei UI", 8)).pack(side="bottom", pady=8)
+
+    def finish(url):
+        url = (url or "").strip()
+        if url and not url.startswith("http"):
+            url = "http://" + url
+        result["url"] = url.rstrip("/") if url else None
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    def on_done(cands):
+        status.configure(text="准备就绪", fg="#16a34a")
+        if cands:
+            sub.configure(text=f"找到 {len(cands)} 个 NAS Safe 服务，选择要守护的地址：")
+            for c in cands[:5]:
+                tk.Radiobutton(frame, text=c, variable=var, value=c).pack(anchor="w")
+            var.set(cands[0])
+            btn.configure(state="normal", command=lambda: finish(var.get()))
+        else:
+            sub.configure(text="没有自动找到，请手动填写 NAS 地址：")
+            box = tk.Entry(frame, width=42)
+            box.pack(pady=8)
+            if base_hint:
+                box.insert(0, base_hint)
+            ent["box"] = box
+            btn.configure(state="normal", command=lambda: finish(box.get().strip()))
+
+    def probe():
+        cands = []
+        try:
+            cands = discover_nas(extra=[base_hint] if base_hint else None)
+        except Exception:
+            cands = []
+        try:
+            root.after(0, lambda: on_done(cands))
+        except Exception:
+            pass
+
+    threading.Thread(target=probe, daemon=True).start()
+    root.mainloop()
+    return result["url"]
+
+
 # --------------------------------------------------------------------------
-# 右下角小图标 + 未读消息中心（tkinter，无第三方依赖）
+# 系统托盘图标（ctypes + Win32，纯标准库，零第三方依赖）
+#
+#   正常：绿色盾牌；悬停提示「NAS Safe · 快照保护中」
+#   告警：绿色圆中央出现红色感叹号；悬停提示未读条数
+#   左键：打开未读列表；右键：菜单（查看未读 / 全部已读 / 退出）
+# --------------------------------------------------------------------------
+class TrayIcon:
+    WM_TRAY = 0x0400 + 1        # 托盘回调消息
+    WM_UPDATE = 0x0400 + 2      # 主线程通知托盘线程刷新图标
+    ID_OPEN, ID_READ_ALL, ID_QUIT = 1001, 1002, 1003
+
+    def __init__(self, tip_normal="NAS Safe · 快照保护中",
+                 on_open=None, on_read_all=None, on_quit=None):
+        self.tip_normal = tip_normal
+        self.on_open = on_open
+        self.on_read_all = on_read_all
+        self.on_quit = on_quit
+        self.hwnd = None
+        self.thread = None
+        self._failed = False
+        self._wndproc = None
+
+    # ---------------- 公共接口（其它线程调用） ----------------
+    def start(self, timeout=6.0):
+        if os.name != "nt":
+            return False
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        waited = 0.0
+        while waited < timeout and not self.hwnd and not self._failed:
+            time.sleep(0.1)
+            waited += 0.1
+        return bool(self.hwnd)
+
+    def update(self, unread=0):
+        """刷新图标与提示（未读数 > 0 显示红色感叹号）。"""
+        if not self.hwnd:
+            return
+        try:
+            ctypes.windll.user32.PostMessageW(self.hwnd, self.WM_UPDATE,
+                                              ctypes.wintypes.WPARAM(int(unread)),
+                                              ctypes.wintypes.LPARAM(0))
+        except Exception:
+            pass
+
+    def stop(self):
+        if not self.hwnd:
+            return
+        try:
+            ctypes.windll.user32.PostMessageW(self.hwnd, 0x0002, 0, 0)  # WM_DESTROY
+        except Exception:
+            pass
+
+    # ---------------- 图标绘制（自绘 32bpp，带 alpha 抗锯齿） ----------------
+    @staticmethod
+    def _make_hicon(alert: bool, size: int = 32):
+        try:
+            u32 = ctypes.windll.user32
+            g32 = ctypes.windll.gdi32
+
+            class BITMAPINFOHEADER(ctypes.Structure):
+                _fields_ = [("biSize", ctypes.c_uint32), ("biWidth", ctypes.c_int32),
+                            ("biHeight", ctypes.c_int32), ("biPlanes", ctypes.c_uint16),
+                            ("biBitCount", ctypes.c_uint16), ("biCompression", ctypes.c_uint32),
+                            ("biSizeImage", ctypes.c_uint32), ("biXPelsPerMeter", ctypes.c_int32),
+                            ("biYPelsPerMeter", ctypes.c_int32), ("biClrUsed", ctypes.c_uint32),
+                            ("biClrImportant", ctypes.c_uint32)]
+
+            class ICONINFO(ctypes.Structure):
+                _fields_ = [("fIcon", ctypes.c_int32), ("xHotspot", ctypes.c_uint32),
+                            ("yHotspot", ctypes.c_uint32), ("hbmMask", ctypes.c_void_p),
+                            ("hbmColor", ctypes.c_void_p)]
+
+            hdc = u32.GetDC(None)
+            bmi = BITMAPINFOHEADER()
+            bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            bmi.biWidth = size
+            bmi.biHeight = -size          # top-down
+            bmi.biPlanes = 1
+            bmi.biBitCount = 32
+            bits = ctypes.c_void_p()
+            hbm = g32.CreateDIBSection(hdc, ctypes.byref(bmi), 0, ctypes.byref(bits), None, 0)
+            u32.ReleaseDC(None, hdc)
+            if not hbm or not bits.value:
+                return None
+
+            buf = (ctypes.c_ubyte * (size * size * 4)).from_address(bits.value)
+            cx = cy = (size - 1) / 2.0
+            r_out = size / 2.0 - 0.8
+            r_in = size * 0.30
+            green = (34, 197, 94)     # 正常绿
+            red = (239, 68, 68)       # 告警红
+            for y in range(size):
+                for x in range(size):
+                    dx, dy = x - cx, y - cy
+                    d = (dx * dx + dy * dy) ** 0.5
+                    a = r_out - d + 0.5
+                    if a <= 0:
+                        continue
+                    a = 1.0 if a > 1 else a
+                    r, g, b = green
+                    if alert and d <= r_in:
+                        r, g, b = red
+                        a = 1.0 if d <= r_in - 0.8 else a
+                    # 白色感叹号（竖条 + 点），画在红圆内
+                    if alert:
+                        bw = max(2.0, size * 0.11)
+                        if abs(dx) <= bw / 2 and (cy - size * 0.20) <= y <= (cy + size * 0.10):
+                            r = g = b = 255
+                        if abs(dx) <= bw / 2 and (cy + size * 0.16) <= y <= (cy + size * 0.25):
+                            r = g = b = 255
+                    # 盾牌轮廓（下缘两侧轻微收窄，看起来像盾不是圆）
+                    o = (y - cy) / (size / 2.0)
+                    if o > 0.35 and abs(dx) > (r_out - 1.2) * (1.0 - (o - 0.35) * 0.9):
+                        continue
+                    i = (y * size + x) * 4
+                    alpha = int(round(a * 255))
+                    # 预乘 alpha 的 BGRA
+                    buf[i] = int(b * alpha / 255)
+                    buf[i + 1] = int(g * alpha / 255)
+                    buf[i + 2] = int(r * alpha / 255)
+                    buf[i + 3] = alpha
+
+            hmask = g32.CreateBitmap(size, size, 1, 1, None)
+            info = ICONINFO()
+            info.fIcon = 1
+            info.xHotspot = 0
+            info.yHotspot = 0
+            info.hbmMask = hmask
+            info.hbmColor = hbm
+            return u32.CreateIconIndirect(ctypes.byref(info))
+        except Exception:
+            return None
+
+    # ---------------- 窗口与消息循环（托盘线程内） ----------------
+    def _run(self):
+        try:
+            u32 = ctypes.windll.user32
+            k32 = ctypes.windll.kernel32
+            s32 = ctypes.windll.shell32
+            WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_void_p,
+                                         ctypes.c_uint32, ctypes.c_size_t, ctypes.c_ssize_t)
+
+            class WNDCLASSW(ctypes.Structure):
+                _fields_ = [("style", ctypes.c_uint32), ("lpfnWndProc", WNDPROC),
+                            ("cbClsExtra", ctypes.c_int32), ("cbWndExtra", ctypes.c_int32),
+                            ("hInstance", ctypes.c_void_p), ("hIcon", ctypes.c_void_p),
+                            ("hCursor", ctypes.c_void_p), ("hbrBackground", ctypes.c_void_p),
+                            ("lpszMenuName", ctypes.c_wchar_p), ("lpszClassName", ctypes.c_wchar_p)]
+
+            class NOTIFYICONDATAW(ctypes.Structure):
+                _fields_ = [("cbSize", ctypes.c_uint32), ("hWnd", ctypes.c_void_p),
+                            ("uID", ctypes.c_uint32), ("uFlags", ctypes.c_uint32),
+                            ("uCallbackMessage", ctypes.c_uint32), ("hIcon", ctypes.c_void_p),
+                            ("szTip", ctypes.c_wchar * 128), ("dwState", ctypes.c_uint32),
+                            ("dwStateMask", ctypes.c_uint32),
+                            ("szInfo", ctypes.c_wchar * 256), ("uTimeout", ctypes.c_uint32),
+                            ("szInfoTitle", ctypes.c_wchar * 64), ("dwInfoFlags", ctypes.c_uint32),
+                            ("guidItem", ctypes.c_ubyte * 16), ("hBalloonIcon", ctypes.c_void_p)]
+
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+            class MSG(ctypes.Structure):
+                _fields_ = [("hwnd", ctypes.c_void_p), ("message", ctypes.c_uint32),
+                            ("wParam", ctypes.c_size_t), ("lParam", ctypes.c_ssize_t),
+                            ("time", ctypes.c_uint32), ("pt", POINT)]
+
+            s32.Shell_NotifyIconW.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+            s32.Shell_NotifyIconW.restype = ctypes.c_int32
+            u32.CreateWindowExW.argtypes = [ctypes.c_uint32, ctypes.c_wchar_p, ctypes.c_wchar_p,
+                                            ctypes.c_uint32, ctypes.c_int, ctypes.c_int,
+                                            ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                                            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            u32.CreateWindowExW.restype = ctypes.c_void_p
+            u32.DefWindowProcW.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                                           ctypes.c_size_t, ctypes.c_ssize_t]
+            u32.DefWindowProcW.restype = ctypes.c_ssize_t
+
+            hicon_ok = self._make_hicon(False)
+            hicon_alert = self._make_hicon(True)
+            self._icons = [hicon_ok, hicon_alert]
+
+            def _wndproc(hwnd, msg, wparam, lparam):
+                try:
+                    if msg == self.WM_TRAY:
+                        if lparam in (0x0202, 0x0203):      # 左键单击 / 双击
+                            if self.on_open:
+                                threading.Thread(target=self.on_open, daemon=True).start()
+                        elif lparam == 0x0205:              # 右键
+                            self._popup_menu(hwnd)
+                    elif msg == self.WM_UPDATE:
+                        n = int(wparam)
+                        nid = NOTIFYICONDATAW()
+                        nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+                        nid.hWnd = hwnd
+                        nid.uID = 1
+                        nid.uFlags = 0x00000002 | 0x00000004   # NIF_ICON | NIF_TIP
+                        nid.hIcon = self._icons[1] if n > 0 else self._icons[0]
+                        nid.szTip = (self.tip_normal if n <= 0
+                                     else f"NAS Safe · {n} 条未读提醒（点击查看）")[:127]
+                        s32.Shell_NotifyIconW(1, ctypes.byref(nid))   # NIM_MODIFY
+                    elif msg == 0x0111:                     # WM_COMMAND
+                        if wparam == self.ID_OPEN and self.on_open:
+                            threading.Thread(target=self.on_open, daemon=True).start()
+                        elif wparam == self.ID_READ_ALL and self.on_read_all:
+                            self.on_read_all()
+                        elif wparam == self.ID_QUIT and self.on_quit:
+                            self.on_quit()
+                    elif msg == 0x0002:                     # WM_DESTROY
+                        u32.PostQuitMessage(0)
+                        return 0
+                except Exception:
+                    pass
+                return u32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+            self._wndproc = WNDPROC(_wndproc)
+            hinstance = k32.GetModuleHandleW(None)
+            cls = WNDCLASSW()
+            cls.lpfnWndProc = self._wndproc
+            cls.hInstance = hinstance
+            cls.lpszClassName = "NASSafeTrayWindow"
+            if not u32.RegisterClassW(ctypes.byref(cls)):
+                # 已注册过（重复运行）不算失败
+                pass
+            hwnd = u32.CreateWindowExW(0, "NASSafeTrayWindow", "NAS Safe", 0,
+                                       0, 0, 0, 0, None, None, hinstance, None)
+            if not hwnd:
+                self._failed = True
+                return
+            self.hwnd = hwnd
+
+            nid = NOTIFYICONDATAW()
+            nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+            nid.hWnd = hwnd
+            nid.uID = 1
+            nid.uFlags = 0x00000001 | 0x00000002 | 0x00000004  # MESSAGE | ICON | TIP
+            nid.uCallbackMessage = self.WM_TRAY
+            nid.hIcon = self._icons[0]
+            nid.szTip = self.tip_normal
+            if not s32.Shell_NotifyIconW(0, ctypes.byref(nid)):   # NIM_ADD
+                self._failed = True
+                self.hwnd = None
+                u32.DestroyWindow(hwnd)
+                return
+
+            msg = MSG()
+            while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                u32.TranslateMessage(ctypes.byref(msg))
+                u32.DispatchMessageW(ctypes.byref(msg))
+            try:
+                nid2 = NOTIFYICONDATAW()
+                nid2.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+                nid2.hWnd = hwnd
+                nid2.uID = 1
+                s32.Shell_NotifyIconW(2, ctypes.byref(nid2))   # NIM_DELETE
+            except Exception:
+                pass
+        except Exception as e:
+            print("托盘初始化失败：", e, file=sys.stderr)
+            self._failed = True
+
+    def _popup_menu(self, hwnd):
+        try:
+            u32 = ctypes.windll.user32
+
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+            pt = POINT()
+            u32.GetCursorPos(ctypes.byref(pt))
+            menu = u32.CreatePopupMenu()
+            n = len(load_unread())
+            u32.AppendMenuW(menu, 0x00000000, self.ID_OPEN, f"查看未读提醒（{n}）")
+            u32.AppendMenuW(menu, 0x00000000, self.ID_READ_ALL, "全部标记已读")
+            u32.AppendMenuW(menu, 0x00000800, 0, None)          # MF_SEPARATOR
+            u32.AppendMenuW(menu, 0x00000000, self.ID_QUIT, "退出小助手")
+            u32.SetForegroundWindow(hwnd)
+            u32.TrackPopupMenuEx(menu, 0x0100 | 0x0002, pt.x, pt.y, hwnd, None)
+            u32.DestroyMenu(menu)
+            u32.PostMessageW(hwnd, 0, 0, 0)   # 消除菜单残留
+        except Exception:
+            pass
+
+
+class NullUI:
+    """无界面模式：只记录未读，不显示任何窗口。"""
+    def add_unread(self, key, text):
+        pass
+
+
+class TraySink:
+    """把未读变化同步到托盘图标（红感叹号 / 绿盾切换）。"""
+    def __init__(self, tray):
+        self.tray = tray
+
+    def add_unread(self, key, text):
+        self.tray.update(len(load_unread()))
+
+
+def show_inbox_window(on_change=None):
+    """弹出未读提醒列表（tkinter，独立线程；点一条即标记已读）。"""
+    def _run():
+        try:
+            import tkinter as tk
+        except Exception:
+            notify("NAS Safe", "未读提醒：" + "；".join(
+                i.get("text", "") for i in load_unread()[:3]))
+            return
+        try:
+            root = tk.Tk()
+            root.title("NAS Safe 未读提醒")
+            root.geometry("520x330")
+            root.attributes("-topmost", True)
+            tk.Label(root, text="未读提醒（点一条即标记已读）", anchor="w").pack(
+                fill="x", padx=12, pady=(12, 6))
+            frame = tk.Frame(root)
+            frame.pack(fill="both", expand=True, padx=12)
+            lb = tk.Listbox(frame, activestyle="none")
+            sb = tk.Scrollbar(frame, command=lb.yview)
+            lb.configure(yscrollcommand=sb.set)
+            lb.pack(side="left", fill="both", expand=True)
+            sb.pack(side="right", fill="y")
+
+            def refill():
+                lb.delete(0, "end")
+                for it in load_unread():
+                    lb.insert("end", f"[{it.get('ts','')}] {it.get('text','')}")
+
+            def on_pick(_e=None):
+                sel = lb.curselection()
+                if not sel:
+                    return
+                items = load_unread()
+                if sel[0] < len(items):
+                    items.pop(sel[0])
+                    save_unread(items)
+                    if on_change:
+                        on_change()
+                refill()
+
+            lb.bind("<<ListboxSelect>>", on_pick)
+            lb.bind("<Double-Button-1>", on_pick)
+            refill()
+            row = tk.Frame(root)
+            row.pack(fill="x", padx=12, pady=8)
+
+            def read_all():
+                save_unread([])
+                if on_change:
+                    on_change()
+                refill()
+
+            tk.Button(row, text="全部标记已读", command=read_all).pack(side="left")
+            tk.Button(row, text="关闭", command=root.destroy).pack(side="right")
+            root.mainloop()
+        except Exception as e:
+            print("消息窗口失败：", e, file=sys.stderr)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+# --------------------------------------------------------------------------
+# 右下角小窗（托盘不可用时的兜底；不进任务栏）
 # --------------------------------------------------------------------------
 class AgentUI:
     def __init__(self, base, on_quit=None):
@@ -442,6 +958,10 @@ class AgentUI:
         self.badge = tk.Toplevel(self.root)
         self.badge.overrideredirect(True)
         self.badge.attributes("-topmost", True)
+        try:
+            self.badge.attributes("-toolwindow", True)  # 不进任务栏 / Alt-Tab
+        except Exception:
+            pass
         self.badge.configure(bg="#111827")
         w, h = 88, 34
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
@@ -541,6 +1061,7 @@ class AgentUI:
         self.badge.after(1000, self._watch_stop)
 
     def quit(self):
+        STOP_EVENT.set()  # 标记停止，进程退出时会上报离线
         try:
             if self.inbox_win:
                 self.inbox_win.destroy()
@@ -557,32 +1078,74 @@ class AgentUI:
 
 
 # --------------------------------------------------------------------------
+# 在线状态上报：NAS 端据此决定由谁发微信（助手离线时服务端看门狗接管）
+# --------------------------------------------------------------------------
+_LAST_REPORT = 0.0
+_REPORTED_OFFLINE = False
+
+def report_online(base, force=False):
+    global _LAST_REPORT
+    now = time.time()
+    if not force and now - _LAST_REPORT < 60:
+        return
+    try:
+        http_json(f"{base}/api/agent/status", method="POST", timeout=6,
+                  body={"online": True, "host": socket.gethostname()})
+        _LAST_REPORT = now
+    except Exception:
+        pass
+
+def report_offline(base):
+    global _REPORTED_OFFLINE
+    if _REPORTED_OFFLINE or not base:
+        return
+    _REPORTED_OFFLINE = True
+    try:
+        http_json(f"{base}/api/agent/status", method="POST", timeout=6,
+                  body={"online": False, "host": socket.gethostname()})
+    except Exception:
+        pass
+
+# --------------------------------------------------------------------------
 # 守护轮询（后台线程）
 # --------------------------------------------------------------------------
+def _fallback_anomalies(base):
+    """老版本服务端没有 /api/anomalies 时，退回本地判定。"""
+    m = http_json(f"{base}/api/system/metrics").get("metrics") or {}
+    alerts = (http_json(f"{base}/api/alerts") or {}).get("alerts") or []
+    out = [{"key": k, "sev": sev, "title": t} for k, sev, t in collect(m)]
+    for a in alerts:
+        if a.get("level") in ("critical", "warn"):
+            out.append({"key": f"alert-{a.get('title')}",
+                        "sev": 2 if a.get("level") == "critical" else 1,
+                        "title": a.get("title") or "快照保护异常"})
+    return out
+
+
 def poll_loop(base, interval, ui, seen):
     while not STOP_EVENT.is_set():
         try:
-            m = http_json(f"{base}/api/system/metrics").get("metrics") or {}
-            alerts = (http_json(f"{base}/api/alerts") or {}).get("alerts") or []
-            cur = list(collect(m))
-            for a in alerts:
-                if a.get("level") in ("critical", "warn"):
-                    cur.append((f"alert-{a.get('title')}", 2 if a.get("level") == "critical" else 1,
-                                a.get("title") or "快照保护异常"))
-            keys = {c[0] for c in cur}
+            # 异常判定统一走服务端（网页端/小助手/看门狗共用同一套规则）
+            try:
+                cur = (http_json(f"{base}/api/anomalies", timeout=20) or {}).get("anomalies") or []
+                report_online(base)  # 心跳：告诉 NAS 小助手还活着
+            except Exception:
+                cur = _fallback_anomalies(base)
+            keys = {c.get("key") for c in cur}
             for k in list(seen):
                 if k not in keys:
                     seen.discard(k)  # 异常恢复后才允许复发提醒
-            fresh = [c for c in cur if c[0] not in seen]
+            fresh = [c for c in cur if c.get("key") not in seen]
             if fresh:
                 for f in fresh:
-                    seen.add(f[0])
-                summary = "；".join(f[2] for f in fresh)
-                level = "critical" if any(f[1] >= 2 for f in fresh) else "warn"
-                # 远端通道（微信/邮件）由 NAS 端按最快通道自动优选
+                    seen.add(f.get("key"))
+                summary = "；".join(f.get("title", "") for f in fresh)
+                level = "critical" if any(int(f.get("sev", 1)) >= 2 for f in fresh) else "warn"
+                # 同步双发：微信/邮件（服务端按最快通道优选）+ 本机弹窗，两边同一时刻收到
                 try:
-                    http_json(f"{base}/api/notify/alert", method="POST", timeout=15,
-                              body={"title": "NAS Safe 异常提醒", "detail": summary, "level": level})
+                    http_json(f"{base}/api/notify/alert", method="POST", timeout=20,
+                              body={"title": "NAS Safe 异常提醒", "detail": summary, "level": level,
+                                    "keys": [f.get("key") for f in fresh]})
                 except Exception as e:
                     print("远端推送跳过：", e)
                 # 本机弹一次（之后只留右下角感叹号，不重复弹）
@@ -597,7 +1160,7 @@ def poll_loop(base, interval, ui, seen):
                 except Exception:
                     pass
                 notify("NAS Safe 异常提醒", text)
-                ui.add_unread(fresh[0][0], text)
+                ui.add_unread(fresh[0].get("key"), text)
                 print("[提醒]", text)
         except Exception as e:
             print("轮询失败（下次重试）：", e)
@@ -614,11 +1177,13 @@ def poll_loop(base, interval, ui, seen):
 def handle_protocol(raw):
     action = (raw or "").split("://", 1)[-1].strip("/").lower()
     if action == "stop":
+        base = load_config().get("nas") or ""
         if agent_stop_remote():
             remove_autostart()
-            notify("NAS Safe 小助手已停止", "不再后台守护；可在网页设置里重新开启")
+            notify("NAS Safe 小助手已停止", "不再后台守护；异常提醒将改由微信 / 邮件发送")
         else:
             remove_autostart()
+        report_offline(base)  # 立即让 NAS 端看门狗接管
         return
     if agent_online():
         notify("NAS Safe 小助手已在运行", "无需重复启动")
@@ -637,22 +1202,53 @@ def handle_protocol(raw):
 
 
 def run_agent(base, interval, first=False, once=False, no_ui=False):
-    ui = AgentUI(base)
-    use_ui = (not no_ui) and ui.available()
     start_control_server()
+    atexit.register(report_offline, base)  # 任何退出路径都上报离线，让 NAS 接管微信提醒
+    report_online(base, force=True)
     seen = set()
     print(f"NAS Safe 小助手已启动：{base}（每 {interval}s 检查一次）")
     if once:
-        poll_once(base, ui, seen)
+        poll_once(base, NullUI(), seen)
         return
-    if first and not use_ui:
+
+    # 首选：系统托盘图标（右下角通知区域，平时绿色盾牌，告警时中间红色感叹号）
+    tray = None
+    if not no_ui:
+        def _refresh():
+            if tray:
+                tray.update(len(load_unread()))
+
+        def _read_all():
+            save_unread([])
+            _refresh()
+
+        tray = TrayIcon(on_open=lambda: show_inbox_window(_refresh),
+                        on_read_all=_read_all,
+                        on_quit=lambda: STOP_EVENT.set())
+        if not tray.start():
+            tray = None
+        else:
+            _refresh()
+    if tray:
+        if first:
+            notify("NAS Safe 小助手已启动", "已缩到右下角托盘，异常时图标会亮红感叹号")
+        poll_loop(base, interval, TraySink(tray), seen)
+        tray.stop()
+        return
+
+    # 兜底 1：右下角小窗（不进任务栏）
+    ui = AgentUI(base)
+    if ui.available():
+        if first:
+            notify("NAS Safe 小助手已启动", f"正在守护 {base}，异常会在这里提醒你")
+        threading.Thread(target=poll_loop, args=(base, interval, ui, seen), daemon=True).start()
+        ui.run()
+        return
+
+    # 兜底 2：纯后台（只弹 Windows 通知）
+    if first:
         notify("NAS Safe 小助手已启动", f"正在守护 {base}，异常会在这里提醒你")
-    if not use_ui:
-        poll_loop(base, interval, ui, seen)
-        return
-    # 有 UI：轮询放后台线程，主线程跑右下角图标
-    threading.Thread(target=poll_loop, args=(base, interval, ui, seen), daemon=True).start()
-    ui.run()
+    poll_loop(base, interval, NullUI(), seen)
 
 
 def poll_once(base, ui, seen):
@@ -685,10 +1281,18 @@ def main():
     cfg = load_config()
     base = args.nas.rstrip("/") or (cfg.get("nas") or "")
     first_run = not base
+    auto_install = False
     if not base:
-        print("正在探测局域网内的 NAS Safe…")
-        cands = discover_nas(extra=[args.nas] if args.nas else None)
-        base = (cands[0] if len(cands) == 1 else pick_dialog(cands)) or ""
+        # 安装包自带的地址（从 NAS 网页下载的包里已预置）：不再让用户选，直接装
+        bundled = bundled_nas()
+        if bundled:
+            base = bundled
+            first_run = True
+            auto_install = True
+    if not base:
+        # 没有内置地址：走安装向导（后台探测后让用户确认）
+        print("首次运行，打开安装向导…")
+        base = install_wizard(args.nas.rstrip("/")) or ""
     if not base:
         print("未选择 NAS 地址，退出。")
         return
@@ -698,6 +1302,8 @@ def main():
         save_config({"nas": base, "interval": interval})
         ensure_autostart(base, interval)
         register_protocol()
+        if auto_install:
+            install_progress(base)  # 只显示进度，不弹选择窗口
     run_agent(base, interval, first=args.install or first_run,
               once=args.once, no_ui=args.no_ui)
 
