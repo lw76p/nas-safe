@@ -438,12 +438,174 @@ function renderMetrics(m) {
     </div>` : "";
 
   body.innerHTML = card1 + card2 + card3 + card4 + card5;
+  checkAnomalies(m);  // AI 主动异常提醒：渲染后即检测（15s 轮询自动跟进）
 
   // 交互绑定：切换网卡/存储卷时局部重渲染（不重新请求，15s 轮询照常）
   const is = $("ifaceSel");
   if (is) is.onchange = () => { selIface = is.value; renderMetrics(m); };
   const vs = $("volSel");
   if (vs) vs.onchange = () => { selVol = vs.value; renderMetrics(m); };
+}
+
+/* ------------------------- AI 主动异常提醒 ------------------------- */
+// 页面出现异常（磁盘过热 / CPU 高温高负载 / 卷快满 / 存满趋势 / 快照告警）时：
+// ① toast + 顶部横幅主动提醒（横幅可点击）② 打开异常面板逐项查看
+// ③ 一键「AI 修复方案」—— AI 只给建议不代操作（产品红线），由用户确认后自行处理。
+
+let lastMetrics = null;
+let knownAnoms = new Set();  // 本次会话已提醒过的异常（异常消失会自动解除，复发会再提醒）
+const dismissedAnoms = new Set(JSON.parse(localStorage.getItem("nassafe_anom_dismissed") || "[]"));
+
+function volNameShort(mount) {
+  const m = String(mount).match(/CACHEDEV(\d+)_DATA/i);
+  if (m) {
+    const hit = state.volumes.find((x) => String(x.mountpoint) === m[1] || String(x.volume_id) === m[1]);
+    if (hit) return hit.name;
+    return `存储卷 ${m[1]}`;
+  }
+  return String(mount).split("/").pop() || String(mount);
+}
+
+// 从最新指标里收集异常项：{key, sev(1注意/2异常), title, detail, view, q(AI提问)}
+function collectAnomalies(m) {
+  const list = [];
+  const cap = m.capabilities || {};
+  const push = (key, sev, title, detail, q) =>
+    list.push({ key, sev, title, detail, view: "home", q });
+
+  if (cap.cpu_temp && m.cpu && m.cpu.temp_c != null) {
+    if (m.cpu.temp_c >= 90)
+      push("cpu-temp", 2, `CPU 温度过高（${m.cpu.temp_c}°C）`, "长时间如此可能降频或损伤硬件", `NAS 的 CPU 温度到了 ${m.cpu.temp_c}°C，请分析可能原因并给出处理步骤`);
+    else if (m.cpu.temp_c >= 80)
+      push("cpu-temp", 1, `CPU 温度偏高（${m.cpu.temp_c}°C）`, "建议关注散热与负载", `NAS 的 CPU 温度 ${m.cpu.temp_c}°C 偏高，可能原因和处理建议？`);
+  }
+  if (m.cpu && m.cpu.load1 != null && m.cpu.load1 >= 8) {
+    push("cpu-load", m.cpu.load1 >= 16 ? 2 : 1, `系统负载过高（${m.cpu.load1}）`, "可能有任务占满 CPU", `NAS 系统负载到了 ${m.cpu.load1}，请给出排查思路（哪些进程/服务可能占用）`);
+  }
+  // 磁盘温度（与仪表盘同样的分组命名：固态/硬盘 n）
+  const groups = [
+    [(m.disks || []).filter((d) => d && d.name && d.name.startsWith("nvme")), "固态"],
+    [(m.disks || []).filter((d) => d && d.name && !d.name.startsWith("nvme")), "硬盘"],
+  ];
+  for (const [arr, cn] of groups) {
+    arr.forEach((d, i) => {
+      if (d.temp_c == null) return;
+      if (d.temp_c >= 60)
+        push(`disk-${d.name}`, 2, `${cn} ${i + 1} 过热（${d.temp_c}°C）`, "高温会缩短硬盘寿命，请尽快处理", `NAS 的${cn} ${i + 1}（${d.model || d.name}）温度 ${d.temp_c}°C 过热，可能原因和修复方案？`);
+      else if (d.temp_c >= 50)
+        push(`disk-${d.name}`, 1, `${cn} ${i + 1} 温度偏高（${d.temp_c}°C）`, "建议改善散热", `NAS 的${cn} ${i + 1} 温度 ${d.temp_c}°C 偏高，有什么改善建议？`);
+    });
+  }
+  // 卷空间
+  (m.volumes || []).forEach((v) => {
+    if (!v || v.total_kb <= 0) return;
+    if (v.percent >= 90)
+      push(`vol-${v.mount}`, 2, `「${volNameShort(v.mount)}」空间即将用尽（已用 ${v.percent}%）`, "空间满会影响快照与正常使用", `存储卷「${volNameShort(v.mount)}」已用 ${v.percent}%，请给出清理和扩容建议`);
+    else if (v.percent >= 75)
+      push(`vol-${v.mount}`, 1, `「${volNameShort(v.mount)}」空间偏紧（已用 ${v.percent}%）`, "建议关注增长", `存储卷「${volNameShort(v.mount)}」已用 ${v.percent}%，有哪些安全的清理建议？`);
+  });
+  (m.trends || []).forEach((t) => {
+    if (t.days_to_full)
+      push(`trend-${t.mount}`, 1, `「${volNameShort(t.mount)}」预计 ${t.days_to_full} 天后存满`, "按最近增长速度推算", `存储卷「${volNameShort(t.mount)}」按当前速度约 ${t.days_to_full} 天后存满，如何处理？`);
+  });
+  return list;
+}
+
+// 当前全部异常 = 指标类 + 快照/勒索告警类
+function currentAnomalies() {
+  const list = lastMetrics ? collectAnomalies(lastMetrics) : [];
+  (state.tamperAlerts || []).concat(state.deepAlerts || []).forEach((a) => {
+    if (!a || (a.level !== "critical" && a.level !== "warn")) return;
+    list.push({
+      key: `alert-${a.title}`, sev: a.level === "critical" ? 2 : 1,
+      title: a.title || "快照保护异常", detail: a.detail || "", view: "monitor",
+      q: `NAS Safe 报告异常：${a.title || ""}${a.detail ? "：" + a.detail : ""}。请分析原因并给出排查与修复步骤`,
+    });
+  });
+  return list;
+}
+
+// 每次 15s 轮询渲染后调用：新异常弹 toast，横幅内容随异常集合更新
+function checkAnomalies(m) {
+  lastMetrics = m;
+  const cur = collectAnomalies(m);
+  const keys = new Set(cur.map((a) => a.key));
+  [...knownAnoms].forEach((k) => { if (!keys.has(k)) knownAnoms.delete(k); }); // 恢复正常后允许复发再提醒
+  const fresh = cur.filter((a) => !knownAnoms.has(a.key) && !dismissedAnoms.has(a.key));
+  if (fresh.length) {
+    fresh.forEach((a) => knownAnoms.add(a.key));
+    toast(`⚠ 检测到 ${fresh.length} 项异常，点击顶部提示查看`, "err");
+  }
+  renderBanners(); // 横幅统一由此刷新（勒索告警优先，其次硬件/容量异常）
+}
+
+// 无勒索告警时，用硬件/容量类异常横幅顶置（点击打开异常面板）
+function showAnomalyBanner() {
+  const list = currentAnomalies().filter((a) => !dismissedAnoms.has(a.key));
+  if (!list.length) { $("alertBanner").hidden = true; return; }
+  const critical = list.some((a) => a.sev >= 2);
+  showBanner(critical ? "error" : "warn",
+    critical ? "⚠ 检测到异常，建议尽快处理" : "检测到需关注的异常",
+    list.slice(0, 3).map((a) => "• " + a.title).join("；") +
+    (list.length > 3 ? ` 等 ${list.length} 项` : "") + "（点击查看详情与 AI 修复方案）");
+}
+
+// 异常面板：逐项「查看」定位 + 「AI 修复方案」
+function openAnomalyModal() {
+  const list = currentAnomalies().filter((a) => !dismissedAnoms.has(a.key));
+  if (!list.length) {
+    openModal("✅ 一切正常", `<p>当前没有检测到异常，NAS 运行正常。</p>`);
+    return;
+  }
+  const actions = {};
+  const body = list.map((a, i) => `
+    <div class="anom-item ${a.sev >= 2 ? "sev2" : ""}">
+      <div><b>${escapeHtml(a.title)}</b>${a.detail ? `<p class="muted">${escapeHtml(a.detail)}</p>` : ""}</div>
+      <div class="anom-actions">
+        <button class="btn ghost" data-act="view${i}">查看</button>
+        <button class="btn primary" data-act="fix${i}">🤖 修复方案</button>
+        <button class="btn ghost" data-act="dismiss${i}">忽略</button>
+      </div>
+    </div>`).join("");
+  list.forEach((a, i) => {
+    actions[`view${i}`] = () => { closeModal(); showView(a.view || "home"); };
+    actions[`fix${i}`] = () => askAiFix(a);
+    actions[`dismiss${i}`] = () => {
+      dismissedAnoms.add(a.key);
+      localStorage.setItem("nassafe_anom_dismissed", JSON.stringify([...dismissedAnoms]));
+      openAnomalyModal();
+    };
+  });
+  openModal("⚠ 检测到异常", body +
+    `<p class="muted" style="margin-top:6px">AI 只提供修复建议，不会自动执行任何操作；操作前请自行确认。</p>`, "", actions);
+}
+
+// AI 修复方案：带异常上下文提问，展示建议（不执行）
+async function askAiFix(a) {
+  openModal("🤖 AI 修复方案",
+    `<p style="margin-top:0"><b>异常：</b>${escapeHtml(a.title)}</p>
+     <p class="muted"><span class="spinner"></span>AI 正在分析…</p>`,
+    `<button class="btn ghost" data-act="back">返回异常列表</button>`,
+    { back: () => openAnomalyModal() });
+  try {
+    const data = await api("/api/ai/ask", {
+      method: "POST",
+      body: JSON.stringify({ question: a.q }),
+    });
+    openModal("🤖 AI 修复方案",
+      `<p style="margin-top:0"><b>异常：</b>${escapeHtml(a.title)}</p>
+       <div style="white-space:pre-wrap; line-height:1.8">${escapeHtml(data.text)}</div>
+       <p class="muted" style="margin-top:10px">以上为 AI 建议，仅供参考；执行任何操作前请确认。</p>`,
+      `<button class="btn ghost" data-act="back">返回异常列表</button>
+       <button class="btn primary" data-act="close">关闭</button>`,
+      { back: () => openAnomalyModal() });
+  } catch (e) {
+    openModal("🤖 AI 修复方案",
+      `<p>分析失败：${escapeHtml(e.message)}</p>
+       <p class="muted">如果提示 AI 未配置，请到「设置 → AI 解读」先启用。</p>`,
+      `<button class="btn ghost" data-act="back">返回异常列表</button>`,
+      { back: () => openAnomalyModal() });
+  }
 }
 
 /* ------------------------- 监控路径选择器 ------------------------- */
@@ -1093,11 +1255,9 @@ function renderBanners() {
   );
   if (!all.length) {
     const wasActive = state.tamperActive || state.deepActive;
-    if (wasActive) {
-      $("alertBanner").hidden = true;
-      state.tamperActive = false;
-      state.deepActive = false;
-    }
+    state.tamperActive = false;
+    state.deepActive = false;
+    showAnomalyBanner(); // 无勒索告警时展示硬件/容量类异常横幅（没有异常则收起横幅）
     return;
   }
   const critical = all.some((a) => a.level === "critical");
@@ -1633,6 +1793,10 @@ applyView();
 $("metricsRefreshBtn").onclick = () => loadMetrics(true);
 $("pickPathsBtn").onclick = openPathPicker;
 $("aiDiscoverBtn").onclick = aiDiscover;
+// 顶部告警横幅可点击：打开异常面板（逐项查看 + AI 修复方案）
+$("alertBanner").onclick = () => openAnomalyModal();
+$("alertBanner").style.cursor = "pointer";
+$("alertBanner").title = "点击查看异常详情";
 // 时间轴页：卷切换下拉框 —— 不用回总览，直接换卷看时间轴
 $("tlVolumeSel").onchange = () => {
   const key = $("tlVolumeSel").value;

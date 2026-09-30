@@ -239,6 +239,18 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   gap: 8px;
 }
 .bay-ico { flex: none; display: inline-block; vertical-align: -4px; margin-right: 3px; }
+
+/* AI 主动异常提醒面板 */
+.anom-item {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  padding: 12px 14px; margin-bottom: 10px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-left: 3px solid var(--amber); border-radius: var(--radius-xs);
+}
+.anom-item.sev2 { border-left-color: var(--red); }
+.anom-item .muted { font-size: 12.5px; margin-top: 3px; }
+.anom-actions { display: flex; gap: 8px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+#alertBanner { cursor: pointer; }
 .mc-pill {
   margin-left: auto;
   font-size: 11px;
