@@ -1023,8 +1023,11 @@ function openSnapshotDetail(snap) {
   `;
 
   const canBrowse = qnap || (snap.path && snap.path.startsWith("/"));
+  // 仅 NAS Safe 托管的 QNAP 快照允许整卷回滚（防误操作系统/无关快照）
+  const canRevert = qnap && /^auto-|nassafe_|snap-/.test(snap.name || "");
   const foot = `
     <button class="btn ghost" data-act="close">关闭</button>
+    ${canRevert ? `<button class="btn danger" data-act="revert">⚠ 整卷回滚到此快照</button>` : ""}
     <button class="btn primary" data-act="browse" ${canBrowse ? "" : "disabled"}>
       ${canBrowse ? "浏览并取回文件" : "该系统不支持直接浏览"}
     </button>
@@ -1036,7 +1039,59 @@ function openSnapshotDetail(snap) {
       // QNAP 快照无本地实体路径，从快照根（subpath 为空）开始浏览
       openBrowser(snap, qnap ? "" : snap.path);
     },
+    revert: () => {
+      closeModal();
+      confirmRevert(snap);
+    },
   });
+}
+
+/* ------------------------- 整卷回滚 ------------------------- */
+
+async function confirmRevert(snap) {
+  const qnap = isQnapSnap(snap);
+  const vid = (state.activeVolume && state.activeVolume.volume_id) || snap.volume_id;
+  const sid = snap.snapshot_id;
+  const when = formatWhen(snap.created_at || snap.name);
+  const volName = (state.activeVolume && state.activeVolume.name) || "该存储卷";
+  const body = `
+    <div class="notice danger">
+      <b>⚠ 这是破坏性操作，请务必确认！</b><br>
+      整卷回滚会把整卷「${escapeHtml(volName)}」的数据<strong>整体回退到「${escapeHtml(when)}」这一刻的状态</strong>。<br>
+      回滚之后、此快照<strong>之后新增或修改过的所有文件都会丢失</strong>，且无法直接撤销。<br>
+      如果只是想找回个别文件，请改用「浏览并取回文件」，更安全。
+    </div>
+    <p class="muted">如确要认真回滚，请在下方输入 <code>回滚</code> 两个字，再点确认：</p>
+    <input id="revertConfirmInput" class="text-input" placeholder="在此输入：回滚" />
+  `;
+  const foot = `
+    <button class="btn ghost" data-act="cancel">取消</button>
+    <button class="btn danger" data-act="dorevert" disabled>确认回滚</button>
+  `;
+  openModal("确认整卷回滚", body, foot, {
+    cancel: () => closeModal(),
+  });
+  const input = $("revertConfirmInput");
+  const btn = $("modalFoot").querySelector('[data-act="dorevert"]');
+  input.oninput = () => { btn.disabled = input.value.trim() !== "回滚"; };
+  btn.onclick = async () => {
+    if (input.value.trim() !== "回滚") return;
+    closeModal();
+    await doRevert(vid, sid, when);
+  };
+}
+
+async function doRevert(volumeId, snapshotId, when) {
+  try {
+    toast("正在提交整卷回滚，请稍候（卷可能短暂不可用）…");
+    await api("/api/snapshot/revert", {
+      method: "POST",
+      body: JSON.stringify({ volume_id: volumeId, snapshot_id: snapshotId, confirm: true }),
+    });
+    toast(`已提交整卷回滚：回退到「${when}」。NAS 正在后台执行，稍后到「存储单元」查看状态。`, "ok");
+  } catch (err) {
+    toast("回滚失败：" + err.message, "err");
+  }
 }
 
 /* ------------------------- 文件浏览 ------------------------- */
@@ -2058,7 +2113,45 @@ async function refreshAgentState() {
   const webRow = $("webNotifyRow");
   if (webRow) webRow.hidden = on;
   localStorage.setItem("nassafe_agent_enabled", on ? "1" : "0");
+  if (on) localStorage.setItem("nassafe_agent_ever", "1");   // 记录"曾经连上过=已安装"
   return on;
+}
+
+// 拉起本机小助手：安装时已注册 nassafe-agent:// 协议，即使当前未运行也能启动
+function launchAgent() {
+  try { location.href = "nassafe-agent://start"; } catch (_) { /* 忽略 */ }
+}
+
+// 轮询等待小助手上线（启动可能要几秒，避免一次失败就误判"未安装"）
+async function waitAgentOnline(maxMs = 9000, stepMs = 1000) {
+  const end = Date.now() + maxMs;
+  while (Date.now() < end) {
+    if ((await agentPing(1200)).ok) return true;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  return false;
+}
+
+// 已安装但当前未运行：给"重新启动"入口，而不是又弹下载页
+function showAgentNotRunning() {
+  openModal(
+    "🖥 桌面小助手未运行",
+    `<p>检测到桌面小助手<b>已经安装过</b>，但当前没有在运行（可能刚开机还没起、或被你退出了）。</p>
+     <p class="muted">点「重新启动」会再次通过本机协议拉起它；拉起后本页会自动检测到并启用。
+        若反复拉起失败，再点「重新下载」。</p>`,
+    `<button class="btn ghost" data-act="redown">重新下载</button>
+     <button class="btn primary" data-act="relaunch">重新启动</button>`,
+    {
+      relaunch: async () => {
+        launchAgent();
+        toast("正在重新启动桌面小助手…", "");
+        const ok = await waitAgentOnline(9000);
+        if (ok) { closeModal(); await refreshAgentState(); toast("桌面小助手已启动", "ok"); }
+        else { toast("拉起失败，请稍后重试或重新下载", "warn"); }
+      },
+      redown: () => showDesktopAgentGuide(),
+    }
+  );
 }
 
 async function onAgentToggle() {
@@ -2075,16 +2168,23 @@ async function onAgentToggle() {
       }
       setAgentState("正在启动…", null);
       // 浏览器不允许网页直接执行本地程序，走自定义协议拉起（浏览器可能弹一次「打开？」）
-      try { location.href = "nassafe-agent://start"; } catch (_) { /* 忽略 */ }
-      await new Promise((r) => setTimeout(r, 4000));
-      if ((await agentPing()).ok) {
+      launchAgent();
+      const online = await waitAgentOnline(9000);
+      if (online) {
         setAgentState("● 运行中", true);
         localStorage.setItem("nassafe_agent_enabled", "1");
+        localStorage.setItem("nassafe_agent_ever", "1");
         toast("桌面小助手已启动并开机自启", "ok");
       } else {
         chk.checked = false;
-        setAgentState("未安装", false);
-        showDesktopAgentGuide();
+        // 已经装过 → 提示"未运行"而非"未安装/下载"
+        if (localStorage.getItem("nassafe_agent_ever") === "1") {
+          setAgentState("已安装 · 未运行", false);
+          showAgentNotRunning();
+        } else {
+          setAgentState("未安装", false);
+          showDesktopAgentGuide();
+        }
       }
     } else {
       setAgentState("正在停止…", null);

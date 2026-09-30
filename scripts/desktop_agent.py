@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.7"
+AGENT_VER = "1.0.6.8"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -85,137 +85,367 @@ def http_json(url, timeout=15, method="GET", body=None):
 # Windows 通知：优先走托盘气球（不调用 PowerShell，避免安全软件拦截）
 # --------------------------------------------------------------------------
 def notify(title, text, level="info"):
-    """弹出提醒：优先自定义 toast 弹窗（必现，不依赖系统通知权限），
-    同时尝试托盘气球作为补充；若 UI 线程彻底起不来，用系统弹窗兜底。
+    """弹出提醒：优先 Win32 自定义弹窗（必现、可控、不依赖系统通知权限），
+    同时尝试托盘气球作补充；若弹窗初始化失败，回退系统 MessageBoxW 保证"至少有提醒"。
 
-    注意：toast 由专用 UI 线程承载，与调用方所在线程无关，因此从 HTTP
-    控制线程（网页发测试消息）或轮询线程调用都不会再出现跨线程建 Tk 崩溃。
+    返回 channel 字符串，供 HTTP 接口如实反馈：
+      "toast"     = Win32 自定义弹窗已显示
+      "fallback"  = 回退到系统消息框
+      "error"     = 弹窗与兜底都失败
     """
-    # 托盘气球作为补充（Win10/11 可能静默路由到操作中心，不保证可见）
+    # 托盘气球作补充（Win10/11 可能静默路由到操作中心，不保证可见）
     if _TRAY and getattr(_TRAY, "hwnd", None):
-        _TRAY.balloon(title, text, level)
-    # toast 走专用 UI 线程
-    root = _ensure_ui_thread()
-    if root is not None:
-        show_toast(title, text,
-                   on_click=getattr(_TRAY, "on_open", None) if _TRAY else None)
-        return True
-    # 兜底：至少弹个系统消息框，保证"有提醒"
-    try:
-        ctypes.windll.user32.MessageBoxW(None, str(text), str(title),
-                                         0x00000030 | 0x00001000)
-    except Exception:
-        pass
-    return False
-
-
-# --------------------------------------------------------------------------
-# 自定义 Toast 弹窗（右下角、必现、可点击；不依赖 Windows 通知子系统，
-# 规避 Win10/11 对非打包 Win32 程序 classic 气球静默吞掉的问题）
-#
-# 关键修复：所有 tk 弹窗统一跑在【一个专用 UI 线程】上，该线程持有唯一
-# tk.Tk() 根窗口（隐藏），新弹窗用 Toplevel 挂到这个根上，并通过
-# root.after(0, ...) 调度到 UI 线程执行。旧实现在每条通知里新建线程直接
-# new Tk()，触发 Tcl/Tk 跨线程初始化崩溃（被 except 静默吞掉），表现为
-# "收到提醒但没有气泡"。本方案彻底避免多线程建 Tk。
-# --------------------------------------------------------------------------
-_UI_THREAD = None
-_UI_ROOT = None
-_UI_READY = threading.Event()
-_UI_LOCK = threading.Lock()
-
-_TOAST_SEQ = 0
-_TOAST_LOCK = threading.Lock()
-
-
-def _ui_thread_main():
-    import tkinter as tk
-    global _UI_ROOT
-    try:
-        root = tk.Tk()
-        root.withdraw()            # 隐藏根窗口，仅作容器
-        root.attributes("-topmost", False)
-        _UI_ROOT = root
-    except Exception:
-        _UI_ROOT = None
-    finally:
-        _UI_READY.set()
-    if _UI_ROOT is not None:
         try:
-            _UI_ROOT.mainloop()
+            _TRAY.balloon(title, text, level)
+        except Exception:
+            pass
+    try:
+        status = _TOAST.show(title, text,
+                             on_click=getattr(_TRAY, "on_open", None) if _TRAY else None)
+    except Exception:
+        try:
+            ToastManager._fallback(title, text)
+        except Exception:
+            pass
+        status = "error"
+    agent_log(f"notify: [{level}] {title} | {text} -> channel={status}")
+    return status
+
+
+# --------------------------------------------------------------------------
+# 自定义 Toast 弹窗（右下角、必现、可点击；ctypes / Win32 自绘，与系统托盘同源）
+#
+# 为什么弃用 tkinter：实测 tkinter 在某些运行环境下子线程建窗弹窗不可见，
+# 且原实现把整段窗口创建包在 except:pass 里，失败时既不报错也不兜底，表现就是
+# "收到提醒但没气泡"。这里改用与系统托盘同一套 Win32 机制（托盘图标已验证可见），
+# 由专用后台线程持有消息循环，其它线程（HTTP 控制线程 / 轮询线程）通过 PostMessage
+# 线程安全地请求显示；弹窗初始化失败时回退系统 MessageBoxW，保证"至少有提醒"。
+# --------------------------------------------------------------------------
+_TOAST_BG = 0x2A170F       # #0f172a -> BGR
+_TOAST_ACCENT = 0xF8BD38   # #38bdf8 -> BGR
+_TOAST_FG = 0xF0E8E2       # #e2e8f0 -> BGR
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+class _PAINTSTRUCT(ctypes.Structure):
+    _fields_ = [("hdc", ctypes.c_void_p), ("fErase", ctypes.c_int32),
+                ("rcPaint", _RECT), ("fRestore", ctypes.c_int32),
+                ("fIncUpdate", ctypes.c_int32), ("rgbReserved", ctypes.c_ubyte * 32)]
+
+
+class _LOGFONTW(ctypes.Structure):
+    _fields_ = [("lfHeight", ctypes.c_long), ("lfWidth", ctypes.c_long),
+                ("lfEscapement", ctypes.c_long), ("lfOrientation", ctypes.c_long),
+                ("lfWeight", ctypes.c_long), ("lfItalic", ctypes.c_byte),
+                ("lfUnderline", ctypes.c_byte), ("lfStrikeOut", ctypes.c_byte),
+                ("lfCharSet", ctypes.c_byte), ("lfOutPrecision", ctypes.c_byte),
+                ("lfClipPrecision", ctypes.c_byte), ("lfQuality", ctypes.c_byte),
+                ("lfPitchAndFamily", ctypes.c_byte), ("lfFaceName", ctypes.c_wchar * 32)]
+
+
+class _WNDCLASSW(ctypes.Structure):
+    _fields_ = [("style", ctypes.c_uint32), ("lpfnWndProc", ctypes.c_void_p),
+                ("cbClsExtra", ctypes.c_int32), ("cbWndExtra", ctypes.c_int32),
+                ("hInstance", ctypes.c_void_p), ("hIcon", ctypes.c_void_p),
+                ("hCursor", ctypes.c_void_p), ("hbrBackground", ctypes.c_void_p),
+                ("lpszMenuName", ctypes.c_wchar_p), ("lpszClassName", ctypes.c_wchar_p)]
+
+
+class _MSG(ctypes.Structure):
+    _fields_ = [("hwnd", ctypes.c_void_p), ("message", ctypes.c_uint32),
+                ("wParam", ctypes.c_size_t), ("lParam", ctypes.c_ssize_t),
+                ("time", ctypes.c_uint32), ("pt", ctypes.c_long * 2)]
+
+
+class ToastManager:
+    WM_TOAST_SHOW = 0x0400 + 10
+    WS_POPUP = 0x80000000
+    WS_EX_TOPMOST = 0x00000008
+    WS_EX_TOOLWINDOW = 0x00000080
+    WS_EX_NOACTIVATE = 0x08000000
+
+    def __init__(self):
+        self.host_hwnd = None
+        self.thread = None
+        self._failed = False
+        self._pending = {}
+        self._pid = 0
+        self._lock = threading.Lock()
+        self._live = []                 # 当前可见 toast 的 hwnd（右下角堆叠定位用）
+        self._text = {}                 # hwnd -> (title, body)
+        self._click = {}                 # hwnd -> on_click 回调
+        self._wndproc = None
+        self._hinst = None
+        self._font = None
+        self._font_title = None
+        self._font_body = None
+        self._bg_brush = None
+        self._bar_brush = None
+        self._colors = {}
+
+    # ---- 公开：启动后台线程（持有 Win32 消息循环）----
+    def start(self, timeout=6.0):
+        if os.name != "nt":
+            return False
+        self.thread = threading.Thread(target=self._run, daemon=True, name="nassafe-toast")
+        self.thread.start()
+        waited = 0.0
+        while waited < timeout and not self.host_hwnd and not self._failed:
+            time.sleep(0.1)
+            waited += 0.1
+        return bool(self.host_hwnd)
+
+    # ---- 公开：显示一条 toast；返回 "toast"（已显示）/ "fallback"（已回退系统弹窗）----
+    def show(self, title, body, on_click=None, timeout_ms=6000):
+        if not self.host_hwnd:
+            self._fallback(title, body)
+            return "fallback"
+        with self._lock:
+            self._pid += 1
+            pid = self._pid
+            self._pending[pid] = (title, body, on_click, timeout_ms)
+        try:
+            ctypes.windll.user32.PostMessageW(self.host_hwnd, self.WM_TOAST_SHOW, pid, 0)
+            return "toast"
+        except Exception:
+            self._fallback(title, body)
+            return "fallback"
+
+    @staticmethod
+    def _fallback(title, body):
+        try:
+            ctypes.windll.user32.MessageBoxW(None, str(body), str(title),
+                                            0x00000040 | 0x00001000)
         except Exception:
             pass
 
-
-def _ensure_ui_thread():
-    """确保专用 UI 线程已启动并返回其 Tk 根；失败返回 None。"""
-    global _UI_THREAD
-    with _UI_LOCK:
-        if _UI_THREAD is None or not _UI_THREAD.is_alive():
-            _UI_READY.clear()
-            _UI_THREAD = threading.Thread(target=_ui_thread_main, daemon=True,
-                                         name="nassafe-ui")
-            _UI_THREAD.start()
-            _UI_READY.wait(timeout=5)
-    return _UI_ROOT
-
-
-def show_toast(title, body, on_click=None, timeout_ms=6000):
-    """右下角弹出自定义提醒框；自动消失，点击可触发 on_click（通常是打开收件箱）。
-
-    弹窗始终在专用 UI 线程创建，避免多线程 new Tk() 导致的静默崩溃。
-    """
-    def _make(root):
+    # ---- 后台线程：Win32 消息循环 ----
+    def _run(self):
         try:
-            import tkinter as tk
-            w, h = 320, 104
-            sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-            with _TOAST_LOCK:
-                global _TOAST_SEQ
-                seq = _TOAST_SEQ % 4
-                _TOAST_SEQ += 1
-            win = tk.Toplevel(root)
-            win.overrideredirect(True)
-            win.attributes("-topmost", True)
-            try:
-                win.attributes("-toolwindow", True)   # 不进任务栏 / Alt-Tab
-            except Exception:
-                pass
-            win.configure(bg="#0f172a")
-            win.geometry(f"{w}x{h}+{sw - w - 20}+{sh - h - 60 - seq * (h + 8)}")
+            u32 = ctypes.windll.user32
+            k32 = ctypes.windll.kernel32
+            g32 = ctypes.windll.gdi32
 
-            frame = tk.Frame(win, bg="#0f172a")
-            frame.pack(fill="both", expand=True, padx=12, pady=10)
-            tk.Label(frame, text=title, bg="#0f172a", fg="#38bdf8",
-                     font=("Microsoft YaHei UI", 11, "bold"),
-                     anchor="w", justify="left").pack(fill="x")
-            tk.Label(frame, text=body, bg="#0f172a", fg="#e2e8f0",
-                     font=("Microsoft YaHei UI", 10),
-                     anchor="w", justify="left", wraplength=w - 24).pack(fill="x", pady=(6, 0))
+            WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_void_p,
+                                         ctypes.c_uint32, ctypes.c_size_t, ctypes.c_ssize_t)
+            u32.RegisterClassW.argtypes = [ctypes.c_void_p]
+            u32.RegisterClassW.restype = ctypes.c_uint16
+            u32.CreateWindowExW.argtypes = [ctypes.c_uint32, ctypes.c_wchar_p, ctypes.c_wchar_p,
+                                            ctypes.c_uint32, ctypes.c_int, ctypes.c_int,
+                                            ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                                            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            u32.CreateWindowExW.restype = ctypes.c_void_p
+            u32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            u32.ShowWindow.restype = ctypes.c_int
+            u32.DestroyWindow.argtypes = [ctypes.c_void_p]
+            u32.DestroyWindow.restype = ctypes.c_int
+            u32.DefWindowProcW.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                                           ctypes.c_size_t, ctypes.c_ssize_t]
+            u32.DefWindowProcW.restype = ctypes.c_ssize_t
+            u32.GetMessageW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                        ctypes.c_uint32, ctypes.c_uint32]
+            u32.GetMessageW.restype = ctypes.c_ssize_t
+            u32.SetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+            u32.SetWindowTextW.restype = ctypes.c_int
+            u32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                                         ctypes.c_size_t, ctypes.c_ssize_t]
+            u32.SendMessageW.restype = ctypes.c_ssize_t
+            u32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                         ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                         ctypes.c_int, ctypes.c_uint32]
+            u32.SetWindowPos.restype = ctypes.c_int
+            u32.BeginPaint.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            u32.BeginPaint.restype = ctypes.c_void_p
+            u32.EndPaint.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            u32.EndPaint.restype = ctypes.c_int
+            u32.GetClientRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            u32.GetClientRect.restype = ctypes.c_int
+            u32.GetSystemMetrics.argtypes = [ctypes.c_int]
+            u32.GetSystemMetrics.restype = ctypes.c_int
+            u32.SetTimer.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint, ctypes.c_void_p]
+            u32.SetTimer.restype = ctypes.c_size_t
+            u32.PostQuitMessage.argtypes = [ctypes.c_int]
+            u32.PostQuitMessage.restype = None
+            g32.CreateSolidBrush.argtypes = [ctypes.c_uint32]
+            g32.CreateSolidBrush.restype = ctypes.c_void_p
+            g32.DeleteObject.argtypes = [ctypes.c_void_p]
+            g32.DeleteObject.restype = ctypes.c_int
+            g32.CreateFontIndirectW.argtypes = [ctypes.c_void_p]
+            g32.CreateFontIndirectW.restype = ctypes.c_void_p
+            g32.SetTextColor.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            g32.SetTextColor.restype = ctypes.c_uint32
 
-            def _close():
+            # 微软雅黑字体：标题加粗、正文常规，保证中文清晰可见
+            self._hinst = k32.GetModuleHandleW(None)
+
+            lf_title = _LOGFONTW()
+            lf_title.lfHeight = -16
+            lf_title.lfWeight = 600
+            lf_title.lfCharSet = 134          # GB2312_CHARSET
+            lf_title.lfFaceName = "Microsoft YaHei UI"
+            self._font_title = g32.CreateFontIndirectW(ctypes.byref(lf_title))
+
+            lf_body = _LOGFONTW()
+            lf_body.lfHeight = -14
+            lf_body.lfWeight = 400
+            lf_body.lfCharSet = 134
+            lf_body.lfFaceName = "Microsoft YaHei UI"
+            self._font_body = g32.CreateFontIndirectW(ctypes.byref(lf_body))
+
+            # 卡片底色 + 强调条底色：用窗口类背景刷，由系统自绘，
+            # 完全绕开 FillRect/BeginPaint/DrawTextW 等受限 GDI 绘制函数。
+            self._bg_brush = g32.CreateSolidBrush(_TOAST_BG)
+            self._bar_brush = g32.CreateSolidBrush(_TOAST_ACCENT)
+            self._colors = {}
+
+            manager = self
+
+            def _wndproc(hwnd, msg, wparam, lparam):
                 try:
-                    win.destroy()
+                    if hwnd == manager.host_hwnd:
+                        if msg == manager.WM_TOAST_SHOW:
+                            item = manager._pending.pop(int(wparam), None)
+                            if item:
+                                manager._create_popup(item)
+                            return 0
+                        if msg == 0x0002:   # WM_DESTROY
+                            u32.PostQuitMessage(0)
+                            return 0
+                        return u32.DefWindowProcW(hwnd, msg, wparam, lparam)
+                    # 以下为 toast 弹窗
+                    if msg == 0x0133:       # WM_CTLCOLORSTATIC：给子文本控件上色
+                        color = manager._colors.get(int(lparam), _TOAST_FG)
+                        try:
+                            g32.SetTextColor(int(wparam), color)
+                        except Exception:
+                            pass
+                        return int(manager._bg_brush)
+                    if msg == 0x0113:       # WM_TIMER：到时自动销毁
+                        u32.DestroyWindow(hwnd)
+                        return 0
+                    if msg == 0x0201:       # WM_LBUTTONDOWN：点击触发回调
+                        cb = manager._click.pop(hwnd, None)
+                        u32.DestroyWindow(hwnd)
+                        if cb:
+                            threading.Thread(target=cb, daemon=True).start()
+                        return 0
+                    if msg == 0x0002:       # WM_DESTROY
+                        manager._click.pop(hwnd, None)
+                        if hwnd in manager._live:
+                            manager._live.remove(hwnd)
+                        return 0
                 except Exception:
                     pass
+                return u32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
-            def _click(e=None):
-                _close()
-                if on_click:
-                    threading.Thread(target=on_click, daemon=True).start()
+            self._wndproc = WNDPROC(_wndproc)
 
-            win.bind("<Button-1>", _click)
-            win.after(timeout_ms, _close)
+            # 主卡片窗口类：深色背景刷（系统自动填充卡片）
+            cls = _WNDCLASSW()
+            cls.style = 0
+            cls.lpfnWndProc = ctypes.cast(self._wndproc, ctypes.c_void_p)
+            cls.hInstance = self._hinst
+            cls.hbrBackground = self._bg_brush
+            cls.lpszClassName = "NASSafeToast"
+            u32.RegisterClassW(ctypes.byref(cls))
+
+            # 强调条窗口类：accent 背景刷
+            bar_cls = _WNDCLASSW()
+            bar_cls.style = 0
+            bar_cls.lpfnWndProc = ctypes.cast(self._wndproc, ctypes.c_void_p)
+            bar_cls.hInstance = self._hinst
+            bar_cls.hbrBackground = self._bar_brush
+            bar_cls.lpszClassName = "NASSafeToastBar"
+            u32.RegisterClassW(ctypes.byref(bar_cls))
+
+            host = u32.CreateWindowExW(0, "NASSafeToast", "NASSafeToastHost",
+                                       self.WS_POPUP, -10000, -10000, 0, 0,
+                                       None, None, self._hinst, None)
+            if not host:
+                self._failed = True
+                return
+            self.host_hwnd = host
+
+            m = _MSG()
+            while u32.GetMessageW(ctypes.byref(m), None, 0, 0) > 0:
+                u32.TranslateMessage(ctypes.byref(m))
+                u32.DispatchMessageW(ctypes.byref(m))
+        except Exception as e:
+            try:
+                print("Toast 线程初始化失败：", e, file=sys.stderr)
+            except Exception:
+                pass
+            self._failed = True
+
+    def _create_popup(self, item):
+        u32 = ctypes.windll.user32
+        title, body, on_click, timeout_ms = item
+        w, h = 340, 104
+        try:
+            sw = u32.GetSystemMetrics(0)   # SM_CXSCREEN
+            sh = u32.GetSystemMetrics(1)   # SM_CYSCREEN
+        except Exception:
+            sw, sh = 1920, 1080
+        with self._lock:
+            seq = len(self._live)
+        x = sw - w - 20
+        y = sh - h - 20 - (seq % 4) * (h + 8)   # 右下角，底部往上堆叠，最多 4 条
+        hwnd = u32.CreateWindowExW(
+            self.WS_EX_TOPMOST | self.WS_EX_TOOLWINDOW | self.WS_EX_NOACTIVATE,
+            "NASSafeToast", "", self.WS_POPUP,
+            x, y, w, h, None, None, self._hinst, None)
+        if not hwnd:
+            self._fallback(title, body)
+            return
+        with self._lock:
+            self._live.append(hwnd)
+        self._click[hwnd] = on_click
+
+        # 左侧强调条（accent 色块，系统自绘）
+        try:
+            bar = u32.CreateWindowExW(0, "NASSafeToastBar", "",
+                                      0x40000000,        # WS_CHILD
+                                      0, 0, 4, h, hwnd, None, self._hinst, None)
+            if bar:
+                u32.ShowWindow(bar, 5)
+        except Exception:
+            bar = None
+
+        # 标题（粗体 accent）
+        title_w = u32.CreateWindowExW(
+            0, "Static", "",
+            0x40000000 | 0x00000000,                    # WS_CHILD | SS_LEFT
+            16, 12, w - 32, 24, hwnd, None, self._hinst, None)
+        if title_w:
+            u32.SetWindowTextW(title_w, str(title))
+            u32.SendMessageW(title_w, 0x0030, self._font_title, 1)   # WM_SETFONT
+            self._colors[int(title_w)] = _TOAST_ACCENT
+
+        # 正文（常规浅色，自动换行）
+        body_w = u32.CreateWindowExW(
+            0, "Static", "",
+            0x40000000 | 0x00000020 | 0x00000080,        # WS_CHILD|SS_WORDBREAK|SS_NOPREFIX
+            16, 40, w - 32, h - 52, hwnd, None, self._hinst, None)
+        if body_w:
+            u32.SetWindowTextW(body_w, str(body))
+            u32.SendMessageW(body_w, 0x0030, self._font_body, 1)
+            self._colors[int(body_w)] = _TOAST_FG
+
+        try:
+            # 显式钉到右下角、置顶、不抢焦点
+            u32.SetWindowPos(hwnd, -1, x, y, w, h,
+                             0x0010 | 0x0040)           # SWP_NOACTIVATE | SWP_SHOWWINDOW
+            u32.ShowWindow(hwnd, 5)                     # SW_SHOW
+            u32.SetTimer(hwnd, 1, int(timeout_ms), None)
         except Exception:
             pass
 
-    root = _ensure_ui_thread()
-    if root is None:
-        return
-    try:
-        root.after(0, lambda: _make(root))
-    except Exception:
-        pass
+
+_TOAST = ToastManager()
 
 
 
@@ -246,6 +476,20 @@ def save_config(cfg):
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print("保存配置失败：", e, file=sys.stderr)
+
+
+def agent_log(msg):
+    """把关键事件写进安装目录的 agent.log，便于无界面环境下排查（如弹窗为何没出现）。"""
+    try:
+        d = config_dir()
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        with open(os.path.join(d, "agent.log"), "a", encoding="utf-8") as f:
+            f.write(time.strftime("%m-%d %H:%M:%S") + " " + str(msg) + "\n")
+    except Exception:
+        pass
 
 
 def bundled_nas() -> str:
@@ -316,11 +560,11 @@ class _CtrlHandler(BaseHTTPRequestHandler):
                 title = str(msg.get("title") or "NAS Safe 提醒")
                 detail = str(msg.get("detail") or "")
                 level = str(msg.get("level") or "info")
-                notify(title, detail, level)
+                channel = notify(title, detail, level)
                 if _TRAY:
                     key = str(msg.get("key") or f"manual-{time.time()}")
                     _TRAY.add_unread(key, detail or title)
-                out = json.dumps({"ok": True}).encode()
+                out = json.dumps({"ok": True, "channel": channel}).encode()
             except Exception as e:
                 out = json.dumps({"ok": False, "error": str(e)}).encode()
             self.send_response(200)
@@ -1787,6 +2031,7 @@ def handle_protocol(raw):
 def run_agent(base, interval, first=False, once=False, no_ui=False):
     repair_protocol()  # 守护启动前自愈协议注册（重装/清理后指向可能错误）
     start_control_server()
+    _TOAST.start()     # 启动 Win32 弹窗后台线程（与托盘同源，保证提醒可见）
     atexit.register(report_offline, base)  # 任何退出路径都上报离线，让 NAS 接管微信提醒
     report_online(base, force=True)
     seen = set()

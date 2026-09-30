@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>桌面小助手 · 提醒气泡预览</title>
+<style>
+  :root {
+    --card: #0f172a;       /* 卡片底色（与原生弹窗 hbrBackground 一致） */
+    --accent: #38bdf8;     /* 强调条 / 标题色 */
+    --fg: #e2e8f0;         /* 正文浅色 */
+    --muted: #94a3b8;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: "Microsoft YaHei UI", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+    background:
+      radial-gradient(1200px 600px at 70% -10%, #1e293b 0%, transparent 60%),
+      linear-gradient(180deg, #0b1220 0%, #0e1626 100%);
+    color: #cbd5e1;
+    overflow: hidden;
+  }
+  .fake-taskbar {
+    position: fixed; left: 0; right: 0; bottom: 0; height: 40px;
+    background: rgba(15,23,42,.85); border-top: 1px solid rgba(148,163,184,.15);
+    display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    color: #94a3b8; font-size: 13px; backdrop-filter: blur(6px);
+  }
+  .fake-taskbar .tray {
+    margin-left: auto; width: 60px; height: 22px; border-radius: 6px;
+    background: rgba(56,189,248,.18); border: 1px solid rgba(56,189,248,.4);
+    display: flex; align-items: center; justify-content: center; font-size: 12px; color: #bae6fd;
+  }
+  /* ---------- 真正的 Toast 卡片（与桌面 EXE 弹出样式一致） ---------- */
+  .toast {
+    position: fixed; right: 20px; width: 340px; min-height: 104px;
+    background: var(--card);
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.45), 0 0 0 1px rgba(148,163,184,.12);
+    display: flex; overflow: hidden; cursor: pointer;
+    opacity: 0; transform: translateY(12px) scale(.98);
+    transition: opacity .22s ease, transform .22s ease;
+    z-index: 9999;
+  }
+  .toast.show { opacity: 1; transform: translateY(0) scale(1); }
+  .toast .bar { width: 4px; flex: 0 0 4px; background: var(--accent); }
+  .toast .body { padding: 12px 16px 14px 12px; flex: 1 1 auto; }
+  .toast .title {
+    color: var(--accent); font-weight: 600; font-size: 15px; line-height: 24px;
+    margin: 0 0 4px; letter-spacing: .2px;
+  }
+  .toast .text { color: var(--fg); font-size: 13.5px; line-height: 19px; margin: 0; }
+  /* 多条时自下而上堆叠 */
+  .toast.t1 { bottom: 20px; }
+  .toast.t2 { bottom: 132px; }
+  .toast.t3 { bottom: 244px; }
+
+  .panel {
+    position: fixed; top: 28px; left: 28px; max-width: 460px;
+    background: rgba(15,23,42,.7); border: 1px solid rgba(148,163,184,.18);
+    border-radius: 14px; padding: 20px 22px; backdrop-filter: blur(8px);
+  }
+  .panel h1 { font-size: 18px; margin: 0 0 6px; color: #e2e8f0; }
+  .panel p { margin: 6px 0; font-size: 13.5px; line-height: 20px; color: #a9b6c9; }
+  .panel code { background: rgba(56,189,248,.14); color: #bae6fd; padding: 1px 6px; border-radius: 5px; font-size: 12.5px; }
+  .btn {
+    margin-top: 12px; display: inline-block; cursor: pointer;
+    background: var(--accent); color: #06121f; border: none; border-radius: 9px;
+    padding: 9px 16px; font-size: 14px; font-weight: 600;
+  }
+  .btn:hover { filter: brightness(1.06); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <h1>桌面小助手 · 提醒气泡（新版预览）</h1>
+    <p>修复后：弹窗固定在<b>屏幕右下角</b>（距右边/下边各 20px，多条自下而上堆叠），不再出现在屏幕正中央。</p>
+    <p>外观：深色卡片 + 左侧 <code>accent</code> 强调条，标题加粗高亮、正文浅色自动换行，点击即关闭——与之前系统默认 MessageBox（居中、带标题栏、难看）彻底不同。</p>
+    <button class="btn" id="send">发送一条测试提醒</button>
+    <button class="btn" id="send3" style="background:#475569;color:#e2e8f0;">连发 3 条（看堆叠）</button>
+    <p class="note">说明：此为网页预览，仅用于确认样式与位置；真实弹窗由桌面 EXE（Win32 自绘）弹出，效果一致。</p>
+  </div>
+
+  <div class="fake-taskbar">
+    <span>NAS Safe · 快照保护中</span>
+    <span class="tray">🛡 托盘</span>
+  </div>
+
+  <script>
+    let seq = 0;
+    function pop(title, text, cls) {
+      const el = document.createElement('div');
+      el.className = 'toast ' + (cls || '');
+      el.innerHTML =
+        '<div class="bar"></div>' +
+        '<div class="body"><p class="title"></p><p class="text"></p></div>';
+      el.querySelector('.title').textContent = title;
+      el.querySelector('.text').textContent = text;
+      document.body.appendChild(el);
+      requestAnimationFrame(() => el.classList.add('show'));
+      el.addEventListener('click', () => dismiss(el));
+      // 真实弹窗 6s 后自动销毁
+      setTimeout(() => dismiss(el), 6000);
+    }
+    function dismiss(el) {
+      el.classList.remove('show');
+      setTimeout(() => el.remove(), 240);
+    }
+    document.getElementById('send').onclick = () => pop('NAS Safe 提醒', '检测到异常写入行为，已自动创建锁快照。点击查看详情。');
+    document.getElementById('send3').onclick = () => {
+      pop('NAS Safe 提醒 1', '这是第 1 条测试消息，出现在最底部。', 't1');
+      setTimeout(() => pop('NAS Safe 提醒 2', '这是第 2 条，向上堆叠。', 't2'), 400);
+      setTimeout(() => pop('NAS Safe 提醒 3', '这是第 3 条，继续向上。', 't3'), 800);
+    };
+  </script>
+</body>
+</html>
