@@ -768,11 +768,16 @@ async function openPathPicker() {
 
 // 本地 AI 优先从浏览器直接调用用户电脑上的 Ollama / LM Studio（localhost = 用户本机），
 // 不再绕 NAS 容器后端 —— 容器里的 localhost 不是用户电脑，旧方案永远连不上。
-async function callLocalAI(question, context) {
+async function callLocalAI(question, context, history) {
   const base = (($("aiBase") && $("aiBase").value) || "http://localhost:11434/v1").trim().replace(/\/+$/, "");
   const model = (($("aiModel") && $("aiModel").value) || "").trim() || "qwen2.5:7b";
   const messages = [];
   if (context) messages.push({ role: "system", content: "你是 NAS 数据安全助手，用通俗中文回答。背景：" + context });
+  for (const m of history || []) {
+    if (m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim()) {
+      messages.push({ role: m.role, content: m.content }); // 多轮上下文
+    }
+  }
   messages.push({ role: "user", content: question });
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 120000);
@@ -798,26 +803,27 @@ async function callLocalAI(question, context) {
 
 // 统一入口：ollama 走浏览器直连；其它供应商走后端（保护密钥）。
 // 本地 AI 兜底通道：浏览器直连被 CORS 拦时，改由 NAS 后端中转调用用户电脑的 Ollama
-async function callLocalAIViaNAS(question, context) {
+async function callLocalAIViaNAS(question, context, history) {
   const base = (($("aiBase") && $("aiBase").value) || "").trim();
   const model = (($("aiModel") && $("aiModel").value) || "").trim();
   const body = { question, base_url: base, model };
   if (context) body.context = context;
+  if (history && history.length) body.history = history; // 多轮上下文
   const data = await api("/api/ai/local", { method: "POST", body: JSON.stringify(body) }, 120000);
   return data.text;
 }
 
-async function routeAI(question, cloudEndpoint, context) {
+async function routeAI(question, cloudEndpoint, context, history) {
   const prov = ($("aiProvider") && $("aiProvider").value) || "";
   if (prov === "ollama") {
     // 统一返回 {text} 对象——调用方（问AI/解读/异常文案）都按 data.text 取答案；
     // 本地路径此前返回纯字符串，曾致回答渲染为空（答案"丢失"）。
     try {
-      return { text: await callLocalAI(question, context || "") };
+      return { text: await callLocalAI(question, context || "", history) };
     } catch (directErr) {
       // 直连失败（最常见 = 未设系统级 OLLAMA_ORIGINS 被 CORS 拦），自动改走 NAS 中转
       try {
-        return { text: await callLocalAIViaNAS(question, context || "") };
+        return { text: await callLocalAIViaNAS(question, context || "", history) };
       } catch (relayErr) {
         throw new Error(directErr.message + "\n[NAS 中转也失败] " + relayErr.message);
       }
@@ -825,7 +831,10 @@ async function routeAI(question, cloudEndpoint, context) {
   }
   let body;
   if (cloudEndpoint === "/api/ai/interpret") body = { text: question };
-  else body = context ? { question, context } : { question };
+  else {
+    body = context ? { question, context } : { question };
+    if (history && history.length) body.history = history; // 多轮上下文
+  }
   return await api(cloudEndpoint, { method: "POST", body: JSON.stringify(body) }, 120000);
 }
 
@@ -970,50 +979,86 @@ async function aiDiagnose() {
   btn.textContent = "🤖 AI 体检";
 }
 
-// 问 AI：自然语言问 NAS 状态（自动带上当前指标/告警当背景）
+// 问 AI：多轮对话——可连续追问 / 随时补充信息，AI 记住本次会话上下文
+let aiChatHistory = []; // [{role:"user"|"assistant", content}]
+
+function renderAiChat() {
+  const log = $("aiChatLog");
+  if (!log) return;
+  if (!aiChatHistory.length) {
+    log.innerHTML = `<div class="muted" style="text-align:center;padding:26px 10px">💬 用大白话问 NAS 相关问题<br><span style="font-size:12px">支持连续追问、随时补充信息，AI 记得本次对话内容</span></div>`;
+    return;
+  }
+  log.innerHTML = aiChatHistory.map((m) => {
+    const mine = m.role === "user";
+    const bg = mine ? "var(--z-storage)" : "var(--surface-2)";
+    const fg = mine ? "#fff" : "var(--text)";
+    const corner = mine ? "border-bottom-right-radius:3px" : "border-bottom-left-radius:3px";
+    return `<div style="display:flex;justify-content:${mine ? "flex-end" : "flex-start"};margin:6px 0">
+      <div style="max-width:86%;white-space:pre-wrap;line-height:1.7;font-size:13px;padding:8px 12px;border-radius:12px;${corner};background:${bg};color:${fg}">${escapeHtml(m.content)}</div>
+    </div>`;
+  }).join("");
+  log.scrollTop = log.scrollHeight;
+}
+
 function aiAsk() {
+  aiChatHistory = []; // 每次打开开新会话；会话内多轮共享上下文
   openModal(
     "🤖 问 AI",
-    `<textarea id="aiAskText" class="text-input ask-textarea" rows="9"
-       placeholder="用大白话问，例如：我的 NAS 现在安全吗？快照会不会把盘占满？最近有什么要注意的？"></textarea>
+    `<div id="aiChatLog" style="max-height:46vh;overflow-y:auto;padding:4px 2px 8px;margin-bottom:8px;border-bottom:1px solid var(--border)"></div>
+     <textarea id="aiChatInput" class="text-input" rows="2" style="resize:vertical;min-height:48px"
+       placeholder="输入问题，回车发送（Shift+回车换行）。AI 答完可继续追问或补充信息。"></textarea>
      <p class="muted" style="margin:8px 0 0">回答基于当前系统状态与告警，仅供参考；关键操作请以人工判断为准。</p>`,
-    `<button class="btn ghost" data-act="close">取消</button>
-     <button class="btn primary" data-act="send">提问</button>`,
+    `<button class="btn ghost" data-act="newchat">新话题</button>
+     <button class="btn ghost" data-act="close">关闭</button>
+     <button class="btn primary" data-act="send">发送</button>`,
     {
-      send: async () => {
-        const q = ($("aiAskText") && $("aiAskText").value || "").trim();
-        if (!q) { toast("请先输入问题", "warn"); return; }
-        $("modalBody").innerHTML = `<p class="muted"><span class="spinner"></span>思考中…</p>`;
-        try {
-          const data = await routeAI(q, "/api/ai/ask");
-          const ans = (data && typeof data === "object" ? data.text : data) || "";
-          openModal(
-            "🤖 问 AI",
-            `<p style="margin-top:0"><b>问：</b>${escapeHtml(q)}</p>
-             <div style="white-space:pre-wrap; line-height:1.8">${ans ? escapeHtml(ans) : "（AI 没有返回内容，请点「再问一个」重试；若反复出现请换云端供应商对比）"}</div>`,
-            `<button class="btn ghost" data-act="again">再问一个</button>
-             <button class="btn primary" data-act="close">关闭</button>`,
-            { again: () => { closeModal(); aiAsk(); } },
-            { stay: true }
-          );
-        } catch (e) {
-          openModal(
-            "🤖 问 AI",
-            `<p>回答失败：${escapeHtml(e.message)}</p>
-             <p class="muted">如果提示 AI 未配置，请到「设置 → AI 解读」先启用。</p>`,
-            `<button class="btn primary" data-act="close">关闭</button>`,
-            { stay: true }
-          );
-        }
-      },
+      newchat: () => { aiChatHistory = []; renderAiChat(); const i = $("aiChatInput"); if (i) i.focus(); },
+      send: sendAiChat,
     },
     { stay: true }
   );
-  // 回车直接提问
-  const ta = $("aiAskText");
-  if (ta) ta.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); modalActions.send(); }
-  });
+  renderAiChat();
+  const ta = $("aiChatInput");
+  if (ta) {
+    ta.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); sendAiChat(); }
+    });
+    setTimeout(() => ta.focus(), 50);
+  }
+}
+
+async function sendAiChat() {
+  const inp = $("aiChatInput");
+  const btn = document.querySelector("#modalFoot button[data-act='send']");
+  if (!inp) return;
+  const q = (inp.value || "").trim();
+  if (!q) { toast("请先输入内容", "warn"); return; }
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  inp.value = "";
+  aiChatHistory.push({ role: "user", content: q });
+  renderAiChat();
+  const log = $("aiChatLog");
+  if (log) {
+    const think = document.createElement("div");
+    think.innerHTML = `<div style="display:flex;justify-content:flex-start;margin:6px 0"><div class="muted" style="padding:8px 12px"><span class="spinner"></span> 思考中…</div></div>`;
+    log.appendChild(think);
+    log.scrollTop = log.scrollHeight;
+  }
+  try {
+    // history 不含本条（本条作为 question 单传）；最多带最近 20 条防爆
+    const data = await routeAI(q, "/api/ai/ask", "", aiChatHistory.slice(0, -1).slice(-20));
+    const ans = (data && typeof data === "object" ? data.text : data) || "";
+    aiChatHistory.push({ role: "assistant", content: ans || "（AI 没有返回内容，请换个问法重试，或点「新话题」重开）" });
+  } catch (e) {
+    aiChatHistory.push({ role: "assistant", content: "❌ 回答失败：" + e.message + "\n若提示 AI 未配置，请到「设置 → AI 解读」先启用。" });
+  } finally {
+    renderAiChat();
+    if (btn) btn.disabled = false;
+    const i2 = $("aiChatInput");
+    if (i2) i2.focus();
+  }
 }
 
 /* ------------------------- 时间轴 ------------------------- */

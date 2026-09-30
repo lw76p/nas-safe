@@ -332,12 +332,17 @@ def interpret(report_text: str) -> (str, str):
 
 # ---- 进阶能力（预留，后续接自然语言搜文件 / 规则建议） --------------------
 
-def answer(question: str, context: str = "") -> (str, str):
+def answer(question: str, context: str = "", history: list | None = None) -> (str, str):
     cfg = load_config()
     if not is_ready():
         return None, ""
     messages = [
         {"role": "system", "content": "你是 NAS 数据安全助手，用通俗中文回答。"},
-        {"role": "user", "content": (f"背景：{context}\n\n问题：{question}" if context else question)},
     ]
+    # 多轮对话历史：只认 user/assistant 两种角色，单条截断 4000 字、最多 20 条防爆
+    for m in (history or [])[-20:]:
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant") \
+                and isinstance(m.get("content"), str) and m["content"].strip():
+            messages.append({"role": m["role"], "content": m["content"][:4000]})
+    messages.append({"role": "user", "content": (f"背景：{context}\n\n问题：{question}" if context else question)})
     return _chat(messages, cfg)

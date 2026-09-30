@@ -887,7 +887,8 @@ class Handler(BaseHTTPRequestHandler):
                         "；".join(f"[{a.get('level','')}]{a.get('type','')}" for a in alerts[:8])))
                 except Exception:  # noqa: BLE001
                     pass
-                result, err = ai.answer(question, context="\n".join(ctx_parts))
+                history = payload.get("history") if isinstance(payload.get("history"), list) else None
+                result, err = ai.answer(question, context="\n".join(ctx_parts), history=history)
                 if err:
                     self._send_json({"ok": False, "error": err}, 400)
                 elif result is None:
@@ -908,9 +909,14 @@ class Handler(BaseHTTPRequestHandler):
                 if ":11434" not in base:
                     raise StorageError("本地 AI 中转仅支持 Ollama 服务地址（须含 :11434 端口）")
                 ctx = (payload.get("context") or "").strip()
+                history = payload.get("history") if isinstance(payload.get("history"), list) else None
                 messages = []
                 if ctx:
                     messages.append({"role": "system", "content": "你是 NAS 数据安全助手，用通俗中文回答。背景：" + ctx})
+                for m in (history or [])[-20:]:
+                    if isinstance(m, dict) and m.get("role") in ("user", "assistant") \
+                            and isinstance(m.get("content"), str) and m["content"].strip():
+                        messages.append({"role": m["role"], "content": m["content"][:4000]})
                 messages.append({"role": "user", "content": question})
                 local_cfg = {"provider": "ollama", "base_url": base, "model": model or "qwen2.5:7b"}
                 text, err = ai._chat(messages, local_cfg, timeout=120)
