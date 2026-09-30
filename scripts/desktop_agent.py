@@ -53,7 +53,7 @@ CTRL_PORT = 18765          # 本机控制端口（只监听 127.0.0.1，不外�
 PROTOCOL = "nassafe-agent"  # 浏览器拉起本机小助手的自定义协议
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.5"
+AGENT_VER = "1.0.6"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -251,6 +251,43 @@ def agent_stop_remote(timeout=3):
             return json.loads(r.read().decode("utf-8")).get("ok") is True
     except Exception:
         return False
+
+
+def terminate_existing_agents():
+    """强制结束所有正在运行的小助手进程（安装升级前调用，避免文件占用）。"""
+    if os.name != "nt":
+        return
+    # 旧版可能叫 NASSafeAgent.exe，新版叫 桌面助手.exe；安装包也可能出现 NASSafeAgent
+    names = ["桌面助手.exe", "NASSafeAgent.exe", "desktop_agent.py"]
+    killed = False
+    for name in names:
+        try:
+            # taskkill /F /IM 在 Windows cmd 下可用；失败不阻断
+            r = subprocess.run(
+                ["taskkill", "/F", "/IM", name],
+                capture_output=True, timeout=10,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            if r.returncode == 0:
+                killed = True
+        except Exception:
+            pass
+    if killed:
+        # 等进程真正退出，避免复制文件时仍被占用
+        for _ in range(20):
+            still = False
+            try:
+                r = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq 桌面助手.exe"],
+                    capture_output=True, timeout=5,
+                    creationflags=CREATE_NO_WINDOW,
+                )
+                still = "桌面助手.exe" in r.stdout.decode("gbk", "replace")
+            except Exception:
+                pass
+            if not still:
+                break
+            time.sleep(0.3)
 
 
 # --------------------------------------------------------------------------
@@ -487,10 +524,9 @@ def self_install_flow(base_hint=""):
     if not base:
         return None
 
-    # 2) 停掉可能正在运行的旧实例，避免文件占用
-    if agent_online():
-        agent_stop_remote()
-        time.sleep(2)
+    # 2) 强制结束所有正在运行的旧实例（旧版不会自己停，/stop 对旧版可能无效）
+    terminate_existing_agents()
+    time.sleep(2)
 
     # 3) 复制到固定目录
     try:
