@@ -1837,6 +1837,8 @@ $("behaviorBtn").onclick = runBehaviorScan;
 $("aiInterpretBtn").onclick = aiInterpret;
 $("aiDiagnoseBtn").onclick = aiDiagnose;
 $("aiAskBtn").onclick = aiAsk;
+// AI 全页悬浮窗：任意页面点击即可提问（复用 aiAsk 弹窗）
+if ($("aiFabBtn")) $("aiFabBtn").onclick = aiAsk;
 
 $("notifyType").onchange = () => renderNotifyFields($("notifyType").value);
 $("notifySaveBtn").onclick = saveNotify;

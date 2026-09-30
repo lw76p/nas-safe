@@ -842,3 +842,22 @@ code {
   padding: 1px 5px; border-radius: 5px; font-size: 12.5px;
   background: var(--surface-2, rgba(127,140,170,.12));
 }
+
+/* ===== AI 全页悬浮窗：吸附右缘、默认缩进半隐，悬停滑出（任意页面可问 AI）===== */
+#aiFab { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 90; }
+#aiFabBtn {
+  display: flex; align-items: center; gap: 7px;
+  border: none; cursor: pointer; padding: 14px 12px;
+  background: linear-gradient(160deg, #2563eb, #7c3aed);
+  color: #fff; font: inherit; font-size: 14px; font-weight: 600;
+  border-radius: 14px 0 0 14px;
+  box-shadow: -4px 4px 16px rgba(37, 99, 235, .35);
+  transform: translateX(calc(100% - 24px));
+  transition: transform .25s ease;
+}
+#aiFabBtn .ai-fab-txt {
+  max-width: 0; overflow: hidden; white-space: nowrap;
+  transition: max-width .25s ease;
+}
+#aiFab:hover #aiFabBtn, #aiFabBtn:focus-visible { transform: translateX(0); }
+#aiFab:hover .ai-fab-txt, #aiFabBtn:focus-visible .ai-fab-txt { max-width: 64px; }

@@ -708,6 +708,7 @@ class Handler(BaseHTTPRequestHandler):
 
             elif route == "/api/snapshot/revert":
                 # 整卷回滚：破坏性操作。护栏 = confirm 严格 True + 仅 NAS Safe 托管快照
+                print(f"[revert] 收到回滚请求 confirm={payload.get('confirm')} vid={payload.get('volume_id')} sid={payload.get('snapshot_id')}", flush=True)
                 if payload.get("confirm") is not True:
                     self._send_json({
                         "ok": False,
@@ -722,10 +723,12 @@ class Handler(BaseHTTPRequestHandler):
                 # 只允许回滚 NAS Safe 自己创建的快照（与前端 canRevert 判定一致），
                 # 防止误回滚 QTS 系统快照或用户手工建立的无关快照。
                 if not re.match(r"^(auto-|nassafe_|snap-)", snap.name or ""):
+                    print(f"[revert] 拒绝：非托管快照 name={snap.name}", flush=True)
                     raise StorageError(
                         "只允许回滚 NAS Safe 创建的快照（auto-/nassafe_/snap- 前缀）"
                     )
                 storage.revert_volume(snap)
+                print(f"[revert] 回滚命令已提交 vid={vid} sid={sid} name={snap.name}", flush=True)
                 self._send_json({
                     "ok": True, "reverted": True,
                     "volume_id": vid, "snapshot_id": sid,
