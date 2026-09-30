@@ -147,7 +147,7 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   align-items: stretch;
 }
 .metric-card {
-  flex: 1 1 260px;
+  flex: 1 1 230px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -157,6 +157,8 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   border-radius: var(--radius-sm);
   padding: 14px 16px;
 }
+.metric-card-sm { flex: 1 1 210px; }   /* 系统运行状况 / 硬件信息：窄卡 */
+.metric-card-lg { flex: 1.3 1 280px; } /* 存储：宽卡放环形图 */
 .metric-card.mc-warn { border-left-color: var(--amber); }
 .metric-card.mc-bad { border-left-color: var(--red); }
 .metric-card-wide { flex: 1 1 100%; }  /* 磁盘卡独占一整行，芯片横向铺开 */
@@ -253,6 +255,39 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .chip-temp.warn { color: var(--amber); }
 .chip-temp.bad { color: var(--red); }
 .chip-io { font-family: var(--font-mono); font-size: 10px; white-space: normal; word-break: break-all; line-height: 1.3; }
+
+/* 仪表盘交互组件：大字评级 / 下拉选择 / 存储环形图区 */
+.grade-big {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 3px;
+  line-height: 1.2;
+  margin: 2px 0 8px;
+}
+.grade-big.ok { color: var(--green); }
+.grade-big.warn { color: var(--amber); }
+.grade-big.bad { color: var(--red); }
+.mc-select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  padding: 5px 8px;
+  font-size: 12px;
+  max-width: 200px;
+  cursor: pointer;
+}
+.net-sel-row { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.metric-kv.hw { justify-content: space-between; }
+.metric-kv.hw .hw-val {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-weight: 600;
+}
+.storage-flex { display: flex; gap: 18px; align-items: center; }
+.storage-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 
 /* --------------------------- 弹窗选择器（监控路径 / AI 服务） --------------------------- */
 .pick-row {

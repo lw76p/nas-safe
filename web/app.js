@@ -236,6 +236,10 @@ async function loadMetrics(force) {
   }
 }
 
+// 仪表盘交互状态：15s 轮询重渲染后保持用户所选的网卡/存储卷
+let selIface = null;  // null=自动选流量最大的物理网卡
+let selVol = null;    // null=取第一个卷
+
 function renderMetrics(m) {
   const body = $("metricsBody");
   const cap = m.capabilities || {};
@@ -243,41 +247,71 @@ function renderMetrics(m) {
   // 状态评级：0=正常(绿) 1=注意(琥珀) 2=异常(红)。每张卡独立评级。
   const grade = (v, warn, bad) => (v == null ? 0 : v >= bad ? 2 : v >= warn ? 1 : 0);
   const GRADE = { 0: ["ok", "正常"], 1: ["warn", "注意"], 2: ["bad", "异常"] };
+  const BIG = { 0: ["ok", "良好"], 1: ["warn", "注意"], 2: ["bad", "异常"] };
+  const dot = (g) => `<span class="status-dot ${GRADE[g][0]}"></span>`;
   const cardHead = (title, g, extra = "") => {
     const [cls, txt] = GRADE[g];
     return `<h4><span>${title}</span><span class="mc-pill ${cls}">${txt}</span>${extra}</h4>`;
   };
 
-  // 卡1：系统运行状况
+  // 卡1：系统运行状况 —— 大字评级 + 主机名 + 运行时长
   const up = m.uptime || {};
   const gTemp = cap.cpu_temp ? grade(m.cpu.temp_c, 80, 90) : 0;
   const gLoad = grade(m.cpu && m.cpu.load1 != null ? m.cpu.load1 : null, 8, 16);
   const g1 = Math.max(gTemp, gLoad);
-  const tempBad = gTemp === 2;
   const worst1 = gTemp >= gLoad
     ? (gTemp ? (gTemp === 2 ? "CPU 温度过高" : "CPU 温度偏高") : "")
     : (gLoad ? "系统负载过高" : "");
-  let card1 = `
-    <div class="metric-card mc-${GRADE[g1][0]}">
+  const card1 = `
+    <div class="metric-card metric-card-sm mc-${GRADE[g1][0]}">
       ${cardHead("系统运行状况", g1)}
-      <div class="metric-row"><span class="status-dot ${GRADE[g1][0] === "bad" ? "bad" : GRADE[g1][0] === "warn" ? "warn" : "ok"}"></span>
+      <div class="grade-big ${GRADE[g1][0]}">${BIG[g1][1]}</div>
+      <div class="metric-row"><span class="status-dot ${GRADE[g1][0]}"></span>
         <b>${escapeHtml(m.hostname || "NAS")}</b>
         ${worst1 ? `<span class="mc-reason">${worst1}</span>` : ""}</div>
       <div class="metric-kv"><span>运行时间</span><b>${up.days || 0} 天 ${up.hours || 0} 小时 ${up.minutes || 0} 分</b></div>
-      ${cap.cpu_temp ? `<div class="metric-kv"><span>CPU 温度</span><b class="${gTemp === 2 ? "t-warn" : gTemp === 1 ? "t-warn" : "t-ok"}">${m.cpu.temp_c}°C</b></div>` : ""}
-      ${m.cpu && m.cpu.load1 != null ? `<div class="metric-kv"><span>负载</span><b>${m.cpu.load1}</b></div>` : ""}
-      ${cap.fan && m.fan ? (m.fan.cpu_fan_rpm ? `<div class="metric-kv"><span>CPU 风扇</span><b>${m.fan.cpu_fan_rpm} RPM</b></div>` : "") + (m.fan.fan_rpm ? `<div class="metric-kv"><span>机箱风扇</span><b>${m.fan.fan_rpm} RPM</b></div>` : "") : ""}
     </div>`;
 
-  // 卡2：资源监控（网速行首轮用 -- 占位，避免卡片出现/消失引起跳动）
+  // 卡2：硬件信息 —— 温度/风扇/负载清单，逐项状态灯
+  const fanRows = m.fan || {};
+  const hwRow = (label, val, g) =>
+    `<div class="metric-kv hw"><span>${label}</span><span class="hw-val">${val}${dot(g)}</span></div>`;
+  const hasFan = cap.fan && (fanRows.fan_rpm || fanRows.cpu_fan_rpm);
+  const card2 = `
+    <div class="metric-card metric-card-sm mc-${GRADE[g1][0]}">
+      ${cardHead("硬件信息", g1)}
+      ${cap.cpu_temp ? hwRow("CPU 温度", `${m.cpu.temp_c}°C`, gTemp) : ""}
+      ${cap.fan && fanRows.cpu_fan_rpm ? hwRow("CPU 风扇", `${fanRows.cpu_fan_rpm} RPM`, 0) : ""}
+      ${cap.fan && fanRows.fan_rpm ? hwRow("系统风扇", `${fanRows.fan_rpm} RPM`, 0) : ""}
+      ${m.cpu && m.cpu.load1 != null ? hwRow("系统负载", `${m.cpu.load1}`, gLoad) : ""}
+      ${!cap.cpu_temp && !hasFan ? `<p class="muted">此系统未提供硬件传感器</p>` : ""}
+    </div>`;
+
+  // 卡3：资源监控 —— CPU/RAM 环形图 + 网卡下拉切换
   const gCpu = cap.cpu_percent ? grade(m.cpu.percent, 80, 95) : 0;
   const gMem = cap.mem ? grade(m.mem.percent, 80, 90) : 0;
   const g2 = Math.max(gCpu, gMem);
   const hasNet = m.net && m.net.ifaces && m.net.ifaces.length;
-  const fastest = hasNet
-    ? m.net.ifaces.reduce((a, b) => ((b.rx_bps || 0) + (b.tx_bps || 0) > (a.rx_bps || 0) + (a.tx_bps || 0) ? b : a))
-    : null;
-  let card2 = `
+  let netBlock = "";
+  if (hasNet) {
+    // 只列物理网卡（过滤 docker/veth 虚拟口），用户可下拉切换
+    const phys = m.net.ifaces.filter((i) => !i.iface.startsWith("veth") && !i.iface.startsWith("docker"));
+    const pool = phys.length ? phys : m.net.ifaces;
+    if (!selIface || !pool.some((i) => i.iface === selIface)) {
+      selIface = pool.reduce((a, b) =>
+        ((b.rx_bps || 0) + (b.tx_bps || 0) > (a.rx_bps || 0) + (a.tx_bps || 0) ? b : a), pool[0]).iface;
+    }
+    const cur = pool.find((i) => i.iface === selIface) || pool[0];
+    const opts = pool.map((i) =>
+      `<option value="${escapeHtml(i.iface)}" ${i.iface === cur.iface ? "selected" : ""}>${escapeHtml(i.iface)}</option>`).join("");
+    netBlock = `
+      <div class="net-sel-row">
+        <select id="ifaceSel" class="mc-select">${opts}</select>
+        <div class="metric-kv net"><span>↓ ${fmtBps(cur.rx_bps)}</span><span>↑ ${fmtBps(cur.tx_bps)}</span></div>
+      </div>
+      ${m.net.ifaces.length > phys.length ? `<p class="muted" style="margin:4px 0 0">另有 ${m.net.ifaces.length - phys.length} 个虚拟网卡未列出</p>` : ""}`;
+  }
+  const card3 = `
     <div class="metric-card mc-${GRADE[g2][0]}">
       ${cardHead("资源监控", g2)}
       <div class="donut-row">
@@ -285,40 +319,51 @@ function renderMetrics(m) {
         ${cap.mem ? donut("RAM", m.mem.percent, gMem === 2 ? "var(--red)" : gMem === 1 ? "var(--amber)" : "var(--z-monitor)") : ""}
         ${!cap.cpu_percent && !cap.mem ? `<p class="muted">不可用</p>` : ""}
       </div>
-      ${hasNet ? `<div class="metric-kv net"><span>↓ ${fmtBps(fastest.rx_bps)}</span><span>↑ ${fmtBps(fastest.tx_bps)}</span></div>
-      <p class="muted" style="margin:2px 0 0">网卡 ${escapeHtml(fastest.iface)}${m.net.ifaces.length > 1 ? `（共 ${m.net.ifaces.length} 个）` : ""}</p>` : ""}
+      ${netBlock || `<p class="muted">未检测到网卡</p>`}
     </div>`;
 
-  // 卡3：存储（卷用量条）
-  const volRows = (m.volumes || []).map((v) => {
-    const known = state.volumes.find((x) => x.mountpoint === v.mount);
-    const label = known ? known.name : v.mount.split("/").pop() || v.mount;
-    const pct = Math.max(0, Math.min(100, v.percent));
-    return `
-      <div class="vol-meter">
-        <div class="vol-meter-head"><span>${escapeHtml(label)}</span>
-          <span class="muted">${fmtKB(v.used_kb)} / ${fmtKB(v.total_kb)}（${pct}%）</span></div>
-        <div class="meter"><i style="width:${pct}%" class="${pct >= 90 ? "danger" : pct >= 75 ? "warn" : ""}"></i></div>
+  // 卡4：存储 —— 卷下拉切换 + 大环形占用图 + 趋势提示
+  const vols = m.volumes || [];
+  let card4 = "";
+  if (vols.length) {
+    const g3 = vols.reduce((g, v) => Math.max(g, grade(v.percent, 75, 90)), 0);
+    const volLabel = (v) => {
+      const known = state.volumes.find((x) => x.mountpoint === v.mount);
+      return known ? known.name : v.mount.split("/").pop() || v.mount;
+    };
+    if (!selVol || !vols.some((v) => v.mount === selVol)) selVol = vols[0].mount;
+    const cur = vols.find((v) => v.mount === selVol) || vols[0];
+    const pct = Math.max(0, Math.min(100, cur.percent));
+    const gSel = grade(cur.percent, 75, 90);
+    const trend = (m.trends || []).find((t) => t.mount === cur.mount);
+    const trendHtml = trend
+      ? (trend.days_to_full
+        ? `<p class="muted t-warn" style="margin:8px 0 0">📈 按最近增长速度，预计约 <b>${trend.days_to_full} 天后存满</b>，可考虑清理或扩容</p>`
+        : `<p class="muted" style="margin:8px 0 0">📈 在缓慢增长（当前 ${trend.percent}%），暂不用担心</p>`)
+      : "";
+    const volOpts = vols.map((v) =>
+      `<option value="${escapeHtml(v.mount)}" ${v.mount === cur.mount ? "selected" : ""}>${escapeHtml(volLabel(v))}</option>`).join("");
+    const avail = cur.available_kb != null ? cur.available_kb : cur.total_kb - cur.used_kb;
+    card4 = `
+      <div class="metric-card metric-card-lg mc-${GRADE[g3][0]}">
+        ${cardHead("存储", g3)}
+        <select id="volSel" class="mc-select" style="margin-bottom:8px">${volOpts}</select>
+        <div class="storage-flex">
+          <div class="donut-row">${donut(volLabel(cur), pct, gSel === 2 ? "var(--red)" : gSel === 1 ? "var(--amber)" : "var(--z-storage)")}</div>
+          <div class="storage-info">
+            <div class="metric-kv"><span>已使用</span><b>${fmtKB(cur.used_kb)}</b></div>
+            <div class="metric-kv"><span>可用</span><b>${fmtKB(avail)}</b></div>
+            <div class="metric-kv"><span>总容量</span><b>${fmtKB(cur.total_kb)}</b></div>
+          </div>
+        </div>
+        ${trendHtml}
       </div>`;
-  }).join("");
-  const g3 = (m.volumes || []).reduce((g, v) => Math.max(g, grade(v.percent, 75, 90)), 0);
-  // 趋势预警：按近期增速外推"预计几天后存满"（后端规则计算，AI 体检也会引用）
-  const trendNote = (m.trends || []).map((t) => {
-    const label = t.mount.split("/").pop() || t.mount;
-    return t.days_to_full
-      ? `<p class="muted t-warn" style="margin:6px 0 0">📈 ${escapeHtml(label)} 按最近增长速度，预计约 <b>${t.days_to_full} 天后存满</b>，可考虑清理或扩容</p>`
-      : `<p class="muted" style="margin:6px 0 0">📈 ${escapeHtml(label)} 在缓慢增长（当前 ${t.percent}%），暂不用担心</p>`;
-  }).join("");
-  const card3 = (m.volumes || []).length ? `
-    <div class="metric-card mc-${GRADE[g3][0]}">
-      ${cardHead("存储", g3)}
-      ${volRows}
-      ${trendNote}
-    </div>` : "";
+  }
 
-  // 卡4：磁盘槽位图 —— 按类型分组（nvme=M.2，sdX=SATA/HDD），显示容量/温度/实时读写
+  // 卡5：磁盘 —— 独占整行，汇总"n/n 正常" + 按类型分组横向铺开
   const gDisk = (d) => d.temp_c == null ? 0 : grade(d.temp_c, 50, 60);
   const g4 = (m.disks || []).reduce((g, d) => Math.max(g, gDisk(d)), 0);
+  const okCount = (m.disks || []).filter((d) => gDisk(d) === 0).length;
   const ioTxt = (d) => {
     if (d.read_bps == null && d.write_bps == null) return "";
     return `<span class="chip-io">↓${fmtBps(d.read_bps)} ↑${fmtBps(d.write_bps)}</span>`;
@@ -346,13 +391,19 @@ function renderMetrics(m) {
     diskGroups += `<div class="bay-group"><span class="bay-label">3.5"/SATA</span><div class="disk-grid">${
       sata.map((d, i) => chip(d, `HDD ${i + 1}`)).join("")}</div></div>`;
   }
-  const card4 = (m.disks || []).length ? `
+  const card5 = (m.disks || []).length ? `
     <div class="metric-card metric-card-wide mc-${GRADE[g4][0]}">
-      ${cardHead("磁盘", g4, `<span class="muted">（${m.disks.length} 块）</span>`)}
+      ${cardHead("磁盘", g4, `<span class="muted">${okCount}/${m.disks.length} 正常</span>`)}
       ${diskGroups}
     </div>` : "";
 
-  body.innerHTML = card1 + card2 + card3 + card4;
+  body.innerHTML = card1 + card2 + card3 + card4 + card5;
+
+  // 交互绑定：切换网卡/存储卷时局部重渲染（不重新请求，15s 轮询照常）
+  const is = $("ifaceSel");
+  if (is) is.onchange = () => { selIface = is.value; renderMetrics(m); };
+  const vs = $("volSel");
+  if (vs) vs.onchange = () => { selVol = vs.value; renderMetrics(m); };
 }
 
 /* ------------------------- 监控路径选择器 ------------------------- */
