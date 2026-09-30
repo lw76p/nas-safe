@@ -578,12 +578,10 @@ async function pushAnomalyAlert(list) {
     const provider = ($("aiProvider") && $("aiProvider").value) || "";
     if (provider === "ollama") { // 默认规则：本地 AI 时自动生成人话文案
       try {
-        const d = await api("/api/ai/ask", {
-          method: "POST",
-          body: JSON.stringify({
-            question: `请用一句通俗中文（30 字以内）提醒电脑前的用户：${summary}。只输出提醒文案，不要解释。`,
-          }),
-        }, 120000);
+        const d = await routeAI(
+          `请用一句通俗中文（30 字以内）提醒电脑前的用户：${summary}。只输出提醒文案，不要解释。`,
+          "/api/ai/ask"
+        );
         if (d && d.text) body = d.text.trim().slice(0, 60);
       } catch (e) { /* AI 不可用时退回原始摘要 */ }
     }
@@ -656,10 +654,7 @@ async function askAiFix(a) {
     `<button class="btn ghost" data-act="back">返回异常列表</button>`,
     { back: () => openAnomalyModal() });
   try {
-    const data = await api("/api/ai/ask", {
-      method: "POST",
-      body: JSON.stringify({ question: a.q }),
-    }, 120000);
+    const data = await routeAI(a.q, "/api/ai/ask");
     openModal("🤖 AI 修复方案",
       `<p style="margin-top:0"><b>异常：</b>${escapeHtml(a.title)}</p>
        <div style="white-space:pre-wrap; line-height:1.8">${escapeHtml(data.text)}</div>
@@ -769,7 +764,62 @@ async function openPathPicker() {
   };
 }
 
-/* ------------------------- 本地 AI 自动发现 ------------------------- */
+/* ------------------------- 本地 AI：浏览器直连（数据不出本机） ------------------------- */
+
+// 本地 AI 优先从浏览器直接调用用户电脑上的 Ollama / LM Studio（localhost = 用户本机），
+// 不再绕 NAS 容器后端 —— 容器里的 localhost 不是用户电脑，旧方案永远连不上。
+async function callLocalAI(question, context) {
+  const base = (($("aiBase") && $("aiBase").value) || "http://localhost:11434/v1").trim().replace(/\/+$/, "");
+  const model = (($("aiModel") && $("aiModel").value) || "").trim() || "qwen2.5:7b";
+  const messages = [];
+  if (context) messages.push({ role: "system", content: "你是 NAS 数据安全助手，用通俗中文回答。背景：" + context });
+  messages.push({ role: "user", content: question });
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 120000);
+  let res;
+  try {
+    res = await fetch(base + "/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, messages, temperature: 0.3, max_tokens: 1200 }),
+      signal: ctl.signal,
+    });
+  } finally { clearTimeout(t); }
+  if (!res.ok) {
+    let msg = `本地 AI 返回 HTTP ${res.status}`;
+    try { const e = await res.json(); if (e && e.error) msg = typeof e.error === "string" ? e.error : JSON.stringify(e.error); } catch (e) {}
+    throw new Error(msg + "（确认 Ollama 已启动，且启动时设置了 OLLAMA_ORIGINS=* 允许本站点访问）");
+  }
+  const data = await res.json();
+  const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+  if (!text) throw new Error("本地 AI 返回内容为空");
+  return { ok: true, text: String(text).trim() };
+}
+
+// 统一入口：ollama 走浏览器直连；其它供应商走后端（保护密钥）。
+async function routeAI(question, cloudEndpoint, context) {
+  const prov = ($("aiProvider") && $("aiProvider").value) || "";
+  if (prov === "ollama") return await callLocalAI(question, context || "");
+  let body;
+  if (cloudEndpoint === "/api/ai/interpret") body = { text: question };
+  else body = context ? { question, context } : { question };
+  return await api(cloudEndpoint, { method: "POST", body: JSON.stringify(body) }, 120000);
+}
+
+// 从浏览器探测本机 Ollama（localhost:11434）——最常见的本地 AI 部署位置。
+async function probeLocalOllama() {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 3000);
+  try {
+    const res = await fetch("http://localhost:11434/api/tags", { signal: ctl.signal });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const models = (body.models || []).map((m) => m.name).filter(Boolean);
+    return { base_url: "http://localhost:11434/v1", models: models.map((n) => ({ name: n })), recommended: models[0] || "", via: "browser" };
+  } catch (e) {
+    return null;
+  } finally { clearTimeout(t); }
+}
 
 function applyDiscovery(f) {
   $("aiProvider").value = "ollama";
@@ -785,12 +835,20 @@ function applyDiscovery(f) {
 async function aiDiscover() {
   const btn = $("aiDiscoverBtn");
   btn.disabled = true;
-  btn.textContent = "搜索中（约 5-10 秒）…";
+  btn.textContent = "搜索中…";
   try {
+    // 优先从浏览器探测本机 Ollama（localhost = 你的电脑）
+    const local = await probeLocalOllama();
+    if (local) {
+      applyDiscovery(local);
+      toast("已发现本机 Ollama，已自动配置（数据不出你的电脑）", "ok");
+      return;
+    }
+    // 退回后端 LAN 扫描（找 NAS 本机或局域网其它机器上的 Ollama / LM Studio）
     const data = await api("/api/ai/discover", { method: "POST", body: "{}" });
     const found = data.found || [];
     if (!found.length) {
-      toast("没有找到本地 AI 服务。确认 Ollama 已安装（可用 DeployEasy 一键部署），且监听 0.0.0.0", "err");
+      toast("没找到本地 AI。请先在本机安装 Ollama（启动前设 OLLAMA_ORIGINS=*），再点「自动搜索」", "err");
     } else if (found.length === 1) {
       applyDiscovery(found[0]);
     } else {
@@ -904,10 +962,7 @@ function aiAsk() {
         if (!q) { toast("请先输入问题", "warn"); return; }
         $("modalBody").innerHTML = `<p class="muted"><span class="spinner"></span>思考中…</p>`;
         try {
-          const data = await api("/api/ai/ask", {
-            method: "POST",
-            body: JSON.stringify({ question: q }),
-          }, 120000);
+          const data = await routeAI(q, "/api/ai/ask");
           openModal(
             "🤖 问 AI",
             `<p style="margin-top:0"><b>问：</b>${escapeHtml(q)}</p>
@@ -1683,13 +1738,18 @@ function aiProviderChanged() {
   const isOllama = prov === "ollama";
   $("aiBaseRow").style.display = isOllama ? "" : "none";
   $("aiModelRow").style.display = isOllama ? "" : "none";
+  // 切到本地 AI 时自动填好默认值，降低上手门槛
+  if (isOllama) {
+    if (!$("aiBase").value.trim()) $("aiBase").value = "http://localhost:11434/v1";
+    if (!$("aiModel").value.trim()) $("aiModel").value = "qwen2.5:7b";
+  }
   const hint = $("aiHint");
   if (isOllama) {
     hint.innerHTML =
-      "支持 Ollama / LM Studio / llama.cpp / vLLM 等本地模型服务，数据不出 NAS。" +
-      "还没装？用 <b>DeployEasy 一键部署 Ollama</b>（最简单），或点下方「自动搜索」自动发现并配置；" +
-      "手动配置：服务地址填 <code>http://NAS的IP:11434/v1</code> —— " +
-      "注意别填 localhost：NAS Safe 跑在 Docker 里，容器内的 localhost 不是 NAS 本机。";
+      "本地 AI 跑在你自己的电脑上（Ollama / LM Studio 等），数据不出本机，无需密钥。" +
+      "已装 Ollama？启动前先设 <code>OLLAMA_ORIGINS=*</code>（允许本站点访问），" +
+      "再点「自动搜索」即可一键接入；服务地址默认 <code>http://localhost:11434/v1</code>。" +
+      "LM Studio 用户请在设置里打开 CORS。";
   } else {
     const urls = {
       deepseek: "https://platform.deepseek.com",
@@ -1784,10 +1844,10 @@ async function aiInterpret() {
   }
 
   try {
-    const data = await api("/api/ai/interpret", {
-      method: "POST",
-      body: JSON.stringify({ text }),
-    });
+    const data = await routeAI(
+      "请解读以下 NAS 状态报告，用通俗中文指出风险等级，并给出 2-3 条可立即执行的处置建议（300 字以内）：\n\n" + text,
+      "/api/ai/interpret"
+    );
     openModal(
       "AI 解读报告",
       `<div style="white-space:pre-wrap;line-height:1.75;font-size:13.5px;color:var(--text)">${escapeHtml(data.text)}</div>`,
