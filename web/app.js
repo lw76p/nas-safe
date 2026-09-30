@@ -25,19 +25,26 @@ function isQnapSnap(snap) {
 
 /* ------------------------- 网络 ------------------------- */
 
-async function api(path, options = {}) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  let data;
+async function api(path, options = {}, timeoutMs = 10000) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    data = await res.json();
-  } catch {
-    throw new Error(`服务返回了非法响应 (HTTP ${res.status})`);
+    const res = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+      signal: ctl.signal,
+    });
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error(`服务返回了非法响应 (HTTP ${res.status})`);
+    }
+    if (!data.ok) throw new Error(data.error || "未知错误");
+    return data;
+  } finally {
+    clearTimeout(t);
   }
-  if (!data.ok) throw new Error(data.error || "未知错误");
-  return data;
 }
 
 /* ------------------------- 提示 ------------------------- */
@@ -2089,10 +2096,14 @@ setInterval(() => { if (!$("agentChk").disabled) refreshAgentState(); }, 30000);
 $("deskNotifyChk").checked = localStorage.getItem("nassafe_desk_notify") === "1";
 $("deskNotifyChk").onchange = () => localStorage.setItem("nassafe_desk_notify", $("deskNotifyChk").checked ? "1" : "0");
 $("pushTestBtn").onclick = async () => {
+  const btn = $("pushTestBtn");
+  btn.disabled = true;
+  const t0 = toast("正在发送测试提醒…", "");
+  let localOk = false;
   try {
-    // 桌面助手在线时优先本机直推（瞬间到达托盘），再同步走服务端通道
-    let localOk = false;
-    if ((await agentPing()).ok) {
+    // 桌面助手在线时优先本机直推（瞬间到达托盘），成功立即反馈
+    const p = await agentPing();
+    if (p.ok) {
       try {
         const lr = await fetch(`${AGENT_CTRL}/notify`, {
           method: "POST",
@@ -2106,18 +2117,28 @@ $("pushTestBtn").onclick = async () => {
         });
         localOk = lr.ok;
       } catch (_) { localOk = false; }
+      if (localOk) toast("桌面助手已收到测试提醒 ✓", "ok");
     }
-    const r = await api("/api/notify/alert", { method: "POST", body: JSON.stringify({ title: "NAS Safe 测试提醒", detail: "这是一条异常提醒通道的测试消息", level: "warn" }) });
-    const remoteOk = r && r.ok;
-    const parts = [];
-    if (localOk) parts.push("桌面助手");
-    if (remoteOk) parts.push(r.channel || "服务端通道");
-    if (!localOk && !remoteOk) {
-      toast(`推送失败：${(r && r.msg) || "未知"}`, "err");
-    } else {
-      toast(`已推送（${parts.join(" + ")}）`, "ok");
+    // 同时走服务端通道（微信/邮件等），带超时避免卡死
+    try {
+      const r = await api("/api/notify/alert", {
+        method: "POST",
+        body: JSON.stringify({ title: "NAS Safe 测试提醒", detail: "这是一条异常提醒通道的测试消息", level: "warn" })
+      }, 8000);
+      if (r && r.ok) {
+        toast(`已推送（桌面助手 + ${r.channel || "服务端通道"}）`, "ok");
+      } else if (!localOk) {
+        toast("推送失败：" + ((r && (r.msg || r.error)) || "未知"), "err");
+      }
+    } catch (e) {
+      if (!localOk) toast("推送失败：" + (e.message || "未知"), "err");
+      else toast("桌面助手已收到，但服务端通道失败：" + (e.message || "未知"), "warn");
     }
-  } catch (e) { toast("推送失败：" + e.message, "err"); }
+  } catch (e) {
+    toast("推送失败：" + e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
 };
 // 时间轴页：卷切换下拉框 —— 不用回总览，直接换卷看时间轴
 $("tlVolumeSel").onchange = () => {
