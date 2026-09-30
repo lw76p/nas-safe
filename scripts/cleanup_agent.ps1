@@ -1,34 +1,72 @@
-# 一键清理 NAS Safe 桌面助手旧版进程与安装目录
-# 右键「使用 PowerShell 运行」或在管理员/普通 PowerShell 中执行均可
+# 一键彻底清理 NAS Safe 桌面助手（新版 + 旧版 NASSafeAgent）
+# 右键「使用 PowerShell 运行」或在 PowerShell 中执行均可
 $ErrorActionPreference = "SilentlyContinue"
 
-$names = @("桌面助手.exe", "NASSafeAgent.exe", "desktop_agent.py")
+function Stop-AgentProcess {
+    param([string]$name)
+    # 先按进程名结束（不带 .exe）
+    $base = $name -replace '\.exe$',''
+    Get-Process | Where-Object { $_.ProcessName -like "*$base*" } | Stop-Process -Force
+    # 再按 taskkill /F /IM 兜底
+    Start-Process -FilePath "taskkill.exe" -ArgumentList "/F","/IM","$name" -WindowStyle Hidden -Wait
+}
+
+# 1) 结束所有相关进程（新版 + 旧版 + Python 脚本方式）
+$names = @("桌面助手.exe", "NASSafeAgent.exe", "pythonw.exe", "python.exe")
 foreach ($n in $names) {
-    Get-Process | Where-Object { $_.ProcessName -like "*$n*" -or $_.Path -like "*NAS Safe*" } | Stop-Process -Force
+    Stop-AgentProcess $n
+}
+# 额外按路径兜底：任何路径里带 NASSafeAgent / NAS Safe 的进程
+Get-Process | Where-Object {
+    $_.Path -like "*NASSafeAgent*" -or $_.Path -like "*NAS Safe*"
+} | Stop-Process -Force
+
+# 等它们真正退出
+Start-Sleep -Seconds 2
+
+# 2) 删除安装目录
+$dirs = @(
+    (Join-Path $env:APPDATA "NAS Safe 桌面助手"),
+    (Join-Path $env:APPDATA "NASSafeAgent")
+)
+foreach ($dir in $dirs) {
+    if (Test-Path $dir) {
+        Remove-Item -Path $dir -Recurse -Force
+        Write-Host "已删除安装目录：$dir" -ForegroundColor Green
+    } else {
+        Write-Host "安装目录已不存在：$dir" -ForegroundColor Yellow
+    }
 }
 
-# 再强制 taskkill 一轮（处理上面漏掉的）
-foreach ($n in $names) {
-    Start-Process -FilePath "taskkill.exe" -ArgumentList "/F","/IM","$n" -WindowStyle Hidden -Wait
-}
-
-# 删除安装目录
-$dir = Join-Path $env:APPDATA "NAS Safe 桌面助手"
-if (Test-Path $dir) {
-    Remove-Item -Path $dir -Recurse -Force
-    Write-Host "已删除安装目录：$dir" -ForegroundColor Green
-} else {
-    Write-Host "安装目录已不存在：$dir" -ForegroundColor Yellow
-}
-
-# 删除开机自启项（当前用户）
+# 3) 删除开机自启项（当前用户）
 $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-Remove-ItemProperty -Path $regPath -Name "NASSafeAgent" -Force
-Remove-ItemProperty -Path $regPath -Name "NAS Safe 桌面助手" -Force
-Remove-ItemProperty -Path $regPath -Name "nassafe-agent" -Force
+$keys = @("NAS Safe 桌面助手", "NASSafeAgent", "nassafe-agent")
+foreach ($k in $keys) {
+    try {
+        Remove-ItemProperty -Path $regPath -Name $k -Force
+        Write-Host "已删除开机自启项：$k" -ForegroundColor Green
+    } catch {}
+}
 
-# 删除旧版英文自启项
-Remove-ItemProperty -Path $regPath -Name "NASSafeAgent" -Force
+# 4) 删除 nassafe-agent 自定义协议（当前用户）
+$protocolKey = "HKCU:\Software\Classes\nassafe-agent"
+if (Test-Path $protocolKey) {
+    Remove-Item -Path $protocolKey -Recurse -Force
+    Write-Host "已删除自定义协议：nassafe-agent" -ForegroundColor Green
+}
 
-Write-Host "清理完成。现在可以刷新 NAS Safe 网页，下载最新安装包重新安装。" -ForegroundColor Green
+# 5) 确认 18765 端口已释放
+$tcp = Get-NetTCPConnection -LocalPort 18765 -ErrorAction SilentlyContinue
+if ($tcp) {
+    $tcp | ForEach-Object {
+        $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+        Write-Host "端口 18765 仍被占用：PID=$($_.OwningProcess) $($proc.ProcessName)" -ForegroundColor Red
+        try { Stop-Process -Id $_.OwningProcess -Force } catch {}
+    }
+    Start-Sleep -Seconds 1
+} else {
+    Write-Host "端口 18765 已释放" -ForegroundColor Green
+}
+
+Write-Host "`n清理完成。请刷新 NAS Safe 网页，点击「安装 / 重装小助手」重新下载安装。" -ForegroundColor Green
 pause

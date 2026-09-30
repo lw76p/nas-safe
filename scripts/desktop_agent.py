@@ -53,7 +53,7 @@ CTRL_PORT = 18765          # 本机控制端口（只监听 127.0.0.1，不外�
 PROTOCOL = "nassafe-agent"  # 浏览器拉起本机小助手的自定义协议
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.2"
+AGENT_VER = "1.0.6.3"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -265,7 +265,7 @@ def agent_stop_remote(timeout=3):
 
 
 def terminate_existing_agents():
-    """强制结束所有正在运行的小助手进程（安装升级前调用，避免文件占用）。"""
+    """强制结束所有正在运行的小助手进程（安装升级前调用，避免文件占用 / 端口占用）。"""
     if os.name != "nt":
         return
     # 旧版可能叫 NASSafeAgent.exe，新版叫 桌面助手.exe；安装包也可能出现 NASSafeAgent
@@ -283,22 +283,39 @@ def terminate_existing_agents():
                 killed = True
         except Exception:
             pass
-    if killed:
-        # 等进程真正退出，避免复制文件时仍被占用
-        for _ in range(20):
-            still = False
+    if not killed:
+        return
+    # 等进程真正退出，避免复制文件时仍被占用
+    for _ in range(30):
+        still = False
+        for name in names:
             try:
                 r = subprocess.run(
-                    ["tasklist", "/FI", "IMAGENAME eq 桌面助手.exe"],
+                    ["tasklist", "/FI", f"IMAGENAME eq {name}"],
                     capture_output=True, timeout=5,
                     creationflags=CREATE_NO_WINDOW,
                 )
-                still = "桌面助手.exe" in r.stdout.decode("gbk", "replace")
+                if name in r.stdout.decode("gbk", "replace"):
+                    still = True
+                    break
             except Exception:
                 pass
-            if not still:
+        if not still:
+            break
+        time.sleep(0.3)
+    # 额外等待 18765 端口释放，避免新版启动时因端口占用直接退出
+    for _ in range(20):
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            if s.connect_ex(("127.0.0.1", CTRL_PORT)) != 0:
+                s.close()
                 break
-            time.sleep(0.3)
+            s.close()
+        except Exception:
+            break
+        time.sleep(0.3)
 
 
 # --------------------------------------------------------------------------
@@ -537,7 +554,15 @@ def self_install_flow(base_hint=""):
 
     # 2) 强制结束所有正在运行的旧实例（旧版不会自己停，/stop 对旧版可能无效）
     terminate_existing_agents()
-    time.sleep(2)
+
+    # 2.5) 清理旧版安装目录与自启项（旧版目录名 NASSafeAgent 与新版不同）
+    try:
+        old_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "NASSafeAgent")
+        if os.path.isdir(old_dir):
+            shutil.rmtree(old_dir, ignore_errors=True)
+    except Exception:
+        pass
+    remove_autostart()      # 顺带清掉旧英文版残留的自启项
 
     # 3) 复制到固定目录
     try:
@@ -558,7 +583,6 @@ def self_install_flow(base_hint=""):
         return False
 
     # 4) 写配置 / 开机自启 / 协议（都指向安装后的副本）
-    remove_autostart()  # 顺带清掉旧英文版残留的自启项
     interval = int(load_config().get("interval") or DEFAULT_INTERVAL)
     save_config({"nas": base, "interval": interval})
     ensure_autostart(base, interval, exe=dst)
