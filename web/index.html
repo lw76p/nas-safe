@@ -205,16 +205,17 @@
     <div class="set-row">
       <span class="set-label">通道类型</span>
       <select id="notifyType" class="sel-input">
-        <option value="relay">📧 邮件接收（推荐·填邮箱即用）</option>
-        <option value="wechat_service_account">💬 微信服务号（主动推送·核心卖点）</option>
-        <optgroup label="高级自选通道（技术用户）">
-          <option value="webhook">群机器人 Webhook（企微/飞书/钉钉）</option>
-          <option value="bark">Bark（iOS 即时）</option>
-          <option value="ntfy">ntfy（自建/公共）</option>
-          <option value="email">邮件 SMTP（自备邮箱）</option>
+        <option value="relay">📧 邮件接收（现在就能用 · 只填邮箱）</option>
+        <option value="wechat_service_account">💬 微信服务号（微信内强提醒 · 上线后自动成为首选）</option>
+        <optgroup label="极客选项：用你自己的服务（普通用户不用管）">
+          <option value="webhook">群机器人（企业微信 / 飞书 / 钉钉机器人地址）</option>
+          <option value="bark">Bark（iPhone 上装了 Bark 才用）</option>
+          <option value="ntfy">ntfy（自己搭的推送服务）</option>
+          <option value="email">自备邮箱 SMTP（自己填服务器和授权码）</option>
         </optgroup>
       </select>
     </div>
+    <p class="muted" style="margin:6px 0 0">说明：默认由厂商中转，微信是主通道；微信还没开通时自动走邮件。上面「极客选项」是给已有自建服务的用户，多数人不用碰。</p>
     <div id="relayHint" class="notice" style="display:none"></div>
     <div id="notifyFields"></div>
     <div class="set-actions">
