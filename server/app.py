@@ -706,6 +706,31 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     self._send_json(do_restore_file(snapshot_path, relative_file, destination))
 
+            elif route == "/api/snapshot/revert":
+                # 整卷回滚：破坏性操作。护栏 = confirm 严格 True + 仅 NAS Safe 托管快照
+                if payload.get("confirm") is not True:
+                    self._send_json({
+                        "ok": False,
+                        "error": "整卷回滚需要 confirm=true 确认参数",
+                    }, 400)
+                    return
+                vid = (payload.get("volume_id") or "").strip()
+                sid = (payload.get("snapshot_id") or "").strip()
+                if not vid or not sid:
+                    raise StorageError("缺少 volume_id / snapshot_id 参数")
+                snap = find_snapshot(vid, sid)
+                # 只允许回滚 NAS Safe 自己创建的快照（与前端 canRevert 判定一致），
+                # 防止误回滚 QTS 系统快照或用户手工建立的无关快照。
+                if not re.match(r"^(auto-|nassafe_|snap-)", snap.name or ""):
+                    raise StorageError(
+                        "只允许回滚 NAS Safe 创建的快照（auto-/nassafe_/snap- 前缀）"
+                    )
+                storage.revert_volume(snap)
+                self._send_json({
+                    "ok": True, "reverted": True,
+                    "volume_id": vid, "snapshot_id": sid,
+                })
+
             elif route == "/api/agent/status":
                 # 桌面小助手上报在线/离线：离线时提醒改由服务端看门狗走微信/邮件
                 online = str(payload.get("online", "1")).lower() in ("1", "true", "yes", "on")

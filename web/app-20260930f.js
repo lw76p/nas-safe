@@ -1299,6 +1299,7 @@ async function createSnapshot() {
 /* ------------------------- 模态框 ------------------------- */
 
 let modalActions = {};
+let modalHasInput = false;
 
 function openModal(title, body, foot, actions) {
   modalActions = actions || {};
@@ -1317,6 +1318,12 @@ function openModal(title, body, foot, actions) {
   };
 
   if (!foot) $("modalFoot").innerHTML = `<button class="btn ghost" data-act="close">关闭</button>`;
+
+  // 含可编辑输入框（textarea/input）的弹窗：点遮罩 / 按 Esc 都不关闭，
+  // 避免误触把已输入的内容弄丢（如「问 AI」写了一大段突然没了）。
+  // 这类弹窗必须点「取消 / ✕ / 关闭」才关。
+  modalHasInput = !!$("modalBody").querySelector("textarea, input, [contenteditable='true']");
+  $("modalMask").onclick = modalHasInput ? null : closeModal;
 }
 
 function closeModal() {
@@ -1753,7 +1760,8 @@ async function loadSettings() {
     if (cfg.provider) $("aiProvider").value = cfg.provider;
     if (cfg.base_url) $("aiBase").value = cfg.base_url;
     if (cfg.model) $("aiModel").value = cfg.model;
-    // api_key 脱敏为 ***，不回填
+    // 已设置的 Key 回显为 *** 占位，避免强刷后空输入框让用户误以为丢失；保存时 *** 不会被覆盖（由 saveAI 判断）
+    if (cfg.api_key === "***") $("aiKey").value = "***";
   } catch (e) { /* 忽略 */ }
 }
 
@@ -1876,7 +1884,11 @@ $("browseBtn").onclick = () => {
 $("modalClose").onclick = closeModal;
 $("modalMask").onclick = closeModal;
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("modalRoot").hidden) closeModal();
+  if (e.key === "Escape" && !$("modalRoot").hidden) {
+    // 含输入框的弹窗不靠 Esc 关闭，避免误触丢失已输入内容
+    if (modalHasInput) return;
+    closeModal();
+  }
 });
 
 boot();

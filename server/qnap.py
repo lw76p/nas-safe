@@ -356,6 +356,20 @@ class QnapClient:
             _LOCAL_QCLI + "_volumesnapshot", "-d", f"snapshotID={snapshot_id}",
         ])
         parse_delete_ok(out)
+
+    def revert_snapshot(self, volume_id: str, snapshot_id: str) -> None:
+        """整卷回滚到指定快照（破坏性操作）。
+
+        仅限调用方已完成强确认（前端需手输「回滚」二字）后调用。
+        QTS 执行期间卷会短暂不可用；回滚后该快照之后新增/修改的数据将丢失。
+        """
+        if not str(volume_id).strip() or not str(snapshot_id).strip():
+            raise QnapError("整卷回滚缺少 volume_id / snapshot_id")
+        self.login()
+        self._run([
+            _LOCAL_QCLI + "_volumesnapshot", "-r",
+            f"volumeID={volume_id}", f"snapshotID={snapshot_id}",
+        ])
         # 注意：QTS 的删除是异步后台回收，命令返回 ok 后快照会短暂处于
         # "Removing..." 状态，数秒到数十秒后才彻底消失。调用方需轮询确认。
 

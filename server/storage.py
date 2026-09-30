@@ -647,6 +647,22 @@ def delete_snapshot(snapshot: Snapshot) -> None:
     raise StorageError(f"无法删除该类型快照: {snapshot.fs_type}")
 
 
+def revert_volume(snapshot: Snapshot) -> None:
+    """整卷回滚入口（破坏性），按类型分派。
+
+    仅 QNAP 块级快照支持安全回滚；btrfs/zfs 没有可靠的整卷回滚通道，
+    直接拒绝并引导用户改用「浏览并取回文件」这种非破坏性方式。
+    """
+    if snapshot.fs_type == "qnap" and snapshot.snapshot_id:
+        from qnap import revert_snapshot as _qr
+        vid = getattr(snapshot, "volume_id", None) or snapshot.volume
+        _qr(str(vid), snapshot.snapshot_id)
+        return
+    raise StorageError(
+        f"该类型不支持整卷回滚: {snapshot.fs_type}（请改用「浏览并取回文件」）"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 快照浏览 / 单文件取回
 # ---------------------------------------------------------------------------

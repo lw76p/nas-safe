@@ -60,6 +60,7 @@ INCLUDE_TOP = [
     "docs",
     "miniprogram",
     "README.md",
+    "快速上手.md",
     "docker-compose.yml",
     "docker-compose.qnap.yml",
     "Dockerfile",
