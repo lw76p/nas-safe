@@ -986,7 +986,7 @@ function renderAiChat() {
   const log = $("aiChatLog");
   if (!log) return;
   if (!aiChatHistory.length) {
-    log.innerHTML = `<div class="muted" style="text-align:center;padding:26px 10px">💬 用大白话问 NAS 相关问题<br><span style="font-size:12px">支持连续追问、随时补充信息，AI 记得本次对话内容</span></div>`;
+    log.innerHTML = `<div class="muted" style="text-align:center;padding:40px 10px 30px;margin-top:16px">💬 用大白话问 NAS 相关问题<br><span style="font-size:12px">支持连续追问、随时补充信息，AI 记得本次对话内容</span></div>`;
     return;
   }
   log.innerHTML = aiChatHistory.map((m) => {
@@ -1005,8 +1005,8 @@ function aiAsk() {
   aiChatHistory = []; // 每次打开开新会话；会话内多轮共享上下文
   openModal(
     "🤖 问 AI",
-    `<div id="aiChatLog" style="min-height:200px;max-height:54vh;overflow-y:auto;padding:6px 2px 10px;margin-bottom:10px;border-bottom:1px solid var(--border)"></div>
-     <textarea id="aiChatInput" class="text-input" rows="3" style="display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:66px;line-height:1.6"
+    `<div id="aiChatLog" style="flex:1 1 auto;min-height:120px;max-height:54vh;overflow-y:auto;padding:6px 2px 10px;margin-bottom:10px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;"></div>
+     <textarea id="aiChatInput" class="text-input" rows="3" style="display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:86px;line-height:1.6"
        placeholder="输入问题，回车发送（Shift+回车换行）。AI 答完可继续追问或补充信息。"></textarea>
      <p class="muted" style="margin:8px 0 0">回答基于当前系统状态与告警，仅供参考；关键操作请以人工判断为准。</p>`,
     `<button class="btn ghost" data-act="newchat">新话题</button>
