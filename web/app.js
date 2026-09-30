@@ -864,12 +864,36 @@ async function testNotify() {
   }
 }
 
+// 供应商切换：联动 API Key 是否必填 + 显示对应的引导提示（本地 Ollama 附带安装指引）。
+function aiProviderChanged() {
+  const prov = $("aiProvider").value;
+  const isOllama = prov === "ollama";
+  $("aiBaseRow").style.display = isOllama ? "" : "none";
+  $("aiModelRow").style.display = isOllama ? "" : "none";
+  const hint = $("aiHint");
+  if (isOllama) {
+    hint.innerHTML =
+      "本地 Ollama 免密钥，数据不出 NAS。还没装？" +
+      "① 用 <b>DeployEasy 一键部署 Ollama</b>（最简单），或到 ollama.com 手动安装；" +
+      "② 装好拉一个模型：<code>ollama pull qwen2.5:7b</code>；" +
+      "③ 服务地址填 <code>http://NAS的IP:11434/v1</code> —— " +
+      "注意别填 localhost：NAS Safe 跑在 Docker 里，容器内的 localhost 不是 NAS 本机。";
+  } else {
+    hint.textContent = "去对应平台申请一个 API Key 粘贴到上面即可（DeepSeek 最便宜，国内直连）。数据将发送给该云端供应商。";
+  }
+}
+
 async function saveAI() {
+  const prov = $("aiProvider").value;
+  const keyVal = ($("aiKey").value || "").trim();
   const cfg = {
     enabled: $("aiEnabled").checked,
-    provider: $("aiProvider").value,
-    api_key: ($("aiKey").value || "").trim(),
+    provider: prov,
+    base_url: ($("aiBase").value || "").trim(),
+    model: ($("aiModel").value || "").trim(),
   };
+  // 空值或脱敏占位 *** 都不传 api_key，由后端保留旧 Key
+  if (keyVal && keyVal !== "***") cfg.api_key = keyVal;
   try {
     const data = await api("/api/ai/config", { method: "POST", body: JSON.stringify(cfg) });
     toast(
@@ -903,6 +927,8 @@ async function loadSettings() {
     const cfg = ac.config || {};
     $("aiEnabled").checked = !!cfg.enabled;
     if (cfg.provider) $("aiProvider").value = cfg.provider;
+    if (cfg.base_url) $("aiBase").value = cfg.base_url;
+    if (cfg.model) $("aiModel").value = cfg.model;
     // api_key 脱敏为 ***，不回填
   } catch (e) { /* 忽略 */ }
 }
@@ -981,6 +1007,7 @@ $("aiInterpretBtn").onclick = aiInterpret;
 $("notifyType").onchange = () => renderNotifyFields($("notifyType").value);
 $("notifySaveBtn").onclick = saveNotify;
 $("notifyTestBtn").onclick = testNotify;
+$("aiProvider").onchange = aiProviderChanged;
 $("aiSaveBtn").onclick = saveAI;
 // 输入即暂存到 draft，切换通道类型时不丢已填内容
 $("notifyFields").addEventListener("input", (e) => {
@@ -1033,6 +1060,8 @@ restoreAutoMonitor();
 
 // 加载已保存的通知 / AI 设置到面板
 loadSettings();
+// 按当前供应商显示 AI 引导提示（Ollama 附安装指引）
+aiProviderChanged();
 
 // 篡改检测告警轮询：每 30s 拉一次 /api/alerts，发现异常则顶栏告警
 pollAlerts();

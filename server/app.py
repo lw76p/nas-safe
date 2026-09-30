@@ -525,6 +525,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(cfg, dict):
                     raise StorageError("配置格式错误")
                 cfg.setdefault("enabled", False)
+                # 前端对已存 Key 脱敏为 ***，二次保存时不传 api_key —— 此处保留旧值，避免被空值冲掉
+                if not str(cfg.get("api_key") or "").strip() or cfg.get("api_key") == "***":
+                    old = ai.load_config()
+                    if old.get("api_key"):
+                        cfg["api_key"] = old["api_key"]
                 ai.save_config(cfg)
                 self._send_json({"ok": True, "ready": ai.is_ready(), "config": ai.load_config()})
 

@@ -229,6 +229,15 @@
       <span class="set-label">API Key</span>
       <input id="aiKey" class="text-input" placeholder="云端供应商填这里；本地 Ollama 留空">
     </div>
+    <div class="set-row" id="aiBaseRow" style="display:none">
+      <span class="set-label">服务地址</span>
+      <input id="aiBase" class="text-input" placeholder="http://NAS的IP:11434/v1">
+    </div>
+    <div class="set-row" id="aiModelRow" style="display:none">
+      <span class="set-label">模型</span>
+      <input id="aiModel" class="text-input" placeholder="qwen2.5:7b">
+    </div>
+    <p class="muted" id="aiHint" style="margin:8px 0 0; line-height:1.8"></p>
     <div class="set-actions">
       <button class="btn primary" id="aiSaveBtn">保存 AI 设置</button>
     </div>
