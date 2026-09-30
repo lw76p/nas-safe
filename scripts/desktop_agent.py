@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.6"
+AGENT_VER = "1.0.6.7"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -86,14 +86,24 @@ def http_json(url, timeout=15, method="GET", body=None):
 # --------------------------------------------------------------------------
 def notify(title, text, level="info"):
     """弹出提醒：优先自定义 toast 弹窗（必现，不依赖系统通知权限），
-    同时尝试托盘气球作为补充；若托盘尚未启动，改用系统弹窗兜底。"""
+    同时尝试托盘气球作为补充；若 UI 线程彻底起不来，用系统弹窗兜底。
+
+    注意：toast 由专用 UI 线程承载，与调用方所在线程无关，因此从 HTTP
+    控制线程（网页发测试消息）或轮询线程调用都不会再出现跨线程建 Tk 崩溃。
+    """
+    # 托盘气球作为补充（Win10/11 可能静默路由到操作中心，不保证可见）
     if _TRAY and getattr(_TRAY, "hwnd", None):
         _TRAY.balloon(title, text, level)
-        show_toast(title, text, on_click=getattr(_TRAY, "on_open", None))
+    # toast 走专用 UI 线程
+    root = _ensure_ui_thread()
+    if root is not None:
+        show_toast(title, text,
+                   on_click=getattr(_TRAY, "on_open", None) if _TRAY else None)
         return True
-    # 兜底：仅用于安装失败等极罕见场景，平时不会走到这里
+    # 兜底：至少弹个系统消息框，保证"有提醒"
     try:
-        ctypes.windll.user32.MessageBoxW(None, str(text), str(title), 0x00000030 | 0x00001000)
+        ctypes.windll.user32.MessageBoxW(None, str(text), str(title),
+                                         0x00000030 | 0x00001000)
     except Exception:
         pass
     return False
@@ -102,37 +112,80 @@ def notify(title, text, level="info"):
 # --------------------------------------------------------------------------
 # 自定义 Toast 弹窗（右下角、必现、可点击；不依赖 Windows 通知子系统，
 # 规避 Win10/11 对非打包 Win32 程序 classic 气球静默吞掉的问题）
+#
+# 关键修复：所有 tk 弹窗统一跑在【一个专用 UI 线程】上，该线程持有唯一
+# tk.Tk() 根窗口（隐藏），新弹窗用 Toplevel 挂到这个根上，并通过
+# root.after(0, ...) 调度到 UI 线程执行。旧实现在每条通知里新建线程直接
+# new Tk()，触发 Tcl/Tk 跨线程初始化崩溃（被 except 静默吞掉），表现为
+# "收到提醒但没有气泡"。本方案彻底避免多线程建 Tk。
 # --------------------------------------------------------------------------
+_UI_THREAD = None
+_UI_ROOT = None
+_UI_READY = threading.Event()
+_UI_LOCK = threading.Lock()
+
 _TOAST_SEQ = 0
 _TOAST_LOCK = threading.Lock()
 
 
+def _ui_thread_main():
+    import tkinter as tk
+    global _UI_ROOT
+    try:
+        root = tk.Tk()
+        root.withdraw()            # 隐藏根窗口，仅作容器
+        root.attributes("-topmost", False)
+        _UI_ROOT = root
+    except Exception:
+        _UI_ROOT = None
+    finally:
+        _UI_READY.set()
+    if _UI_ROOT is not None:
+        try:
+            _UI_ROOT.mainloop()
+        except Exception:
+            pass
+
+
+def _ensure_ui_thread():
+    """确保专用 UI 线程已启动并返回其 Tk 根；失败返回 None。"""
+    global _UI_THREAD
+    with _UI_LOCK:
+        if _UI_THREAD is None or not _UI_THREAD.is_alive():
+            _UI_READY.clear()
+            _UI_THREAD = threading.Thread(target=_ui_thread_main, daemon=True,
+                                         name="nassafe-ui")
+            _UI_THREAD.start()
+            _UI_READY.wait(timeout=5)
+    return _UI_ROOT
+
+
 def show_toast(title, body, on_click=None, timeout_ms=6000):
-    """右下角弹出自定义提醒框；自动消失，点击可触发 on_click（通常是打开收件箱）。"""
-    def _run():
+    """右下角弹出自定义提醒框；自动消失，点击可触发 on_click（通常是打开收件箱）。
+
+    弹窗始终在专用 UI 线程创建，避免多线程 new Tk() 导致的静默崩溃。
+    """
+    def _make(root):
         try:
             import tkinter as tk
-            root = tk.Tk()
-            root.overrideredirect(True)
-            root.attributes("-topmost", True)
-            try:
-                root.attributes("-toolwindow", True)  # 不进任务栏 / Alt-Tab
-            except Exception:
-                pass
-            root.configure(bg="#0f172a")
-
             w, h = 320, 104
             sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
             with _TOAST_LOCK:
                 global _TOAST_SEQ
                 seq = _TOAST_SEQ % 4
                 _TOAST_SEQ += 1
-            # 多弹窗时向上错开，避免完全重叠
-            root.geometry(f"{w}x{h}+{sw - w - 20}+{sh - h - 60 - seq * (h + 8)}")
+            win = tk.Toplevel(root)
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+            try:
+                win.attributes("-toolwindow", True)   # 不进任务栏 / Alt-Tab
+            except Exception:
+                pass
+            win.configure(bg="#0f172a")
+            win.geometry(f"{w}x{h}+{sw - w - 20}+{sh - h - 60 - seq * (h + 8)}")
 
-            frame = tk.Frame(root, bg="#0f172a")
+            frame = tk.Frame(win, bg="#0f172a")
             frame.pack(fill="both", expand=True, padx=12, pady=10)
-
             tk.Label(frame, text=title, bg="#0f172a", fg="#38bdf8",
                      font=("Microsoft YaHei UI", 11, "bold"),
                      anchor="w", justify="left").pack(fill="x")
@@ -142,7 +195,7 @@ def show_toast(title, body, on_click=None, timeout_ms=6000):
 
             def _close():
                 try:
-                    root.destroy()
+                    win.destroy()
                 except Exception:
                     pass
 
@@ -151,13 +204,18 @@ def show_toast(title, body, on_click=None, timeout_ms=6000):
                 if on_click:
                     threading.Thread(target=on_click, daemon=True).start()
 
-            root.bind("<Button-1>", _click)
-            root.after(timeout_ms, _close)
-            root.mainloop()
+            win.bind("<Button-1>", _click)
+            win.after(timeout_ms, _close)
         except Exception:
             pass
 
-    threading.Thread(target=_run, daemon=True).start()
+    root = _ensure_ui_thread()
+    if root is None:
+        return
+    try:
+        root.after(0, lambda: _make(root))
+    except Exception:
+        pass
 
 
 
