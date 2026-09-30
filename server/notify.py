@@ -177,11 +177,18 @@ def _send_wechat_sa(ch: dict, text: str, alerts: list, events: list) -> (bool, s
     secret = ch.get("appsecret", "").strip()
     template_id = ch.get("template_id", "").strip()
     openid = ch.get("openid", "").strip()
-    if not all([appid, secret, template_id, openid]):
-        return False, "缺少 appid/appsecret/template_id/openid"
-    token, err = get_wechat_access_token(appid, secret)
-    if err:
-        return False, err
+    # 厂商云端中继（推荐）：NAS 家庭动态 IP 不在微信 API 白名单，直连必 40164。
+    # 中继部署在固定 IP 云服务器上，统一持有 appid/secret 并代发模板消息。
+    relay_url = (ch.get("relay_url") or os.environ.get("NASSAFE_WECHAT_RELAY_URL", "")).strip()
+    relay_token = (ch.get("relay_token") or os.environ.get("NASSAFE_WECHAT_RELAY_TOKEN", "")).strip()
+    if relay_url:
+        if not (template_id and openid):
+            return False, "缺少 template_id/openid"
+        if not relay_token:
+            return False, "缺少 relay_token（云端中继共享密钥）"
+    else:
+        if not all([appid, secret, template_id, openid]):
+            return False, "缺少 appid/appsecret/template_id/openid（或配置 relay_url 走云端中继）"
     # 把动态压进模板字段
     first = "NAS Safe 检测到新的安全动态" if (alerts or events) else "NAS Safe 心跳"
     keyword1 = "告警" if alerts else "信息"
@@ -197,6 +204,11 @@ def _send_wechat_sa(ch: dict, text: str, alerts: list, events: list) -> (bool, s
             "remark": {"value": remark},
         },
     }
+    if relay_url:
+        return _http_post_json(relay_url, payload, token=relay_token)
+    token, err = get_wechat_access_token(appid, secret)
+    if err:
+        return False, err
     url = f"https://api.weixin.qq.com/cgi-bin/message/template/send?access_token={token}"
     return _http_post_json(url, payload)
 
