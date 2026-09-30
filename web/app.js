@@ -171,7 +171,8 @@ function updateOverview() {
   $("ovSnaps").textContent = snaps || "0";
 
   // 防护状态卡：颜色跟随真实状态（绿=全部已保护；琥珀=有待保护项），避免固定琥珀色被误读为告警
-  const guardCard = $("ovGuard").closest(".ov-card");
+  const guard = $("ovGuard");
+  const guardCard = guard.closest(".ov-card");
   if (!units) {
     guard.textContent = "—"; guard.className = "ov-num";
     guardCard.className = "ov-card zone-guard";
