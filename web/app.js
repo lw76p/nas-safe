@@ -62,10 +62,7 @@ async function boot() {
     const sys = await api("/api/system");
     state.system = sys.system;
     const s = sys.system;
-    $("sysLine").textContent =
-      `${s.os_name} · 内核 ${s.kernel}` +
-      (s.is_container ? " · 容器内运行" : "") +
-      ` · 可用文件系统：${s.fs_available.join(", ") || "无"}`;
+    // 顶栏不再外露系统细节（内核/文件系统等黑话），保持产品化文案（index.html 静态文案）
 
     setStatus("已连接", "ok");
 
