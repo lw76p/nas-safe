@@ -1876,10 +1876,13 @@ function showNotifyPermGuide(why) {
     ${steps}
     <div id="permState" class="notice" style="margin-top:10px">正在检查当前权限…</div>`;
 
+  const verifyLabel = isHttps
+    ? "立即允许（浏览器会弹询问框）"
+    : "我已在浏览器里允许，点击验证";
   const foot = `
     <button class="btn ghost" data-act="agent">改用桌面小助手</button>
     <button class="btn ghost" data-act="close">稍后再说</button>
-    <button class="btn primary" data-act="verify">我已在浏览器里允许，点击验证</button>`;
+    <button class="btn primary" data-act="verify">${verifyLabel}</button>`;
 
   const refresh = async () => {
     const box = $("permState");
