@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.4"
+AGENT_VER = "1.0.6.5"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -506,6 +506,41 @@ def register_protocol(exe=None):
         return True
     except Exception as e:
         print("注册协议失败：", e, file=sys.stderr)
+        return False
+
+
+def _protocol_command_exe():
+    """读取当前注册表 nassafe-agent 协议指向的 exe 路径；解析失败返回 None。"""
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             rf"Software\Classes\{PROTOCOL}\shell\open\command")
+        cmd, _ = winreg.QueryValueEx(key, "")
+        winreg.CloseKey(key)
+        # 命令形如："C:\...\桌面助手.exe" --protocol "%1"
+        parts = cmd.split('"')
+        if len(parts) >= 2:
+            return parts[1]
+    except Exception:
+        pass
+    return None
+
+
+def repair_protocol():
+    """如果注册表里的协议指向的不是当前 exe（比如被清理/重装后目录变化），自动重写为当前 exe。"""
+    if os.name != "nt":
+        return False
+    try:
+        exe = sys.executable
+        registered = _protocol_command_exe()
+        if registered and os.path.normcase(os.path.abspath(registered)) == os.path.normcase(os.path.abspath(exe)):
+            return True  # 已经正确
+        print(f"协议指向 {registered}，与当前 exe {exe} 不一致，重新注册…", file=sys.stderr)
+        return register_protocol(exe=exe)
+    except Exception as e:
+        print("修复协议失败：", e, file=sys.stderr)
         return False
 
 
@@ -1629,6 +1664,7 @@ def handle_protocol(raw):
 
 
 def run_agent(base, interval, first=False, once=False, no_ui=False):
+    repair_protocol()  # 守护启动前自愈协议注册（重装/清理后指向可能错误）
     start_control_server()
     atexit.register(report_offline, base)  # 任何退出路径都上报离线，让 NAS 接管微信提醒
     report_online(base, force=True)
