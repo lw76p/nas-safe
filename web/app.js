@@ -810,12 +810,14 @@ async function callLocalAIViaNAS(question, context) {
 async function routeAI(question, cloudEndpoint, context) {
   const prov = ($("aiProvider") && $("aiProvider").value) || "";
   if (prov === "ollama") {
+    // 统一返回 {text} 对象——调用方（问AI/解读/异常文案）都按 data.text 取答案；
+    // 本地路径此前返回纯字符串，曾致回答渲染为空（答案"丢失"）。
     try {
-      return await callLocalAI(question, context || "");
+      return { text: await callLocalAI(question, context || "") };
     } catch (directErr) {
       // 直连失败（最常见 = 未设系统级 OLLAMA_ORIGINS 被 CORS 拦），自动改走 NAS 中转
       try {
-        return await callLocalAIViaNAS(question, context || "");
+        return { text: await callLocalAIViaNAS(question, context || "") };
       } catch (relayErr) {
         throw new Error(directErr.message + "\n[NAS 中转也失败] " + relayErr.message);
       }
@@ -984,10 +986,11 @@ function aiAsk() {
         $("modalBody").innerHTML = `<p class="muted"><span class="spinner"></span>思考中…</p>`;
         try {
           const data = await routeAI(q, "/api/ai/ask");
+          const ans = (data && typeof data === "object" ? data.text : data) || "";
           openModal(
             "🤖 问 AI",
             `<p style="margin-top:0"><b>问：</b>${escapeHtml(q)}</p>
-             <div style="white-space:pre-wrap; line-height:1.8">${escapeHtml(data.text)}</div>`,
+             <div style="white-space:pre-wrap; line-height:1.8">${ans ? escapeHtml(ans) : "（AI 没有返回内容，请点「再问一个」重试；若反复出现请换云端供应商对比）"}</div>`,
             `<button class="btn ghost" data-act="again">再问一个</button>
              <button class="btn primary" data-act="close">关闭</button>`,
             { again: () => { closeModal(); aiAsk(); } }
