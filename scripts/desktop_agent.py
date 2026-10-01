@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.12"
+AGENT_VER = "1.0.6.14"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -125,9 +125,10 @@ def notify(title, text, level="info"):
 # 由专用后台线程持有消息循环，其它线程（HTTP 控制线程 / 轮询线程）通过 PostMessage
 # 线程安全地请求显示；弹窗初始化失败时回退系统 MessageBoxW，保证"至少有提醒"。
 # --------------------------------------------------------------------------
-_TOAST_BG = 0x2A170F       # #0f172a -> BGR
+_TOAST_BG = 0xFFFFFF       # 白色卡片底（BGR=RGB）
+_TOAST_TITLE = 0xC78402    # #0284c7 标题深蓝 -> BGR
 _TOAST_ACCENT = 0xF8BD38   # #38bdf8 -> BGR
-_TOAST_FG = 0xF0E8E2       # #e2e8f0 -> BGR
+_TOAST_FG = 0x554133       # #334155 正文深灰 -> BGR
 
 
 class _RECT(ctypes.Structure):
@@ -282,6 +283,8 @@ class ToastManager:
             g32.CreateFontIndirectW.restype = ctypes.c_void_p
             g32.SetTextColor.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
             g32.SetTextColor.restype = ctypes.c_uint32
+            g32.SetBkMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            g32.SetBkMode.restype = ctypes.c_int
 
             # 微软雅黑字体：标题加粗、正文常规，保证中文清晰可见
             self._hinst = k32.GetModuleHandleW(None)
@@ -321,9 +324,10 @@ class ToastManager:
                             return 0
                         return u32.DefWindowProcW(hwnd, msg, wparam, lparam)
                     # 以下为 toast 弹窗
-                    if msg == 0x0133:       # WM_CTLCOLORSTATIC：给子文本控件上色
+                    if msg == 0x0138:       # WM_CTLCOLORSTATIC：给子文本控件上色（0x0133 是 WM_CTLCOLOREDIT，Static 收不到！）
                         color = manager._colors.get(int(lparam), _TOAST_FG)
                         try:
+                            g32.SetBkMode(int(wparam), 1)      # TRANSPARENT：去字形背景块
                             g32.SetTextColor(int(wparam), color)
                         except Exception:
                             pass
@@ -348,9 +352,9 @@ class ToastManager:
 
             self._wndproc = WNDPROC(_wndproc)
 
-            # 主卡片窗口类：深色背景刷（系统自动填充卡片）
+            # 主卡片窗口类：背景刷（系统自动填充卡片）+ 投影
             cls = _WNDCLASSW()
-            cls.style = 0
+            cls.style = 0x00020000          # CS_DROPSHADOW
             cls.lpfnWndProc = ctypes.cast(self._wndproc, ctypes.c_void_p)
             cls.hInstance = self._hinst
             cls.hbrBackground = self._bg_brush
@@ -425,9 +429,9 @@ class ToastManager:
             0x40000000 | 0x10000000,                    # WS_CHILD | WS_VISIBLE
             16, 12, w - 32, 24, hwnd, None, self._hinst, None)
         if title_w:
-            u32.SetWindowTextW(title_w, str(title))
+            self._colors[int(title_w)] = _TOAST_TITLE
             u32.SendMessageW(title_w, 0x0030, self._font_title, 1)   # WM_SETFONT
-            self._colors[int(title_w)] = _TOAST_ACCENT
+            u32.SetWindowTextW(title_w, str(title))
 
         # 正文（常规浅色，自动换行）；同样必须 WS_VISIBLE
         body_w = u32.CreateWindowExW(
@@ -435,11 +439,18 @@ class ToastManager:
             0x40000000 | 0x10000000 | 0x00000020 | 0x00000080,   # WS_CHILD|WS_VISIBLE|SS_WORDBREAK|SS_NOPREFIX
             16, 40, w - 32, h - 52, hwnd, None, self._hinst, None)
         if body_w:
-            u32.SetWindowTextW(body_w, str(body))
-            u32.SendMessageW(body_w, 0x0030, self._font_body, 1)
             self._colors[int(body_w)] = _TOAST_FG
+            u32.SendMessageW(body_w, 0x0030, self._font_body, 1)
+            u32.SetWindowTextW(body_w, str(body))
 
         try:
+            # Win11 圆角（DWMWA_WINDOW_CORNER_PREFERENCE=33, DWMWCP_ROUND=2）；Win10 忽略
+            try:
+                pref = ctypes.c_int(2)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    ctypes.c_void_p(hwnd), 33, ctypes.byref(pref), ctypes.sizeof(pref))
+            except Exception:
+                pass
             # 显式钉到右下角、置顶、不抢焦点
             u32.SetWindowPos(hwnd, -1, x, y, w, h,
                              0x0010 | 0x0040)           # SWP_NOACTIVATE | SWP_SHOWWINDOW
