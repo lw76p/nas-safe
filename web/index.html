@@ -110,6 +110,23 @@
     </div>
   </section>
 
+  <!-- 每日健康日报概览（免费留存钩子） -->
+  <section class="panel zone zone-monitor" id="dailyGlance" data-view="home" style="margin-top:14px">
+    <div class="panel-head">
+      <div class="zone-head">
+        <span class="zone-ico">📋</span>
+        <div>
+          <h2>每日健康日报</h2>
+          <p class="sub">每天自动汇总「快照保护 / 告警 / 可释放空间 / 硬盘健康」，推送到你的微信或邮箱——让你天天看得到产品在干活（纯免费）</p>
+        </div>
+      </div>
+    </div>
+    <div id="dailyGlanceBody" class="notice">正在加载上次日报…</div>
+    <div class="set-actions">
+      <button class="btn ghost" id="dailyGlanceOpen">去设置推送时间</button>
+    </div>
+  </section>
+
   <!-- 功能区一：存储单元 -->
   <section class="panel zone zone-storage" id="storageZone" data-view="home">
     <div class="panel-head">
@@ -293,6 +310,21 @@
     <div class="set-actions">
       <button class="btn ghost" id="autoSnapRunBtn">立即执行一次</button>
       <button class="btn primary" id="autoSnapSaveBtn">保存自动快照设置</button>
+    </div>
+
+    <h3 class="sub-h">每日健康日报（免费 · 天天帮你盯着）</h3>
+    <p class="muted" style="margin:6px 0 8px">每天定时把「快照保护 / 告警 / 可释放空间 / 硬盘健康」汇成一张卡片，推送到你已配置的通知通道。让你天天看得到产品在干活——纯免费功能。</p>
+    <label class="chk-inline"><input type="checkbox" id="dailyEnabled"> 开启每日健康日报</label>
+    <div class="set-row">
+      <span class="set-label">推送时间</span>
+      <input id="dailyHour" class="text-input" type="number" min="0" max="23" value="8" style="width:64px"> :
+      <input id="dailyMinute" class="text-input" type="number" min="0" max="59" value="0" style="width:64px">
+      <span class="muted">时 : 分（当地时间）</span>
+    </div>
+    <div id="dailyLast" class="notice" style="display:none"></div>
+    <div class="set-actions">
+      <button class="btn ghost" id="dailyRunBtn">立即发送一次</button>
+      <button class="btn primary" id="dailySaveBtn">保存日报设置</button>
     </div>
 
     <h3 class="sub-h">AI 解读</h3>

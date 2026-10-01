@@ -69,6 +69,7 @@ import metrics  # noqa: E402  系统指标采集（仪表盘：CPU/RAM/温度/�
 import anomalies  # noqa: E402  异常判定 + 主动推送看门狗（小助手关闭时接管微信提醒）
 import duplicates  # noqa: E402  重复文件清理（只读报告 + 隔离式软删除）
 import junk  # noqa: E402  磁盘垃圾清理（回收站/缩略图/Docker缓存/旧日志，只读报告+按类清理）
+import daily_report  # noqa: E402  每日健康日报（定时聚合快照/告警/空间/硬盘，复用通知链路推送）
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
@@ -628,6 +629,13 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"ok": True, "empty": True})
                 else:
                     self._send_json({"ok": True, **rpt})
+            elif route == "/api/daily-report":
+                # 返回日报配置 + 上次报告（前端设置页与首页概览共用）
+                self._send_json({
+                    "ok": True,
+                    "config": daily_report.load_config(),
+                    "last": daily_report.load_last(),
+                })
             elif route == "/api/system":
                 self._send_json(build_system_info())
             elif route == "/api/volumes":
@@ -1032,6 +1040,24 @@ class Handler(BaseHTTPRequestHandler):
                     payload.get("category"), payload.get("confirm") is True,
                     payload.get("paths"), payload.get("categories")))
 
+            elif route == "/api/daily-report/run":
+                # 立即生成并推送一次每日健康日报（手动测试 / 即时发送）
+                self._send_json(daily_report.send_daily())
+
+            elif route == "/api/daily-report/config":
+                # 保存日报开关与推送时间（hour/minute）
+                cfg = daily_report.load_config()
+                if "enabled" in payload:
+                    cfg["enabled"] = bool(payload.get("enabled"))
+                h = payload.get("hour")
+                m = payload.get("minute")
+                if isinstance(h, int) and 0 <= h <= 23:
+                    cfg["hour"] = h
+                if isinstance(m, int) and 0 <= m <= 59:
+                    cfg["minute"] = m
+                daily_report.save_config(cfg)
+                self._send_json({"ok": True, "config": cfg})
+
             else:
                 self._send_json({"ok": False, "error": f"未知接口: {route}"}, 404)
 
@@ -1071,6 +1097,11 @@ def main() -> None:
     try:
         # 异常看门狗：小助手被关闭/网页没开时，接管微信服务号等远端提醒
         anomalies.start_watchdog(int(os.environ.get("NASSAFE_WATCHDOG_INTERVAL", "120")))
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    try:
+        # 每日健康日报：每天定时聚合快照/告警/空间/硬盘，经通知链路推送到用户通道
+        daily_report.start_scheduler()
     except Exception:  # noqa: BLE001
         traceback.print_exc()
     try:

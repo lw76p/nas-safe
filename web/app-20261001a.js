@@ -951,6 +951,7 @@ function onEnterView(name) {
       loadSnapshots(); // 卷已恢复但时间轴还没拉过：补拉（幂等，重复调用不会双载）
   } else if (name === "home") {
     loadMetrics();
+    loadDailyGlance();
   } else if (name === "dups") { refreshDupStatus(); loadDupReport(); }
   else if (name === "junk") { refreshJunkStatus(); loadJunkReport(); }
 }
@@ -1960,6 +1961,7 @@ async function loadSettings() {
     // 已设置的 Key 回显为 *** 占位，避免强刷后空输入框让用户误以为丢失；保存时 *** 不会被覆盖（由 saveAI 判断）
     if (cfg.api_key === "***") $("aiKey").value = "***";
   } catch (e) { /* 忽略 */ }
+  loadDaily();
 }
 
 // 把报告（存储单元 + 告警 + 系统）交给 AI 翻译成大白话 + 处置建议。
@@ -2523,6 +2525,12 @@ loadAutoSnap();
 $("autoSnapSaveBtn").onclick = saveAutoSnap;
 $("autoSnapRunBtn").onclick = runAutoSnap;
 
+// ---- 每日健康日报 ----
+loadDaily();
+$("dailySaveBtn").onclick = saveDaily;
+$("dailyRunBtn").onclick = runDaily;
+$("dailyGlanceOpen").onclick = () => showView("settings");
+
 function loadAutoSnap() {
   api("/api/autosnapshot").then((d) => {
     if (!d || !d.ok) return;
@@ -2573,6 +2581,95 @@ function runAutoSnap() {
       st.className = "notice warn";
       st.textContent = "执行失败：" + (e && e.message ? e.message : e);
     });
+}
+
+/* ------------------------- 每日健康日报 ------------------------- */
+
+function loadDaily() {
+  api("/api/daily-report").then((d) => {
+    if (!d || !d.ok) return;
+    const c = d.config || {};
+    $("dailyEnabled").checked = !!c.enabled;
+    $("dailyHour").value = c.hour != null ? c.hour : 8;
+    $("dailyMinute").value = c.minute != null ? c.minute : 0;
+    renderDailyLast(d.last);
+  }).catch(() => {});
+}
+
+function nextDailyTime(c) {
+  const now = new Date();
+  const h = c.hour != null ? c.hour : 8;
+  const m = c.minute != null ? c.minute : 0;
+  let t = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
+  if (t.getTime() <= now.getTime() + 30000) t.setDate(t.getDate() + 1);
+  const pad = (x) => String(x).padStart(2, "0");
+  return `每天 ${pad(h)}:${pad(m)}（下次 ${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}）`;
+}
+
+function loadDailyGlance() {
+  const box = $("dailyGlanceBody");
+  if (!box) return;
+  api("/api/daily-report").then((d) => {
+    if (!d || !d.ok) { box.className = "notice"; box.textContent = "日报模块未就绪"; return; }
+    const c = d.config || {};
+    const last = d.last;
+    let html = "";
+    if (!c.enabled) {
+      html = `📴 日报未开启 —— ${nextDailyTime(c)} 自动推送（需在设置里开启并配置通知通道）。<br><span class="muted">开启后，每天把一份健康卡片安静地送到你微信/邮箱。</span>`;
+    } else if (last && last.report) {
+      const r = last.report;
+      html = `✅ 已开启 · ${nextDailyTime(c)}<br>` +
+        `<div class="muted" style="margin-top:6px;line-height:1.8">上次（${escapeHtml(last.sent_at || "")}）：${escapeHtml(r.summary || "")}</div>`;
+    } else {
+      html = `✅ 已开启 · ${nextDailyTime(c)}<br><span class="muted" style="margin-top:6px;display:inline-block">还没发过，点「立即发送一次」试试，或等下次定时推送。</span>`;
+    }
+    box.className = "notice";
+    box.innerHTML = html;
+  }).catch(() => { box.className = "notice warn"; box.textContent = "加载日报概览失败"; });
+}
+
+function renderDailyLast(last) {
+  const box = $("dailyLast");
+  if (!last) { box.style.display = "none"; return; }
+  box.style.display = "block";
+  box.className = "notice";
+  const r = last.report || {};
+  const sent = last.dispatch || {};
+  let ch = "";
+  if (sent.enabled === false) ch = "（通知总开关未开，仅本地存档，未推送）";
+  else if (sent.sent) {
+    const ok = sent.sent.filter((x) => x.ok).map((x) => x.channel);
+    ch = ok.length ? "上次已推送：" + ok.join("、") : "上次推送失败：" + ((sent.sent[0] || {}).msg || "");
+  }
+  box.innerHTML =
+    `<div style="white-space:pre-wrap;line-height:1.7;margin-bottom:6px">` +
+    escapeHtml(last.text || "") +
+    `</div><div class="muted">发送时间 ${escapeHtml(last.sent_at || "")} ${escapeHtml(ch)}</div>`;
+}
+
+function saveDaily() {
+  const cfg = {
+    enabled: $("dailyEnabled").checked,
+    hour: parseInt($("dailyHour").value, 10) || 0,
+    minute: parseInt($("dailyMinute").value, 10) || 0,
+  };
+  api("/api/daily-report/config", { method: "POST", body: JSON.stringify(cfg) })
+    .then(() => toast("每日健康日报设置已保存", "ok"))
+    .catch((e) => toast("保存失败：" + (e && e.message ? e.message : e), "err"));
+}
+
+function runDaily() {
+  const st = $("dailyLast");
+  st.style.display = "block";
+  st.className = "notice";
+  st.textContent = "正在生成并推送日报（远程模式需数秒）…";
+  api("/api/daily-report/run", { method: "POST", body: "{}" })
+    .then((d) => {
+      if (!d || !d.ok) { st.className = "notice warn"; st.textContent = "失败：" + ((d && d.error) || "未知"); return; }
+      renderDailyLast(d);
+      toast("每日健康日报已发送", "ok");
+    })
+    .catch((e) => { st.className = "notice warn"; st.textContent = "失败：" + (e && e.message ? e.message : e); });
 }
 
 /* ------------------------- 重复文件清理 ------------------------- */
