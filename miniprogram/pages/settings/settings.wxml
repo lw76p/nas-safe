@@ -16,7 +16,7 @@
       <text class="badge {{notifyEnabled === true ? 'ok' : (notifyEnabled === false ? 'muted' : 'info')}}">{{notifyEnabled === true ? '已启用' : (notifyEnabled === false ? '未启用' : '检测中')}}</text>
     </view>
     <view class="row">
-      <text>AI 解读</text>
+      <text>AI 配置</text>
       <text class="badge {{aiEnabled === true ? 'ok' : (aiEnabled === false ? 'muted' : 'info')}}">{{aiEnabled === true ? '已启用' : (aiEnabled === false ? '未启用' : '检测中')}}</text>
     </view>
     <view class="muted small" style="margin-top:10rpx;">「未启用」表示当前后端为旧版，需在 NAS 上升级 NAS Safe 后端。</view>

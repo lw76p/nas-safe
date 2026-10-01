@@ -23,7 +23,7 @@ FILES = [
     ("server/app.py", "/app/server/app.py"),
     ("scripts/desktop_agent.py", "/app/scripts/desktop_agent.py"),
     ("web/app.js", "/app/web/app.js"),
-    ("web/app-20261001a.js", "/app/web/app-20261001a.js"),
+    ("web/app-20261001b.js", "/app/web/app-20261001b.js"),
     ("web/index.html", "/app/web/index.html"),
     ("web/style.css", "/app/web/style.css"),
     ("web/style-20261001a.css", "/app/web/style-20261001a.css"),
