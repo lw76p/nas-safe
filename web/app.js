@@ -1807,8 +1807,8 @@ function renderNotifyFields(type) {
   if (type === "relay" && hint) {
     hint.style.display = "block";
     hint.textContent = window.__relayAvailable
-      ? "✅ 厂商邮件中继已就绪：填邮箱即可接收报警，无需任何 Key。"
-      : "⚠️ 厂商邮件中继尚未配置（需厂商设置 NASSAFE_RELAY_APIKEY）。可改用下方高级通道，或联系厂商开通。";
+      ? "✅ 厂商邮件代发已就绪：填邮箱即可接收报警，无需任何 Key。"
+      : "⚠️ 厂商邮件代发尚未配置（需厂商设置 NASSAFE_RELAY_APIKEY）。可改用下方高级通道，或联系厂商开通。";
   } else if (hint) {
     hint.style.display = "none";
   }
@@ -1833,6 +1833,16 @@ async function saveNotify() {
     toast("保存失败：" + e.message, "err");
   }
 }
+
+const CHANNEL_LABELS = {
+  relay: "邮件",
+  wechat_service_account: "微信服务号",
+  webhook: "群机器人",
+  bark: "Bark",
+  ntfy: "ntfy",
+  email: "自备邮箱 SMTP",
+};
+function channelLabel(ch) { return CHANNEL_LABELS[ch] || ch || "服务端通道"; }
 
 async function testNotify() {
   const ch = gatherNotifyChannel();
@@ -2213,7 +2223,7 @@ function showDesktopAgentGuide() {
        <li><b>右键解压</b>到任意文件夹，双击里面的 <code>桌面助手.exe</code></li>
        <li>自动弹出「安装 NAS Safe 助手」窗口并显示进度，几秒后提示「安装完成」——
            <b>不用选地址、不用填任何东西</b></li>
-       <li>右下角出现蓝色盾牌图标（和软件同色），鼠标放上去显示「NAS Safe · 快照保护中」</li>
+       <li>右下角出现绿色盾牌图标（和软件同色），鼠标放上去显示「NAS Safe · 快照保护中」</li>
      </ol>
      <p class="muted">不需要安装 Python，也不需要管理员权限。<br>
        若 Windows 提示「已保护你的电脑」：点 <b>更多信息 → 仍要运行</b>（未签名软件的正常提示）。<br>
@@ -2446,8 +2456,8 @@ $("pushTestBtn").onclick = async () => {
         body: JSON.stringify({ title: "NAS Safe 测试提醒", detail: "这是一条异常提醒通道的测试消息", level: "warn" })
       }, 8000);
       if (r && r.ok) {
-        toast(`已推送（桌面助手 + ${r.channel || "服务端通道"}）`, "ok");
-        setTestResult(`✓ 已推送（桌面助手 + ${r.channel || "服务端通道"}）`);
+        toast(`已推送（桌面助手 + ${channelLabel(r.channel)}）`, "ok");
+        setTestResult(`✓ 已推送（桌面助手 + ${channelLabel(r.channel)}）`);
       } else if (!localOk) {
         toast("推送失败：" + ((r && (r.msg || r.error)) || "未知"), "err");
         setTestResult("✗ 推送失败：" + ((r && (r.msg || r.error)) || "未知"));
