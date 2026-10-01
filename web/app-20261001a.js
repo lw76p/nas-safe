@@ -1,5 +1,5 @@
 /* NAS Safe — 前端逻辑 */
-const APP_JS_VER = "20261001a";
+const APP_JS_VER = "20261001b";
 
 const $ = (id) => document.getElementById(id);
 
@@ -2648,69 +2648,150 @@ function renderDupReport(d) {
     box.innerHTML = `<p class="muted">当前没有重复文件报告，或上次扫描没发现重复 —— 选个目录扫一下吧。${d.scanned_at ? `（上次扫描 ${escapeHtml(String(d.scanned_at).slice(0, 16).replace("T", " "))}，未发现重复）` : ""}</p>`;
     return;
   }
-  const totalWasted = d.wasted_bytes || 0;
+
+  // ---- 推荐引擎：广告词命中 / 原始版识别 / 置信度标注 ----
+  const AD_RE = /(公众号|广告|推广|宣传|加微信|扫码关注|领福利|douyin|抖音号)/i;
+  const COPY_RE = /(\(\d+\)|\[\d+\]|副本|copy|备份|\.bak)/i;
+  const baseName = (p) => (p.split("/").pop() || p);
+  const stemOf = (p) => {
+    const b = baseName(p);
+    const dot = b.lastIndexOf(".");
+    return (dot > 0 ? b.slice(0, dot) : b).replace(COPY_RE, "").trim();
+  };
+
+  // 每组预处理：标记广告命中、判断能否自动推荐
+  // 能自动 = 广告版与干净版并存（无脑留干净版）；或去掉 (1)/副本 等后缀后文件名相同（纯改名副本）
+  const entries = (d.groups || []).map((g) => {
+    const files = g.files.map((f) => ({ ...f, ad: AD_RE.test(f.path) }));
+    const nonAd = files.filter((f) => !f.ad);
+    const hasAdSplit = nonAd.length > 0 && nonAd.length < files.length;
+    const stemsEqual = new Set(files.map((f) => stemOf(f.path))).size === 1;
+    return { g, files, nonAd, manual: !(hasAdSplit || stemsEqual) };
+  });
+
+  const sizeMap = {};
+  entries.forEach((en) => en.files.forEach((f) => { sizeMap[f.path] = f.size; }));
+
+  const mtimeOf = (f) => f.mtime || 0;
+  const baseLen = (f) => baseName(f.path).length;
+
+  // 按策略选组内该保留的文件（manual 组也算出推荐项，供展示但默认不勾）
+  function pickKeep(en, policy) {
+    const pool = policy === "recommend" && en.nonAd.length ? en.nonAd : en.files;
+    const sorted = [...pool];
+    if (policy === "newest") sorted.sort((a, b) => mtimeOf(b) - mtimeOf(a) || baseLen(a) - baseLen(b));
+    else if (policy === "shortest") sorted.sort((a, b) => baseLen(a) - baseLen(b) || mtimeOf(a) - mtimeOf(b));
+    else sorted.sort((a, b) => mtimeOf(a) - mtimeOf(b) || baseLen(a) - baseLen(b));
+    return sorted[0].path;
+  }
+
+  const KEEP_LABEL = { recommend: "原始版", earliest: "最早版本", shortest: "名最短", newest: "最新版本" };
+
+  // 自动组排前、人工组排后；各自按可释放空间降序
+  entries.sort((a, b) => (a.manual - b.manual) || (b.g.wasted - a.g.wasted));
+  const manualCount = entries.filter((en) => en.manual).length;
+
   const head = `
     <div class="dup-summary">
       <b>${d.group_count} 组重复内容</b>
-      <span class="muted">扫描 ${escapeHtml(d.root)} · ${fmtBytes(totalWasted)} 可释放 · 报告时间 ${escapeHtml(String(d.scanned_at).slice(0, 16).replace("T", " "))}</span>
-      <span class="dup-actions">
-        <button class="btn ghost" id="dupSelResetBtn">默认勾选（每组留一份）</button>
-        <button class="btn ghost" id="dupSelNoneBtn">清空勾选</button>
-        <button class="btn primary" id="dupQuarantineBtn">移入隔离区</button>
+      <span class="muted">扫描 ${escapeHtml(d.root)} · 全清可释放 ${fmtBytes(d.wasted_bytes || 0)} · ${escapeHtml(String(d.scanned_at).slice(0, 16).replace("T", " "))}</span>
+      <span class="dup-policy">
+        <span class="muted">保留策略</span>
+        <label><input type="radio" name="dupPolicy" value="recommend" checked> 推荐</label>
+        <label><input type="radio" name="dupPolicy" value="earliest"> 保留最早</label>
+        <label><input type="radio" name="dupPolicy" value="shortest"> 文件名最短</label>
+        <label><input type="radio" name="dupPolicy" value="newest"> 保留最新</label>
       </span>
+    </div>
+    <div class="dup-cta">
+      <div>
+        <div id="dupCtaText">正在计算推荐…</div>
+        ${manualCount ? `<div class="muted dup-cta-sub">${manualCount} 组文件名差异较大、无法自动判断，默认未勾选，请展开核对</div>` : ""}
+      </div>
+      <button class="btn primary dup-cta-btn" id="dupQuarantineBtn" disabled>按推荐清理</button>
     </div>`;
 
-  const groups = (d.groups || []).map((g, gi) => {
-    const rows = g.files.map((f, fi) => {
+  const html = entries.map((en, i) => {
+    const g = en.g;
+    const rows = en.files.map((f) => {
       const when = f.mtime ? new Date(f.mtime * 1000).toLocaleString("zh-CN", { hour12: false }) : "";
+      const bn = baseName(f.path);
+      const dir = f.path.slice(0, f.path.length - bn.length);
+      const nameHtml = f.ad
+        ? `<bdi>${escapeHtml(dir)}<mark class="dup-mark">${escapeHtml(bn)}</mark></bdi>`
+        : `<bdi>${escapeHtml(f.path)}</bdi>`;
       return `
         <label class="pick-row dup-file">
-          <input type="checkbox" class="dup-cb" data-path="${escapeAttr(f.path)}" ${fi > 0 ? "checked" : ""}>
-          <span class="dup-path" title="${escapeAttr(f.path)}">${escapeHtml(f.path)}</span>
+          <input type="checkbox" class="dup-cb" data-path="${escapeAttr(f.path)}">
+          <span class="dup-path" title="${escapeAttr(f.path)}">${nameHtml}</span>
+          <span class="dup-badge" data-path="${escapeAttr(f.path)}" data-ad="${f.ad ? 1 : 0}"></span>
           <span class="dup-meta">${fmtBytes(f.size)}${when ? " · " + escapeHtml(when) : ""}</span>
         </label>`;
     }).join("");
     return `
-      <div class="dup-group">
+      <div class="dup-group${en.manual ? " dup-manual" : ""}" data-manual="${en.manual ? 1 : 0}" data-gi="${i}">
         <div class="dup-group-head">
-          <b>组 ${gi + 1}</b>
-          <span class="muted">内容完全相同 · 单个 ${fmtBytes(g.size)} × ${g.files.length} 份 · 清掉多余的可释放 ${fmtBytes(g.wasted)}</span>
+          <b>组 ${i + 1} / ${entries.length}</b>
+          <span class="muted">内容完全相同 · 单个 ${fmtBytes(g.size)} × ${en.files.length} 份 · 可释放 ${fmtBytes(g.wasted)}</span>
+          ${en.manual
+            ? `<span class="dup-flag dup-flag-warn">建议人工确认</span>`
+            : `<span class="dup-flag dup-flag-ok" data-role="flag"></span>`}
         </div>
         ${rows}
+        ${en.manual ? `<div class="dup-manual-note">文件名差异大且没有广告词，系统不猜哪份是原版 —— 核对后手动勾选多余的（每组至少保留一份）。</div>` : ""}
       </div>`;
   }).join("");
 
-  box.innerHTML = head + groups;
+  box.innerHTML = head + `<div class="dup-groups">${html}</div>`;
 
-  const checkedInfo = () => {
-    const cbs = [...box.querySelectorAll(".dup-cb:checked")];
-    const total = cbs.reduce((s, cb) => {
-      const f = findFileByPath(cb.dataset.path);
-      return s + (f ? f.size : 0);
-    }, 0);
-    return { n: cbs.length, bytes: total };
-  };
-
-  // 报告内 path → file 尺寸映射（勾选统计用）
-  const sizeMap = {};
-  (d.groups || []).forEach((g) => g.files.forEach((f) => { sizeMap[f.path] = f.size; }));
-  function findFileByPath(p) { return sizeMap.hasOwnProperty(p) ? { size: sizeMap[p] } : null; }
-
-  $("dupSelResetBtn").onclick = () => {
+  function applySelection() {
+    const policyEl = box.querySelector('input[name="dupPolicy"]:checked');
+    const policy = policyEl ? policyEl.value : "recommend";
     box.querySelectorAll(".dup-group").forEach((grp) => {
-      grp.querySelectorAll(".dup-cb").forEach((cb, i) => (cb.checked = i > 0));
+      const en = entries[Number(grp.dataset.gi)];
+      const keep = pickKeep(en, policy);
+      grp.querySelectorAll(".dup-cb").forEach((cb) => {
+        cb.checked = !en.manual && cb.dataset.path !== keep;
+      });
+      const flag = grp.querySelector('[data-role="flag"]');
+      if (flag) flag.textContent = "自动保留 " + KEEP_LABEL[policy];
+      grp.querySelectorAll(".dup-badge").forEach((b) => {
+        if (b.dataset.path === keep) {
+          b.textContent = "保留 · " + (en.manual ? "推荐" : KEEP_LABEL[policy]);
+          b.className = "dup-badge dup-badge-keep";
+        } else if (b.dataset.ad === "1") {
+          b.textContent = "删 · 含广告词";
+          b.className = "dup-badge dup-badge-del";
+        } else {
+          b.textContent = "删 · 多余副本";
+          b.className = "dup-badge dup-badge-del";
+        }
+      });
     });
-  };
-  $("dupSelNoneBtn").onclick = () => {
-    box.querySelectorAll(".dup-cb").forEach((cb) => (cb.checked = false));
-  };
+    updateSummary();
+  }
+
+  function updateSummary() {
+    const cbs = [...box.querySelectorAll(".dup-cb:checked")];
+    const bytes = cbs.reduce((s, cb) => s + (sizeMap[cb.dataset.path] || 0), 0);
+    const btn = $("dupQuarantineBtn");
+    $("dupCtaText").innerHTML = cbs.length
+      ? `已为你勾选 <b>${cbs.length}</b> 项 · 将释放 <b class="dup-free">${fmtBytes(bytes)}</b> · 每组保留一份`
+      : `当前没有勾选任何文件 —— 切换保留策略或手动勾选（每组至少保留一份）`;
+    btn.textContent = cbs.length ? `清理 ${cbs.length} 项（释放 ${fmtBytes(bytes)}）` : "按推荐清理";
+    btn.disabled = !cbs.length;
+  }
+
+  box.querySelectorAll('input[name="dupPolicy"]').forEach((r) => { r.onchange = applySelection; });
+  applySelection();
+
   $("dupQuarantineBtn").onclick = () => {
     const paths = [...box.querySelectorAll(".dup-cb:checked")].map((cb) => cb.dataset.path);
     if (!paths.length) { toast("请先勾选要清理的文件（每组至少保留一份）", "warn"); return; }
-    const info = checkedInfo();
+    const bytes = paths.reduce((s, p) => s + (sizeMap[p] || 0), 0);
     openModal(
       "确认移入隔离区",
-      `<p>即将把 <b>${paths.length}</b> 个文件（约 ${fmtBytes(info.bytes)}）移入隔离目录。</p>
+      `<p>即将把 <b>${paths.length}</b> 个文件（约 ${fmtBytes(bytes)}）移入隔离目录。</p>
        <p class="muted">文件<b>不会被删除</b>，只是移动到「.nassafe-quarantine」隔离目录，随时可以在下方一键恢复原位。同一组重复内容会自动至少保留一份。</p>`,
       `<button class="btn ghost" data-act="close">取消</button>
        <button class="btn primary" data-act="ok">确认移入隔离区</button>`,
