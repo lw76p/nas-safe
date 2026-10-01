@@ -204,6 +204,9 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 }
 .tab.active[data-view="snapshots"] { background: var(--z-snapshot-soft); border-color: var(--z-snapshot); }
 .tab.active[data-view="monitor"] { background: var(--z-monitor-soft); border-color: var(--z-monitor); }
+.monitor-dot { display: inline-block; transition: color .2s ease; margin-right: 3px; }
+.monitor-dot-on { color: var(--z-monitor); }
+.monitor-dot-off { color: var(--text-3); }
 .tab.active[data-view="settings"] { background: var(--z-guard-soft); border-color: var(--z-guard); }
 
 /* --------------------------- 系统仪表盘 --------------------------- */

@@ -1645,6 +1645,12 @@ async function runBehaviorScan(silent = false) {
 
 // 开启后按选定间隔自动跑 v2 深度校验（默认每 5 分钟）；可选附带 v3 勒索行为扫描。
 // 自动模式下静默成功提示（只更新结果区与顶栏横幅），避免每 5 分钟弹一次 toast 打扰用户；
+function updateMonitorDot(on) {
+  const dot = $("monitorDot");
+  if (!dot) return;
+  dot.className = "monitor-dot " + (on ? "monitor-dot-on" : "monitor-dot-off");
+}
+
 // 失败仍提示，便于第一时间发现监控链路异常。
 function startAutoMonitor() {
   stopAutoMonitor();
@@ -1656,6 +1662,7 @@ function startAutoMonitor() {
     if ($("autoBehavior").checked) runBehaviorScan(true);
   }, ms);
   state.autoMonitor = true;
+  updateMonitorDot(true);
 }
 
 function stopAutoMonitor() {
@@ -1664,6 +1671,7 @@ function stopAutoMonitor() {
     state.autoMonitorTimer = null;
   }
   state.autoMonitor = false;
+  updateMonitorDot(false);
 }
 
 // 刷新页面后按 localStorage 恢复自动监控状态（关闭页面不会丢失监控中状态）
@@ -1676,6 +1684,8 @@ function restoreAutoMonitor() {
   if (on) {
     $("autoMonitor").checked = true;
     startAutoMonitor();
+  } else {
+    updateMonitorDot(false);
   }
   updateOverview();
 }
