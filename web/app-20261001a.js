@@ -1,5 +1,5 @@
 /* NAS Safe — 前端逻辑 */
-const APP_JS_VER = "20260930f";
+const APP_JS_VER = "20261001a";
 
 const $ = (id) => document.getElementById(id);
 
@@ -918,8 +918,8 @@ async function aiDiscover() {
 
 
 
-// 顶栏标签页：总览 / 快照时间轴 / 实时监控 / 设置；风险横幅全局常驻。
-const VIEWS = ["home", "snapshots", "monitor", "settings"];
+// 顶栏标签页：总览 / 快照时间轴 / 实时监控 / 重复文件 / 设置；风险横幅全局常驻。
+const VIEWS = ["home", "snapshots", "monitor", "dups", "settings"];
 
 function applyView() {
   const view = localStorage.getItem("nassafe_view") || "home";
@@ -940,6 +940,8 @@ function showView(name) {
   if (name === "snapshots" && !state.activeVolume) autoSelectVolume();
   // 回到主页时立即刷新仪表盘
   if (name === "home") loadMetrics();
+  // 进入重复文件页：恢复扫描进度 + 上次报告与隔离区
+  if (name === "dups") { refreshDupStatus(); loadDupReport(); }
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -2561,3 +2563,293 @@ function runAutoSnap() {
       st.textContent = "执行失败：" + (e && e.message ? e.message : e);
     });
 }
+
+/* ------------------------- 重复文件清理 ------------------------- */
+// 原则：扫描只读出报告；清理 = 移入隔离区（软删除，可恢复）；每组至少保留一份。
+
+function fmtBytes(n) {
+  if (n == null || isNaN(n)) return "--";
+  const u = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let i = 0, v = Number(n);
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i];
+}
+
+let dupPollTimer = null;
+
+function dupSetStatus(html, kind) {
+  const st = $("dupStatus");
+  if (!html) { st.style.display = "none"; return; }
+  st.style.display = "block";
+  st.className = "notice" + (kind ? " " + kind : "");
+  st.innerHTML = html;
+}
+
+async function startDupScan() {
+  const root = ($("dupRoot").value || "").trim();
+  if (!root) { toast("请先填写或选择要扫描的目录", "warn"); return; }
+  const btn = $("dupScanBtn");
+  btn.disabled = true;
+  try {
+    await api("/api/duplicates/scan", {
+      method: "POST",
+      body: JSON.stringify({ root }),
+    }, 15000);
+    toast("扫描已开始，正在清点文件…", "ok");
+    pollDupStatus();
+  } catch (e) {
+    toast("启动扫描失败：" + e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function pollDupStatus() {
+  clearInterval(dupPollTimer);
+  dupPollTimer = setInterval(refreshDupStatus, 2000);
+  refreshDupStatus();
+}
+
+async function refreshDupStatus() {
+  let st;
+  try { st = await api("/api/duplicates/status"); } catch { return; }
+  if (st.status === "scanning") {
+    if (st.phase === "inventory") {
+      dupSetStatus(`<span class="spinner"></span>正在清点文件… 已发现 ${st.files_seen} 个（隐藏目录 / 回收站 / 系统目录自动跳过）`);
+    } else if (st.phase === "hash") {
+      const pct = st.candidate_bytes
+        ? Math.min(99, Math.round((st.hashed_bytes / st.candidate_bytes) * 100))
+        : 0;
+      dupSetStatus(`<span class="spinner"></span>正在逐字节比对 ${st.candidates} 个疑似重复文件… ${pct}%（${fmtBytes(st.hashed_bytes)} / ${fmtBytes(st.candidate_bytes)}）`);
+    } else {
+      dupSetStatus(`<span class="spinner"></span>扫描中…`);
+    }
+  } else {
+    if (dupPollTimer) { clearInterval(dupPollTimer); dupPollTimer = null; }
+    if (st.status === "error") {
+      dupSetStatus("扫描失败：" + escapeHtml(st.error || "未知"), "warn");
+    } else if (st.status === "done") {
+      dupSetStatus("");
+    }
+  }
+}
+
+async function loadDupReport() {
+  refreshDupStatus();
+  let d;
+  try { d = await api("/api/duplicates/report"); } catch { return; }
+  renderDupReport(d);
+  loadDupQuarantine();
+}
+
+function renderDupReport(d) {
+  const box = $("dupResults");
+  if (d.empty || !d.groups || !d.groups.length) {
+    box.innerHTML = `<p class="muted">当前没有重复文件报告，或上次扫描没发现重复 —— 选个目录扫一下吧。${d.scanned_at ? `（上次扫描 ${escapeHtml(String(d.scanned_at).slice(0, 16).replace("T", " "))}，未发现重复）` : ""}</p>`;
+    return;
+  }
+  const totalWasted = d.wasted_bytes || 0;
+  const head = `
+    <div class="dup-summary">
+      <b>${d.group_count} 组重复内容</b>
+      <span class="muted">扫描 ${escapeHtml(d.root)} · ${fmtBytes(totalWasted)} 可释放 · 报告时间 ${escapeHtml(String(d.scanned_at).slice(0, 16).replace("T", " "))}</span>
+      <span class="dup-actions">
+        <button class="btn ghost" id="dupSelResetBtn">默认勾选（每组留一份）</button>
+        <button class="btn ghost" id="dupSelNoneBtn">清空勾选</button>
+        <button class="btn primary" id="dupQuarantineBtn">移入隔离区</button>
+      </span>
+    </div>`;
+
+  const groups = (d.groups || []).map((g, gi) => {
+    const rows = g.files.map((f, fi) => {
+      const when = f.mtime ? new Date(f.mtime * 1000).toLocaleString("zh-CN", { hour12: false }) : "";
+      return `
+        <label class="pick-row dup-file">
+          <input type="checkbox" class="dup-cb" data-path="${escapeAttr(f.path)}" ${fi > 0 ? "checked" : ""}>
+          <span class="dup-path" title="${escapeAttr(f.path)}">${escapeHtml(f.path)}</span>
+          <span class="dup-meta">${fmtBytes(f.size)}${when ? " · " + escapeHtml(when) : ""}</span>
+        </label>`;
+    }).join("");
+    return `
+      <div class="dup-group">
+        <div class="dup-group-head">
+          <b>组 ${gi + 1}</b>
+          <span class="muted">内容完全相同 · 单个 ${fmtBytes(g.size)} × ${g.files.length} 份 · 清掉多余的可释放 ${fmtBytes(g.wasted)}</span>
+        </div>
+        ${rows}
+      </div>`;
+  }).join("");
+
+  box.innerHTML = head + groups;
+
+  const checkedInfo = () => {
+    const cbs = [...box.querySelectorAll(".dup-cb:checked")];
+    const total = cbs.reduce((s, cb) => {
+      const f = findFileByPath(cb.dataset.path);
+      return s + (f ? f.size : 0);
+    }, 0);
+    return { n: cbs.length, bytes: total };
+  };
+
+  // 报告内 path → file 尺寸映射（勾选统计用）
+  const sizeMap = {};
+  (d.groups || []).forEach((g) => g.files.forEach((f) => { sizeMap[f.path] = f.size; }));
+  function findFileByPath(p) { return sizeMap.hasOwnProperty(p) ? { size: sizeMap[p] } : null; }
+
+  $("dupSelResetBtn").onclick = () => {
+    box.querySelectorAll(".dup-group").forEach((grp) => {
+      grp.querySelectorAll(".dup-cb").forEach((cb, i) => (cb.checked = i > 0));
+    });
+  };
+  $("dupSelNoneBtn").onclick = () => {
+    box.querySelectorAll(".dup-cb").forEach((cb) => (cb.checked = false));
+  };
+  $("dupQuarantineBtn").onclick = () => {
+    const paths = [...box.querySelectorAll(".dup-cb:checked")].map((cb) => cb.dataset.path);
+    if (!paths.length) { toast("请先勾选要清理的文件（每组至少保留一份）", "warn"); return; }
+    const info = checkedInfo();
+    openModal(
+      "确认移入隔离区",
+      `<p>即将把 <b>${paths.length}</b> 个文件（约 ${fmtBytes(info.bytes)}）移入隔离目录。</p>
+       <p class="muted">文件<b>不会被删除</b>，只是移动到「.nassafe-quarantine」隔离目录，随时可以在下方一键恢复原位。同一组重复内容会自动至少保留一份。</p>`,
+      `<button class="btn ghost" data-act="close">取消</button>
+       <button class="btn primary" data-act="ok">确认移入隔离区</button>`,
+      { ok: () => doDupQuarantine(paths) }
+    );
+  };
+}
+
+async function doDupQuarantine(paths) {
+  dupSetStatus(`<span class="spinner"></span>正在移入隔离区（同卷移动，瞬时完成）…`);
+  try {
+    const r = await api("/api/duplicates/quarantine", {
+      method: "POST",
+      body: JSON.stringify({ confirm: true, files: paths }),
+    }, 120000);
+    closeModal();
+    const fail = (r.failed || []).length;
+    let msg = `已隔离 ${r.quarantined} 个文件，可在隔离区随时恢复`;
+    if (fail) msg += `；${fail} 个失败`;
+    toast(msg, fail ? "warn" : "ok");
+    dupSetStatus("");
+    loadDupReport();
+  } catch (e) {
+    dupSetStatus("隔离失败：" + escapeHtml(e.message), "warn");
+  }
+}
+
+async function loadDupQuarantine() {
+  const box = $("dupQuarantine");
+  let d;
+  try { d = await api("/api/duplicates/quarantine"); } catch { return; }
+  if (!d.count) { box.innerHTML = ""; return; }
+  const rows = (d.entries || []).map((e) => `
+    <div class="pick-row dup-file">
+      <span class="dup-path" title="${escapeAttr(e.original)}">🛡 ${escapeHtml(e.original)}</span>
+      <span class="dup-meta">${fmtBytes(e.size)} · ${escapeHtml(String(e.time || "").slice(0, 16).replace("T", " "))}</span>
+      <button class="btn ghost dup-restore" data-id="${escapeAttr(e.id)}">恢复</button>
+    </div>`).join("");
+  box.innerHTML = `
+    <div class="dup-group">
+      <div class="dup-group-head">
+        <b>🛡 隔离区</b>
+        <span class="muted">${d.count} 个文件 · 约 ${fmtBytes(d.total_bytes)} · 原文件完好保存在隔离目录，点「恢复」放回原位置</span>
+      </div>
+      ${rows}
+    </div>`;
+  box.querySelectorAll(".dup-restore").forEach((btn) => {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await api("/api/duplicates/restore", {
+          method: "POST",
+          body: JSON.stringify({ confirm: true, ids: [btn.dataset.id] }),
+        });
+        toast("已恢复到原位置", "ok");
+        loadDupReport();
+      } catch (e) {
+        toast("恢复失败：" + e.message, "err");
+        btn.disabled = false;
+      }
+    };
+  });
+}
+
+// 重复文件扫描路径选择：单选（与监控路径多选选择器不同）
+async function openDupPicker() {
+  let roots = [];
+  try {
+    const mm = await api("/api/system/metrics");
+    if (mm.ok && mm.metrics.volumes) {
+      roots = mm.metrics.volumes.map((v) => {
+        const known = state.volumes.find((x) => x.mountpoint === v.mount);
+        return {
+          mount: v.mount,
+          name: known ? known.name : (v.mount.split("/").pop() || v.mount),
+        };
+      });
+    }
+  } catch (e) { /* 忽略 */ }
+  if (!roots.length) {
+    roots = state.volumes
+      .filter((v) => (v.mountpoint || "").startsWith("/"))
+      .map((v) => ({ mount: v.mountpoint, name: v.name }));
+  }
+
+  const volRow = (v) => `
+    <div class="pick-vol">
+      <label class="pick-row">
+        <input type="radio" name="dupPick" data-path="${escapeAttr(v.mount)}" ${$("dupRoot").value.trim() === v.mount ? "checked" : ""}>
+        <b>${escapeHtml(v.name)}</b>
+        <span class="muted">${escapeHtml(v.mount)}</span>
+      </label>
+      <button class="btn ghost pick-expand" data-path="${escapeHtml(v.mount)}">展开子目录 ▾</button>
+      <div class="pick-children" hidden></div>
+    </div>`;
+
+  openModal(
+    "选择要扫描的目录",
+    `<p class="muted" style="margin-top:0">选整个存储卷或其中某个文件夹（单选）。建议直接扫 media / download 这类容易囤重复文件的目录。</p>
+     ${roots.map(volRow).join("") || `<p class="muted">未发现存储卷</p>`}`,
+    `<button class="btn ghost" data-act="close">取消</button>
+     <button class="btn primary" data-act="ok">确定</button>`,
+    {
+      ok: () => {
+        const sel = document.querySelector("#modalBody input[name=dupPick]:checked");
+        if (sel) $("dupRoot").value = sel.dataset.path;
+        closeModal();
+      },
+    }
+  );
+
+  $("modalBody").onclick = async (ev) => {
+    const btn = ev.target.closest(".pick-expand");
+    if (!btn) return;
+    const wrap = btn.parentElement.querySelector(".pick-children");
+    if (!wrap.hidden) { wrap.hidden = true; btn.textContent = "展开子目录 ▾"; return; }
+    if (!wrap.dataset.loaded) {
+      btn.textContent = "读取中…";
+      try {
+        const base = btn.dataset.path.replace(/\/+$/, "");
+        const data = await api(`/api/list_dir?path=${encodeURIComponent(base)}`);
+        wrap.innerHTML = (data.dirs || []).map((d) => {
+          const p = base + "/" + d;
+          return `<label class="pick-row sub">
+            <input type="radio" name="dupPick" data-path="${escapeAttr(p)}" ${$("dupRoot").value.trim() === p ? "checked" : ""}>
+            📁 ${escapeHtml(d)}
+          </label>`;
+        }).join("") || `<p class="muted">没有子目录</p>`;
+        wrap.dataset.loaded = "1";
+      } catch (e) {
+        wrap.innerHTML = `<p class="muted">读取失败：${escapeHtml(e.message)}</p>`;
+      }
+    }
+    wrap.hidden = false;
+    btn.textContent = "收起 ▴";
+  };
+}
+
+// ---- 重复文件清理：事件绑定与初始加载 ----
+$("dupPickBtn").onclick = openDupPicker;
+$("dupScanBtn").onclick = startDupScan;
+if ((localStorage.getItem("nassafe_view") || "home") === "dups") loadDupReport();

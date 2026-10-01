@@ -868,3 +868,36 @@ code {
 }
 #aiFab:hover #aiFabBtn, #aiFabBtn:focus-visible { transform: translateX(0); }
 #aiFab:hover .ai-fab-txt, #aiFabBtn:focus-visible .ai-fab-txt { max-width: 64px; }
+
+/* ----------------------------- 重复文件清理 ----------------------------- */
+.dup-summary {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 14px; border: 1px solid var(--border);
+  border-radius: var(--radius-xs); background: var(--surface);
+}
+.dup-summary b { font-size: 14px; }
+.dup-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.dup-group {
+  border: 1px solid var(--border); border-radius: var(--radius-xs);
+  background: var(--surface); overflow: hidden;
+}
+.dup-group-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 11px 14px; background: var(--surface-2);
+  border-bottom: 1px solid var(--border); font-size: 12.5px;
+}
+.dup-group-head b { font-size: 13px; }
+.dup-file {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px; border-bottom: 1px dashed var(--border); cursor: pointer;
+}
+.dup-file:last-child { border-bottom: none; }
+.dup-file:hover { background: var(--surface-2); }
+.dup-file input { accent-color: var(--z-monitor); flex: none; }
+.dup-path {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-2);
+  direction: rtl; text-align: left;   /* 长路径省略头部，保住文件名可见 */
+}
+.dup-meta { flex: none; font-size: 11.5px; color: var(--text-3); font-family: var(--font-mono); }
+.dup-restore { flex: none; padding: 5px 10px; font-size: 12px; }

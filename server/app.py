@@ -20,6 +20,12 @@ NAS Safe — 后端 API 服务
   GET  /api/ai/config             AI 配置（含供应商列表与 ready 状态）
   POST /api/ai/config             保存 AI 配置
   POST /api/ai/interpret          把报告文本交给 AI 解读
+  GET  /api/duplicates/status     重复文件扫描进度（v4）
+  GET  /api/duplicates/report     重复文件报告（内容哈希判定，零误报）
+  POST /api/duplicates/scan       启动重复文件扫描（后台线程，只读）
+  POST /api/duplicates/quarantine 隔离勾选的重复文件（软删除，可恢复，每组至少留一份）
+  GET  /api/duplicates/quarantine 隔离区清单
+  POST /api/duplicates/restore    从隔离区恢复到原位置
   GET  /api/health                健康检查
 
 安全约定：
@@ -56,6 +62,7 @@ import ai         # noqa: E402  AI 解读（多云供应商 + 本地 Ollama）
 import autosnapshot  # noqa: E402  自动快照调度器（每小时 vital 锁快照 + 保留清理）
 import metrics  # noqa: E402  系统指标采集（仪表盘：CPU/RAM/温度/网速/磁盘/卷容量）
 import anomalies  # noqa: E402  异常判定 + 主动推送看门狗（小助手关闭时接管微信提醒）
+import duplicates  # noqa: E402  重复文件清理（只读报告 + 隔离式软删除）
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
@@ -348,6 +355,33 @@ def build_browse(path: str) -> dict:
             "entries": storage._browse_local_dir(path)}
 
 
+def _assert_root_in_mounts(path: str) -> None:
+    """校验扫描根目录必须落在已知卷挂载点范围内（防越权扫系统目录）。
+
+    与 /api/list_dir 同一套收集逻辑：storage 卷挂载点 + 指标采集的 df 路径。
+    """
+    if not path.startswith("/") or ".." in path.split("/"):
+        raise StorageError("路径不合法")
+    mounts = set()
+    try:
+        for v in storage.list_all_volumes():
+            mp = str(getattr(v, "mountpoint", "") or "")
+            if mp.startswith("/"):
+                mounts.add(mp.rstrip("/"))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        for v in metrics.collect().get("volumes", []):
+            mounts.add(str(v.get("mount", "")).rstrip("/"))
+    except Exception:  # noqa: BLE001
+        pass
+    mounts.discard("")
+    if not mounts:
+        return  # 卷信息不可得时不再拦截（SSH 模式下 metrics 一般可得）
+    if not any(path == m or path.startswith(m + "/") for m in mounts):
+        raise StorageError("路径必须在存储卷挂载点范围内")
+
+
 def find_snapshot(volume_id: str, snapshot_id: str) -> "storage.Snapshot":
     """按 volume_id + snapshot_id 定位统一 Snapshot 对象。"""
     for vol in storage.list_all_volumes():
@@ -570,6 +604,16 @@ class Handler(BaseHTTPRequestHandler):
                     "config": cfg,
                     "interval_seconds": max(1, int(cfg.get("interval_hours", 1))) * 3600,
                 })
+            elif route == "/api/duplicates/status":
+                self._send_json({"ok": True, **duplicates.get_status()})
+            elif route == "/api/duplicates/report":
+                rpt = duplicates.load_report()
+                if not rpt:
+                    self._send_json({"ok": True, "empty": True, "groups": []})
+                else:
+                    self._send_json({"ok": True, **rpt})
+            elif route == "/api/duplicates/quarantine":
+                self._send_json(duplicates.quarantine_list())
             elif route == "/api/system":
                 self._send_json(build_system_info())
             elif route == "/api/volumes":
@@ -934,6 +978,30 @@ class Handler(BaseHTTPRequestHandler):
             elif route == "/api/autosnapshot/run":
                 # 立即执行一轮自动快照（供测试 / 手动触发）
                 self._send_json({"ok": True, **autosnapshot.run_once()})
+
+            elif route == "/api/duplicates/scan":
+                # 重复文件扫描：只读，产出报告。后台线程执行，进度走 status 接口。
+                root = (payload.get("root") or "").strip()
+                if not root:
+                    raise StorageError("缺少 root 参数（要扫描的目录）")
+                _assert_root_in_mounts(root)
+                min_mb = payload.get("min_mb", 1)
+                min_age = payload.get("min_age_days", 7)
+                try:
+                    min_mb = max(0, int(min_mb))
+                    min_age = max(0, int(min_age))
+                except (TypeError, ValueError):
+                    raise StorageError("min_mb / min_age_days 必须是整数")
+                self._send_json(duplicates.start_scan(root, min_mb=min_mb, min_age_days=min_age))
+
+            elif route == "/api/duplicates/quarantine":
+                # 隔离（软删除）：confirm 严格 True + 只允许报告内路径 + 每组至少留一份
+                self._send_json(duplicates.quarantine_files(
+                    payload.get("files"), payload.get("confirm") is True))
+
+            elif route == "/api/duplicates/restore":
+                self._send_json(duplicates.restore_files(
+                    payload.get("ids"), payload.get("confirm") is True))
 
             else:
                 self._send_json({"ok": False, "error": f"未知接口: {route}"}, 404)

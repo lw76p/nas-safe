@@ -41,6 +41,7 @@
   <button class="tab active" data-view="home">▦ 总览</button>
   <button class="tab" data-view="snapshots">◷ 快照时间轴</button>
   <button class="tab" data-view="monitor"><span id="monitorDot" class="monitor-dot monitor-dot-off">◉</span> 实时监控</button>
+  <button class="tab" data-view="dups">⧉ 重复文件</button>
   <button class="tab" data-view="settings">⚙ 设置</button>
 </nav>
 
@@ -191,7 +192,31 @@
     </div>
   </section>
 
-  <!-- 功能区四：通知与 AI 设置 -->
+  <!-- 功能区四：重复文件清理 -->
+  <section class="panel zone zone-snapshot" id="dupsPanel" data-view="dups" hidden>
+    <div class="panel-head">
+      <div class="zone-head">
+        <span class="zone-ico">⧉</span>
+        <div>
+          <h2>重复文件清理</h2>
+          <p class="sub">按内容逐字节比对，只有完全一样的文件才算重复 · 清理走隔离区，随时可恢复</p>
+        </div>
+      </div>
+    </div>
+    <div class="monitor-controls">
+      <input id="dupRoot" class="text-input" placeholder="要扫描的目录（如 /share/影视）">
+      <button class="btn ghost" id="dupPickBtn">📁 选择路径</button>
+      <button class="btn primary" id="dupScanBtn">开始扫描</button>
+    </div>
+    <p class="muted" style="margin:6px 0 0">只扫 1MB 以上、且 7 天内没有改动过的文件；隐藏目录、回收站和系统目录自动跳过。扫描只读取文件做比对，不会改动任何数据。</p>
+    <div id="dupStatus" class="notice" style="display:none"></div>
+    <div id="dupResults" class="monitor-results">
+      <p class="muted">选一个目录点「开始扫描」。报告出来后勾选要清理的（每组自动保留一份），点「移入隔离区」—— 文件只是被移到隔离目录，随时可以在下方一键恢复。</p>
+    </div>
+    <div id="dupQuarantine" class="monitor-results"></div>
+  </section>
+
+  <!-- 功能区五：通知与 AI 设置 -->
   <section class="panel zone zone-monitor" id="settingsPanel" data-view="settings">
     <div class="panel-head">
       <div class="zone-head">
