@@ -26,6 +26,7 @@ import anomalies
 import metrics
 import junk
 import notify
+import smartd
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +98,8 @@ def build_report() -> dict:
     freeable = _safe(_freeable_summary, None)
     # —— 硬盘健康 / 容量 ——
     disk = _safe(_disk_summary, None)
+    # —— SMART 健康（可用才采，跨品牌；取不到优雅降级）——
+    smart = _safe(lambda: smartd.collect(), None)
 
     report = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -105,6 +108,7 @@ def build_report() -> dict:
                    "items": [{"title": a.get("title"), "sev": a.get("sev")} for a in alerts]},
         "freeable": freeable,
         "disk": disk,
+        "smart": smart,
         "summary": "",
     }
     report["summary"] = _summary_line(report)
@@ -241,6 +245,17 @@ def format_text(report: dict) -> str:
 
     dk = report.get("disk") or {}
     lines.append("【硬盘状态】")
+    # SMART 健康（跨品牌；群晖/绿联/通用 Linux 开箱即用，威联通装免费 Smartmontools 即开）
+    smart = report.get("smart") or {}
+    if smart.get("available"):
+        lines.append(f"  · SMART 健康：{smart.get('health_label')}（共 {smart.get('disk_count')} 块盘）")
+        for d in (smart.get("disks") or []):
+            if d.get("health") == "fail":
+                lines.append(f"    🔴 盘 {d['name']} 异常（出现过坏道，建议尽快备份并换盘）")
+            elif d.get("health") == "warn":
+                lines.append(f"    ⚠️ 盘 {d['name']} 需注意（出现过坏道苗头，留意）")
+    elif smart:
+        lines.append("  · SMART：暂未开启（威联通请在应用中心装免费的 Smartmontools 即可）")
     if dk:
         if dk.get("cpu_temp") is not None:
             lines.append(f"  · CPU 温度 {dk['cpu_temp']}°C")

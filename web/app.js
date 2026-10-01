@@ -419,7 +419,15 @@ function renderMetrics(m) {
   // 卡5：磁盘 —— 独占整行，汇总"n/n 正常" + 按类型分组横向铺开；脏数据整行过滤
   const disks = (m.disks || []).filter((d) => d && d.name);
   const gDisk = (d) => d.temp_c == null ? 0 : grade(d.temp_c, 50, 60);
-  const g4 = disks.reduce((g, d) => Math.max(g, gDisk(d)), 0);
+  // SMART 健康（跨品牌，取不到时缺省）—— 与磁盘按 name 对应
+  const smart = (m.smart && m.smart.available) ? m.smart : null;
+  const smartMap = {};
+  (smart ? (smart.disks || []) : []).forEach((s) => { smartMap[s.name] = s; });
+  const smartWorst = smart ? (smart.worst || 0) : 0;
+  const g4 = Math.max(
+    disks.reduce((g, d) => Math.max(g, gDisk(d)), 0),
+    smartWorst
+  );
   const okCount = disks.filter((d) => gDisk(d) === 0).length;
   const ioTxt = (d) => {
     if (d.read_bps == null && d.write_bps == null) return "";
@@ -430,12 +438,21 @@ function renderMetrics(m) {
     const tb = hasSize ? `<span>${(d.size_b / 1024**4).toFixed(1)}TB</span>` : "";
     const gd = gDisk(d);
     const temp = d.temp_c != null ? `<span class="chip-temp ${GRADE[gd][0]}">${d.temp_c}°C</span>` : "";
+    // SMART 健康小徽标（良/注意/异常），取不到不显示
+    const sm = smartMap[d.name];
+    let smBadge = "";
+    if (sm && sm.health && sm.health !== "unknown") {
+      const cls = sm.health === "fail" ? "bad" : sm.health === "warn" ? "warn" : "ok";
+      const txt = sm.health === "fail" ? "异常" : sm.health === "warn" ? "注意" : "良";
+      smBadge = `<span class="chip-smart ${cls}">${txt}</span>`;
+    }
     const title = d.model ? ` title="${escapeHtml(d.model)}${hasSize ? " " + (d.size_b / 1024**4).toFixed(1) + "TB" : ""}"` : "";
     return `
       <div class="disk-chip"${title}>
         <b>${label}</b>
         ${tb}
         ${temp}
+        ${smBadge}
         ${ioTxt(d)}
       </div>`;
   };
@@ -462,10 +479,18 @@ function renderMetrics(m) {
       <circle cx="15.6" cy="16.5" r="1.4" fill="${c}" stroke="none"/>
     </svg>`;
   };
+  // SMART 汇总脚注：可用显示结论；不可用给白话开启提示（不报错）
+  let smartFoot = "";
+  if (smart) {
+    smartFoot = `<div class="smart-foot"><span class="muted">SMART 健康：${smart.health_label}（${smart.disk_count} 块盘）</span></div>`;
+  } else if (m.smart) {
+    smartFoot = `<div class="smart-foot"><span class="muted">硬盘健康检测需装 Smartmontools（威联通应用中心免费）即开启</span></div>`;
+  }
   const card5 = disks.length ? `
     <div class="metric-card metric-card-wide mc-${GRADE[g4][0]}">
       ${cardHead(`${bayIco(g4)}磁盘`, g4, `<span class="muted">${okCount}/${disks.length} 正常</span>`)}
       ${diskGroups}
+      ${smartFoot}
     </div>` : "";
 
   body.innerHTML = card1 + card2 + card3 + card4 + card5;

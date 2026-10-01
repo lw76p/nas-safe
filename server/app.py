@@ -70,6 +70,7 @@ import anomalies  # noqa: E402  异常判定 + 主动推送看门狗（小助手
 import duplicates  # noqa: E402  重复文件清理（只读报告 + 隔离式软删除）
 import junk  # noqa: E402  磁盘垃圾清理（回收站/缩略图/Docker缓存/旧日志，只读报告+按类清理）
 import daily_report  # noqa: E402  每日健康日报（定时聚合快照/告警/空间/硬盘，复用通知链路推送）
+import smartd  # noqa: E402  硬盘 SMART 健康采集（跨品牌，smartctl 多路径探测 + QTS 包兜底）
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
@@ -552,8 +553,21 @@ class Handler(BaseHTTPRequestHandler):
             elif route == "/api/system/metrics":
                 try:
                     force = bool(query.get("force"))
-                    self._send_json({"ok": True, "metrics": metrics.collect(force=force)})
+                    data = metrics.collect(force=force)
+                    # 叠加 SMART 健康摘要（失败不影响指标主数据）
+                    try:
+                        data["smart"] = smartd.collect(force=force)
+                    except Exception:  # noqa: BLE001
+                        data["smart"] = {"available": False, "disks": []}
+                    self._send_json({"ok": True, "metrics": data})
                 except Exception as exc:  # noqa: BLE001 指标采集失败不拖垮页面
+                    self._send_json({"ok": False, "error": str(exc)})
+
+            elif route == "/api/smart":
+                try:
+                    force = bool(query.get("force"))
+                    self._send_json({"ok": True, "smart": smartd.collect(force=force)})
+                except Exception as exc:  # noqa: BLE001
                     self._send_json({"ok": False, "error": str(exc)})
 
             elif route == "/api/anomalies":
