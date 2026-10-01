@@ -740,8 +740,8 @@ def browse_snapshot(snapshot: Snapshot, subpath: str = "") -> dict:
                     "path": rel,
                     "is_dir": e["is_dir"],
                     "size": e["size"],
-                    "size_human": human_size(e["size"]) if e["size"] else "",
-                    "mtime": None,
+                    "size_human": human_size(e["size"]) if e.get("size") is not None else "",
+                    "mtime": e.get("mtime"),
                 })
             return {
                 "ok": True, "backend": "qnap", "local": False,

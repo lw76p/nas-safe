@@ -196,7 +196,25 @@ def _parse_ls_entry(line: str) -> Optional[dict]:
         size = int(parts[4])
     except ValueError:
         size = None
-    return {"name": name, "is_dir": is_dir, "size": size, "is_symlink": ftype == "l"}
+    # 解析时间：半年内 ls 显示 "Sep 29 18:30"（当年），更早显示 "Sep 29  2024"
+    mtime = None
+    try:
+        import datetime as _dt
+        mon, day, tail = parts[5], parts[6], parts[7]
+        if ":" in tail:                      # 当年：月 日 时:分
+            now = _dt.datetime.now()
+            dt = _dt.datetime.strptime(
+                f"{now.year} {mon} {int(day):02d} {tail}", "%Y %b %d %H:%M")
+            if dt > now:                     # 未来时间说明是去年的（12月底跨年边界）
+                dt = dt.replace(year=now.year - 1)
+            mtime = dt.strftime("%Y-%m-%d %H:%M")
+        else:                                # 超半年：月 日 年
+            dt = _dt.datetime.strptime(f"{mon} {int(day):02d} {tail}", "%b %d %Y")
+            mtime = dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        mtime = None
+    return {"name": name, "is_dir": is_dir, "size": size,
+            "is_symlink": ftype == "l", "mtime": mtime}
 
 
 # ---------------------------------------------------------------------------

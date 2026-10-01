@@ -1288,7 +1288,8 @@ async function openBrowser(snap, path, pushStack = true) {
       <div class="file-row" data-path="${escapeAttr(e.path)}" data-dir="${e.is_dir}">
         <span class="file-icon ${e.is_dir ? "dir" : ""}"></span>
         <span class="file-name">${escapeHtml(e.name)}</span>
-        <span class="file-size">${e.is_dir ? "" : escapeHtml(e.size_human || "")}</span>
+        <span class="file-time">${escapeHtml(formatDT(e.mtime))}</span>
+        <span class="file-size">${e.is_dir ? "" : escapeHtml(e.size_human || "—")}</span>
       </div>
     `).join("");
 
@@ -1484,6 +1485,13 @@ function closeModal() {
 }
 
 /* ------------------------- 格式化工具 ------------------------- */
+
+function formatDT(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  // 兼容 isoformat（2026-09-29T18:30:00）与 "2026-09-29 18:30"（SSH ls 解析）
+  const m = raw.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+  return m ? `${m[1]} ${m[2]}` : "";
+}
 
 function formatWhen(raw) {
   const d = parseDate(raw);
