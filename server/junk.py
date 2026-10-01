@@ -45,7 +45,7 @@ LOG_MIN_AGE_DAYS = 30
 
 def get_status() -> dict:
     with _lock:
-        return {"ok": True, **_scan_state}
+        return {"ok": True, "clean": dict(_clean_state), **_scan_state}
 
 
 def load_report() -> dict:
@@ -202,7 +202,12 @@ def start_scan() -> dict:
     return {"ok": True, "started": True}
 
 
-# ---------------- 清理 ----------------
+# ---------------- 清理（后台任务 + 实时进度） ----------------
+#
+# 为什么清理必须后台化：151GB 回收站的 rm -rf、Docker prune 都要跑几分钟，
+# 同步接口会让前端干等到像死机（用户实测反馈）。现改为与扫描同款模式：
+# POST /api/junk/clean 立即返回"已启动"，进度走 GET /api/junk/status 的
+# clean 字段，前端 2s 轮询一次实时显示"已完成 x/y 项"。
 
 # 每个类别允许的清理动作校验器：路径必须落在该类别报告登记过的范围内
 def _validate_paths(category: str, paths: list, report: dict) -> list[dict]:
@@ -222,62 +227,132 @@ def _validate_paths(category: str, paths: list, report: dict) -> list[dict]:
     return validated
 
 
-def clean(category: str, confirm: bool, paths: list | None = None) -> dict:
-    """按类别清理。paths=None 表示清整类（仍逐项校验）。
+_clean_state: dict = {
+    "status": "idle", "category": "", "total": 0, "done": 0,
+    "error": "", "freed_bytes": 0, "detail": "",
+    "started_at": None, "finished_at": None,
+}
 
-    - recycle/thumbs: rm -rf 指定目录（都是可再生或待删内容）
-    - logs: rm 指定文件（30 天前轮转日志）
-    - docker: image prune -f + builder prune -f（不动任何在用容器与卷）
+
+def get_clean_status() -> dict:
+    with _lock:
+        return dict(_clean_state)
+
+
+def start_clean(category: str | None = None, confirm: bool = False,
+                paths: list | None = None, categories: list | None = None) -> dict:
+    """启动后台清理。支持单类别（category）或多类别（categories，一键全清）。
+
+    校验全部在进线程前完成（fail fast），线程只负责执行。
+    多类别时按传入顺序逐类清理，进度 done/total 是所有类别的合计。
     """
+    with _lock:
+        if _clean_state.get("status") == "running":
+            return {"ok": False, "error": "已有清理任务在进行中，请等它完成"}
     if confirm is not True:
         raise JunkError("清理操作需要 confirm=true 确认参数")
-    if category not in ("recycle", "thumbs", "logs", "docker"):
-        raise JunkError(f"不支持的类别: {category}")
-
     report = load_report()
     if not report:
         raise JunkError("没有扫描报告，请先执行扫描")
 
-    client = _client()
-    q = shlex.quote
+    cats = [str(c) for c in categories] if isinstance(categories, list) and categories else (
+        [category] if category else [])
+    if not cats:
+        raise JunkError("未指定清理类别")
+    for c in cats:
+        if c not in ("recycle", "thumbs", "logs", "docker"):
+            raise JunkError(f"不支持的类别: {c}")
+    if len(cats) > 1 and paths:
+        raise JunkError("多类别清理不支持指定 paths（逐类全清）")
+
+    jobs: list[tuple[str, list]] = []
+    total = 0
+    for c in cats:
+        if c == "docker":
+            targets: list = []
+            total += 1  # docker 清理算一步（prune 一条命令）
+        else:
+            targets = _validate_paths(c, paths or
+                                      [i["path"] for i in
+                                       next(x for x in report["categories"] if x["key"] == c)["items"]],
+                                      report)
+            total += len(targets)
+        jobs.append((c, targets))
+
+    with _lock:
+        _clean_state.update(
+            status="running", category=cats[0], total=total, done=0,
+            error="", freed_bytes=0, detail="",
+            started_at=datetime.now().isoformat(timespec="seconds"),
+            finished_at=None)
+    threading.Thread(target=_clean_worker, args=(jobs, total), daemon=True).start()
+    return {"ok": True, "started": True, "total": total, "categories": cats}
+
+
+def _clean_worker(jobs: list, total: int) -> None:
+    client = None
     try:
-        if category == "docker":
-            docker_bin = "/share/CE_CACHEDEV1_DATA/.qpkg/container-station/bin/docker"
-            out = client.run_shell(
-                f"{q(docker_bin)} image prune -f 2>&1 ; "
-                f"{q(docker_bin)} builder prune -f 2>&1"
-            )
-            freed = 0
-            m = re.search(r"total reclaimed space:\s*([\d.]+)\s*([kMG]?B)", out, re.I)
-            if m:
-                freed = _parse_size(m.group(1), m.group(2))
-            return {"ok": True, "category": category, "freed_bytes": freed,
-                    "detail": out.strip()[-400:]}
+        client = _client()
+        # 清理是大动作：默认 60s 的 channel 读超时必炸；放宽到 30 分钟。
+        client.timeout = 1800
+        q = shlex.quote
 
-        targets = _validate_paths(category, paths or
-                                  [i["path"] for i in
-                                   next(c for c in report["categories"] if c["key"] == category)["items"]],
-                                  report)
-        if not targets:
-            return {"ok": True, "category": category, "cleaned": 0, "freed_bytes": 0}
+        def set_state(**kw):
+            with _lock:
+                _clean_state.update(kw)
 
-        lines = []
-        for item in targets:
-            p = item["path"]
-            if category == "logs":
-                lines.append(f"rm -f -- {q(p)} 2>/dev/null ; printf 'OK\\t{p}\\n'")
-            else:
-                # recycle/thumbs：只删目录内容对应的目录本身（QTS 会重建空目录）
-                lines.append(f"rm -rf -- {q(p)} 2>/dev/null ; printf 'OK\\t{p}\\n'")
-        out = client.run_shell(" ; ".join(lines))
-        cleaned = sum(1 for line in out.splitlines() if line.startswith("OK"))
-        freed = sum((i.get("kb", 0) * 1024) if "kb" in i else i.get("size", 0) for i in targets)
-        return {"ok": True, "category": category, "cleaned": cleaned, "freed_bytes": freed}
+        cleaned = 0
+        freed = 0
+        detail = ""
+        done = 0
+        for cat, targets in jobs:
+            set_state(category=cat)
+            if cat == "docker":
+                docker_bin = "/share/CE_CACHEDEV1_DATA/.qpkg/container-station/bin/docker"
+                out = client.run_shell(
+                    f"{q(docker_bin)} image prune -f 2>&1 ; "
+                    f"{q(docker_bin)} builder prune -f 2>&1"
+                )
+                detail = (detail + "\n" + out.strip()[-200:]).strip()
+                m = re.search(r"total reclaimed space:\s*([\d.]+)\s*([kMG]?B)", out, re.I)
+                if m:
+                    freed += _parse_size(m.group(1), m.group(2))
+                done += 1
+                set_state(done=done)
+                continue
+            # 分批执行：1464 个缩略图目录若拼成一条命令，长度会超出远端
+            # ARG_MAX/sh 解析上限，表现为静默失败甚至连接被重置。
+            # 每批跑完推进一次进度，前端 2s 轮询即可看到 x/y 实时变化。
+            CHUNK = 100
+            for i in range(0, len(targets), CHUNK):
+                batch = targets[i:i + CHUNK]
+                lines = []
+                for item in batch:
+                    p = item["path"]
+                    if cat == "logs":
+                        lines.append(f"rm -f -- {q(p)} 2>/dev/null ; printf 'OK\\t{p}\\n'")
+                    else:
+                        # recycle/thumbs：只删目录内容对应的目录本身（QTS 会重建空目录）
+                        lines.append(f"rm -rf -- {q(p)} 2>/dev/null ; printf 'OK\\t{p}\\n'")
+                out = client.run_shell(" ; ".join(lines))
+                cleaned += sum(1 for line in out.splitlines() if line.startswith("OK"))
+                done = min(done + len(batch), total)
+                set_state(done=done)
+            freed += sum((i.get("kb", 0) * 1024) if "kb" in i else i.get("size", 0) for i in targets)
+        with _lock:
+            _clean_state.update(status="done", cleaned=cleaned, freed_bytes=freed,
+                                detail=detail,
+                                finished_at=datetime.now().isoformat(timespec="seconds"))
+    except Exception as exc:  # noqa: BLE001
+        with _lock:
+            _clean_state.update(status="error", error=str(exc),
+                                finished_at=datetime.now().isoformat(timespec="seconds"))
     finally:
-        try:
-            client.close()
-        except Exception:  # noqa: BLE001
-            pass
+        if client is not None:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _parse_size(num: str, unit: str) -> int:

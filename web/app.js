@@ -3018,6 +3018,7 @@ if ((localStorage.getItem("nassafe_view") || "home") === "dups") loadDupReport()
 
 // ---- 磁盘垃圾清理：扫描 / 报告 / 按类清理 ----
 let junkPollTimer = null;
+let junkCleanSeenAt = null; // 已处理过的清理完成时间戳（防止重复触发刷新）
 
 function junkSetStatus(html, kind) {
   const st = $("junkStatus");
@@ -3050,14 +3051,33 @@ function pollJunkStatus() {
 async function refreshJunkStatus() {
   let st;
   try { st = await api("/api/junk/status"); } catch { return; }
+  const catName = { recycle: "回收站", thumbs: "缩略图缓存", logs: "旧日志", docker: "Docker" };
+  const cl = st.clean || { status: "idle" };
   if (st.status === "scanning") {
-    const phaseName = { recycle: "回收站", thumbs: "缩略图缓存", logs: "旧日志", docker: "Docker 占用" }[st.phase] || "";
+    const phaseName = catName[st.phase] || "";
     junkSetStatus(`<span class="spinner"></span>正在扫描${phaseName ? "（" + phaseName + "）" : "…"}（只读，不改动数据）`);
-  } else {
-    if (junkPollTimer) { clearInterval(junkPollTimer); junkPollTimer = null; }
-    if (st.status === "error") junkSetStatus("扫描失败：" + escapeHtml(st.error || "未知"), "warn");
-    else if (st.status === "done") junkSetStatus("");
+    return;
   }
+  if (cl.status === "running") {
+    const pct = cl.total ? Math.round((cl.done / cl.total) * 100) : 0;
+    const cat = catName[cl.category] || cl.category || "";
+    junkSetStatus(`<span class="spinner"></span>正在清理（${cat}）… 已完成 ${cl.done}/${cl.total} 项（${pct}%）。大目录删除需要几分钟，页面可先做别的，完成后自动刷新`);
+    return;
+  }
+  if (junkPollTimer) { clearInterval(junkPollTimer); junkPollTimer = null; }
+  if (st.status === "error") junkSetStatus("扫描失败：" + escapeHtml(st.error || "未知"), "warn");
+  else if (cl.status === "error") junkSetStatus("清理失败：" + escapeHtml(cl.error || "未知"), "warn");
+  else if (cl.status === "done") {
+    if (!junkCleanSeenAt && cl.finished_at) { junkCleanSeenAt = cl.finished_at; }
+    else if (cl.finished_at && cl.finished_at !== junkCleanSeenAt) {
+      junkCleanSeenAt = cl.finished_at;
+      const freed = cl.freed_bytes || 0;
+      toast(`清理完成${cl.cleaned ? " " + cl.cleaned + " 项" : ""}${freed ? "，释放 " + fmtBytes(freed) : ""}`, "ok");
+      junkSetStatus("");
+      startJunkScan(); // 清理后自动重新扫描，报告数字立即变新
+    }
+  }
+  else if (st.status === "done") junkSetStatus("");
 }
 
 async function loadJunkReport() {
@@ -3077,6 +3097,7 @@ function renderJunkReport(d) {
     <div class="dup-summary">
       <b>扫描完成</b>
       <span class="muted">${escapeHtml(String(d.scanned_at).slice(0, 16).replace("T", " "))} · 各类垃圾单独确认后才清理</span>
+      ${junkCleanableAll(d).length > 1 ? `<button class="btn primary junk-clean-all">🧹 一键清理全部</button>` : ""}
     </div>`;
 
   const ICONS = { recycle: "🗑", thumbs: "🖼", logs: "📄", docker: "📦" };
@@ -3125,6 +3146,38 @@ function renderJunkReport(d) {
       );
     };
   });
+
+  const cleanAllBtn = box.querySelector(".junk-clean-all");
+  if (cleanAllBtn) cleanAllBtn.onclick = () => openJunkCleanAllModal(d);
+}
+
+// 「一键清理全部」：统计当前有东西可清的类别（Docker 只在有悬空镜像时算）
+function junkCleanableAll(d) {
+  const cats = (d.categories || []).filter((c) => c.key !== "docker" && c.items && c.items.length);
+  const hasDocker = d.docker && (d.docker.dangling_images || []).length > 0;
+  return [...cats, ...(hasDocker ? [{ key: "docker" }] : [])];
+}
+
+function openJunkCleanAllModal(d) {
+  const ICONS = { recycle: "🗑", thumbs: "🖼", logs: "📄", docker: "📦" };
+  const allCats = junkCleanableAll(d);
+  const names = { recycle: "回收站", thumbs: "缩略图缓存", logs: "旧日志", docker: "Docker 可回收空间" };
+  const rows = allCats.map((c) => {
+    if (c.key === "docker") {
+      const n = (d.docker.dangling_images || []).length;
+      return `<li>${ICONS.docker} Docker 悬空镜像 ${n} 个 + 构建缓存（不动在用容器）</li>`;
+    }
+    return `<li>${ICONS[c.key] || "•"} ${escapeHtml(names[c.key] || c.key)}：${c.items.length} 项 · 约 <b>${fmtBytes(c.total_bytes)}</b></li>`;
+  }).join("");
+  openModal(
+    "一键清理全部",
+    `<p style="margin-top:0">将按顺序依次清理：</p><ul>${rows}</ul>
+     <p class="muted">回收站内容多时可能需要<b>几分钟到几十分钟</b>，进度会实时显示，期间可正常使用其他页面，完成后自动重新扫描。</p>
+     <p class="muted">此操作<b>不可恢复</b>（缩略图会自动重建，不在此列）。</p>`,
+    `<button class="btn ghost" data-act="close">取消</button>
+     <button class="btn primary" data-act="ok" style="color:var(--red);border-color:var(--red)">全部清理</button>`,
+    { ok: () => doJunkClean(allCats.map((c) => c.key)) }
+  );
 }
 
 function renderJunkDocker(docker) {
@@ -3140,20 +3193,26 @@ function renderJunkDocker(docker) {
 }
 
 async function doJunkClean(category) {
-  junkSetStatus(`<span class="spinner"></span>正在清理（${category}）…`);
+  // 清理已改为后台任务：接口立即返回，进度走 2s 轮询（refreshJunkStatus）
+  // category 可传单个字符串或数组（数组=一键清理全部）
+  const categories = Array.isArray(category) ? category : [category];
   try {
     const r = await api("/api/junk/clean", {
       method: "POST",
-      body: JSON.stringify({ confirm: true, category }),
-    }, 120000);
+      body: JSON.stringify({ confirm: true, categories }),
+    });
     closeModal();
-    const freed = r.freed_bytes || 0;
-    const msg = r.detail ? "已执行 Docker 清理" : `已清理 ${r.cleaned != null ? r.cleaned + " 项，" : ""}释放 ${fmtBytes(freed)}`;
-    toast(msg, "ok");
-    junkSetStatus("");
-    loadJunkReport();
+    if (!r.ok) {
+      junkSetStatus("清理启动失败：" + escapeHtml(r.error || "未知"), "warn");
+      return;
+    }
+    junkCleanSeenAt = null; // 新一轮清理，完成时允许触发一次刷新
+    toast(categories.length > 1
+      ? `一键清理已在后台开始（${categories.length} 类，共 ${r.total} 项）…`
+      : r.total ? `清理已在后台开始（${r.total} 项）…` : "清理已在后台开始…", "ok");
+    pollJunkStatus();
   } catch (e) {
-    junkSetStatus("清理失败：" + escapeHtml(e.message), "warn");
+    junkSetStatus("清理启动失败：" + escapeHtml(e.message), "warn");
   }
 }
 

@@ -68,7 +68,7 @@ def _compute_trends() -> list:
 _BATCH = r"""
 echo "#STAT"
 head -1 /proc/stat 2>/dev/null
-sleep 1
+sleep 0.5
 head -1 /proc/stat 2>/dev/null
 echo "#UP"
 cat /proc/uptime 2>/dev/null

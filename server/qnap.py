@@ -30,6 +30,7 @@ import posixpath
 import re
 import shlex
 import subprocess
+import threading
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
@@ -229,6 +230,44 @@ _LOCAL_QCLI = "qcli"
 SNAP_MOUNT_ROOT = "/mnt/snapshot"
 
 
+# ---------------------------------------------------------------------------
+# 常驻 SSH 连接池
+# ---------------------------------------------------------------------------
+# 容器远程模式下，过去每个 API 请求各建一条 SSH 连接、用完即断：
+#   - 每次握手+认证 0.5~2s，是「点目录浏览都要转圈」的卡顿根因；
+#   - 前端 15s 指标轮询 + 30s 告警轮询 + 后台扫描线程叠加，形成对 QTS
+#     sshd 的连接风暴，触发 MaxStartups 丢连接 -> [Errno 104] Connection
+#     reset by peer（垃圾清理失败就是撞上了这个）。
+# 现按 (host, user, password) 常驻复用一条连接（paramiko Transport 支持
+# 多线程各开 channel），keepalive 30s；单条命令失败（被对端 reset/断开）
+# 时自动重建连接并重试一次。
+
+_POOL: dict = {}
+_POOL_LOCK = threading.Lock()
+_LOGGED_IN: set = set()
+
+
+def _pool_get(key, new_cli):
+    """从池里取共享连接；没有则放入 new_cli。若其他线程已抢先重建，返回已有的并让调用方关掉 new_cli。"""
+    with _POOL_LOCK:
+        cli = _POOL.get(key)
+        if cli is None:
+            _POOL[key] = new_cli
+            return new_cli
+        return cli
+
+
+def _pool_drop(key, cli) -> None:
+    """把故障连接移出池并真正关闭。"""
+    with _POOL_LOCK:
+        if _POOL.get(key) is cli:
+            _POOL.pop(key, None)
+    try:
+        cli.close()
+    except Exception:
+        pass
+
+
 class QnapClient:
     """执行 qcli 命令的客户端。
 
@@ -250,8 +289,6 @@ class QnapClient:
         self._ssh = None
         self._sftp_client = None
         self.mode = "local" if not host else "ssh"
-
-    # -- 执行 ----------------------------------------------------------
 
     def _run(self, args: list[str]) -> str:
         if self.mode == "local":
@@ -277,29 +314,65 @@ class QnapClient:
             raise QnapError(f"qcli 命令失败 ({proc.returncode}): {' '.join(args)}\n{err.strip()}")
         return out + err
 
-    def _run_ssh(self, args: list[str]) -> str:
-        import paramiko  # 懒加载，仅 SSH 模式需要
+    # -- 执行 ----------------------------------------------------------
 
-        if self._ssh is None:
-            self._ssh = paramiko.SSHClient()
-            self._ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            self._ssh.connect(
-                self.host, port=22, username=self.user, password=self.password,
-                timeout=15, look_for_keys=False, allow_agent=False,
-            )
-        cmd = " ".join(shlex.quote(a) for a in args)
-        stdin, stdout, stderr = self._ssh.exec_command(cmd, timeout=self.timeout)
-        out = stdout.read().decode(errors="replace")
-        err = stderr.read().decode(errors="replace")
-        return out + err
+    def _get_ssh(self):
+        """取常驻 SSH 连接（优先复用连接池；池里没有才新建并开 keepalive）。"""
+        import paramiko
 
-    def close(self) -> None:
         if self._ssh is not None:
+            return self._ssh
+        key = (self.host, self.user, self.password)
+        fresh = paramiko.SSHClient()
+        fresh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        fresh.connect(
+            self.host, port=22, username=self.user, password=self.password,
+            timeout=15, look_for_keys=False, allow_agent=False,
+        )
+        try:
+            tr = fresh.get_transport()
+            if tr is not None:
+                tr.set_keepalive(30)
+        except Exception:
+            pass
+        cli = _pool_get(key, fresh)
+        if cli is not fresh:
+            # 其他线程已抢先重建了连接，关掉多余的这条
             try:
-                self._ssh.close()
+                fresh.close()
             except Exception:
                 pass
-            self._ssh = None
+        self._ssh = cli
+        return self._ssh
+
+    def _exec_ssh(self, make_cmd) -> str:
+        """经常驻连接执行命令并返回文本；连接被对端 reset/断开时重建并重试一次。"""
+        import paramiko
+
+        last_exc: Exception | None = None
+        for _ in range(2):
+            cli = self._get_ssh()
+            try:
+                _stdin, stdout, stderr = make_cmd(cli)
+                out = stdout.read().decode(errors="replace")
+                err = stderr.read().decode(errors="replace")
+                return out + err
+            except (OSError, EOFError, paramiko.SSHException) as exc:
+                last_exc = exc
+                _pool_drop((self.host, self.user, self.password), cli)
+                self._ssh = None
+        raise QnapError(f"SSH 命令执行失败（已自动重试一次）: {last_exc}")
+
+    def _run_ssh(self, args: list[str]) -> str:
+        cmd = " ".join(shlex.quote(a) for a in args)
+        return self._exec_ssh(lambda cli: cli.exec_command(cmd, timeout=self.timeout))
+
+    def close(self) -> None:
+        """解除本客户端对常驻连接的引用（不断开共享 SSH）。
+
+        连接池中的 SSH 供所有请求复用；真正断开由 _pool_drop 在连接
+        故障时处理。本地模式无 SSH 连接，无影响。"""
+        self._ssh = None
 
     def run_shell(self, script: str) -> str:
         """执行一段原始 shell 脚本（只读探测，如系统指标采集）。
@@ -313,28 +386,27 @@ class QnapClient:
                 capture_output=True, text=True, timeout=self.timeout,
             )
             return (proc.stdout or "") + (proc.stderr or "")
-        import paramiko  # 懒加载
+        import paramiko  # noqa: F401  懒加载依赖标记
 
-        if self._ssh is None:
-            self._ssh = paramiko.SSHClient()
-            self._ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            self._ssh.connect(
-                self.host, port=22, username=self.user, password=self.password,
-                timeout=15, look_for_keys=False, allow_agent=False,
-            )
-        stdin, stdout, stderr = self._ssh.exec_command(script, timeout=self.timeout)
-        return stdout.read().decode(errors="replace") + stderr.read().decode(errors="replace")
+        return self._exec_ssh(lambda cli: cli.exec_command(script, timeout=self.timeout))
 
     # -- 登录 ----------------------------------------------------------
 
     def login(self) -> None:
-        """登录并保存会话。无凭据（user/password）时跳过，依赖已保存的 sid。"""
+        """登录并保存会话。无凭据（user/password）时跳过，依赖已保存的 sid。
+
+        saveauthsid 在设备侧持久会话，本进程登录一次即可；重复登录
+        每次多耗一个 SSH 来回，是接口变慢的隐形开销之一。"""
         if not (self.user and self.password):
+            return
+        key = (self.host, self.user, self.password)
+        if key in _LOGGED_IN:
             return
         self._run([
             _LOCAL_QCLI, "-l",
             f"user={self.user}", f"pw={self.password}", "saveauthsid=yes",
         ])
+        _LOGGED_IN.add(key)
 
     # -- 业务方法 ------------------------------------------------------
 
@@ -511,9 +583,8 @@ class QnapClient:
             import shutil as _shutil
             _shutil.copy2(full, dest_path)
         else:
-            if self._ssh is None:
-                self.login()
-            _stdin, stdout_i, stderr_i = self._ssh.exec_command(
+            cli = self._get_ssh()
+            _stdin, stdout_i, stderr_i = cli.exec_command(
                 "cat " + shlex.quote(full), timeout=self.timeout)
             with open(dest_path, "wb") as fh:
                 while True:
@@ -527,12 +598,21 @@ class QnapClient:
         return dest_path
 
     def _run_ssh_raw(self, args: list[str]) -> tuple[bytes, bytes]:
-        """经 SSH 执行命令并返回原始字节（用于读取文件内容，二进制安全）。"""
-        if self._ssh is None:
-            self.login()
+        """经 SSH 执行命令并返回原始字节（用于读取文件内容，二进制安全，复用连接池+失败重试）。"""
+        import paramiko
+
         cmd = " ".join(shlex.quote(a) for a in args)
-        _stdin, stdout, stderr = self._ssh.exec_command(cmd, timeout=self.timeout)
-        return stdout.read(), stderr.read()
+        last_exc: Exception | None = None
+        for _ in range(2):
+            cli = self._get_ssh()
+            try:
+                _stdin, stdout, stderr = cli.exec_command(cmd, timeout=self.timeout)
+                return stdout.read(), stderr.read()
+            except (OSError, EOFError, paramiko.SSHException) as exc:
+                last_exc = exc
+                _pool_drop((self.host, self.user, self.password), cli)
+                self._ssh = None
+        raise QnapError(f"SSH 读取失败（已自动重试一次）: {last_exc}")
 
 
 

@@ -1025,10 +1025,12 @@ class Handler(BaseHTTPRequestHandler):
             elif route == "/api/junk/scan":
                 self._send_json(junk.start_scan())
             elif route == "/api/junk/clean":
-                # 按类别清理：confirm 严格 True + 逐项校验属于该类别报告 + 黑名单路径拒绝
-                self._send_json(junk.clean(
+                # 按类别清理（后台任务，立即返回）：confirm 严格 True + 逐项校验
+                # 属于该类别报告 + 黑名单路径拒绝；进度经 /api/junk/status 的 clean 字段
+                # 支持多类别（categories=[...]，一键全清，按顺序逐类执行）
+                self._send_json(junk.start_clean(
                     payload.get("category"), payload.get("confirm") is True,
-                    payload.get("paths")))
+                    payload.get("paths"), payload.get("categories")))
 
             else:
                 self._send_json({"ok": False, "error": f"未知接口: {route}"}, 404)
