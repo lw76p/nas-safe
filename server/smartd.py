@@ -8,8 +8,10 @@ NAS Safe — 硬盘 SMART 健康采集（跨品牌，100% 只读）
       · 绿联/飞牛/OMV/Unraid/TrueNAS：标准路径即可
       · QNAP 装了 Smartmontools QPKG 后，能在 .qpkg 目录找到
   通道 B（QTS 专用，无需装包）：威联通系统自身每分钟在
-      /tmp/smart/smart_0_N.info 落盘的 SMART 文本（CSV），经 sudo 读取
-      （目录权限 0700，普通账号读不到）；槽位→设备映射用 /proc/partitions。
+      /tmp/smart/smart_*.info 落盘的 SMART 文本（CSV，由 nasutil/
+      get_hd_smartinfo 写入），经 sudo 读取（目录权限 0700，普通账号
+      读不到；目录内文件 0644/0666 世界可读）；槽位→设备映射用
+      /proc/partitions（注意其非严格按次设备号排序）。
 
 每个字段都可缺省；capabilities 告诉前端「这台机器有没有 SMART 能力」——
 没有就显示「装 Smartmontools 即可开启」，而不是报错。
@@ -219,11 +221,18 @@ def _is_qts() -> bool:
 
 def _collect_qts_native() -> list[dict]:
     """通道 B（QTS 原生，优先于装 QPKG）：威联通系统自己每分钟在
-    /tmp/smart/smart_0_N.info 落盘的 SMART 文本（CSV）。
+    /tmp/smart/smart_*.info 落盘的 SMART 文本（CSV）。
 
-    该目录权限 0700（admin），普通管理员账号读不到，必须 sudo。
+    文件名形如 smart_<控制器编号>_<槽位>.info；绝大多数单控制器机型
+    （TS 全系桌面/企业款）控制器编号恒为 0 → smart_0_N.info。扩展柜 /
+    双控制器机型可能出现 smart_1_N.info，glob 已放宽捕获，但跨控制器
+    的槽位→设备精确映射属已知限制（见 _parse_qts）。
+
+    该目录权限 0700（admin），普通管理员账号读不到，必须 sudo；
+    目录内文件本身 0644/0666（世界可读），sudo 穿过目录即可直读。
     槽位→设备 映射：/proc/partitions 里 nvme*/sd* 整盘的有序序号
-    （QTS 编号 = 内核枚举序，已真机验证：slot1=nvme0n1）。
+    （QTS 编号 = 内核枚举序；注意 /proc/partitions 非严格按次设备号
+    排序，已实测 sdh 可排在 sdg 前，属正常）。
 
     返回与 _parse_block 同 schema 的磁盘列表（带 device/name）。"""
     from qnap import default_client
@@ -234,7 +243,7 @@ def _collect_qts_native() -> list[dict]:
             "echo ===PARTITIONS===; "
             "grep -E ' sd[a-z]+$| nvme[0-9]+n1$' /proc/partitions; "
             "echo ===SMART===; "
-            "for f in /tmp/smart/smart_0_*.info; do "
+            "for f in /tmp/smart/smart_*.info; do "
             "  [ -f \"$f\" ] || continue; "
             "  echo \"##FILE:$(basename \"$f\")\"; "
             "  cat \"$f\"; "
@@ -344,7 +353,7 @@ def _parse_qts(out: str) -> list[dict]:
             if toks and re.match(r"^(sd[a-z]+|nvme[0-9]+n1)$", toks[-1]):
                 dev_order.append(toks[-1])
 
-    # 各盘 SMART（按 ##FILE:smart_0_N.info 切分）
+    # 各盘 SMART（按 ##FILE:smart_<控制器>_<槽位>.info 切分）
     sm = re.search(r"===SMART===(.*)$", out, re.S)
     smart_section = sm.group(1) if sm else ""
     files = re.split(r"##FILE:(\S+)", smart_section)
@@ -352,7 +361,8 @@ def _parse_qts(out: str) -> list[dict]:
     for i in range(1, len(files), 2):
         fname = files[i]
         body = files[i + 1] if i + 1 < len(files) else ""
-        mm = re.search(r"smart_0_(\d+)\.info", fname)
+        # 容错控制器前缀（smart_0_1 / smart_1_1 都取末尾槽位号）
+        mm = re.search(r"smart_(?:\d+_)?(\d+)\.info", fname)
         slot = int(mm.group(1)) if mm else None
         slot_data[slot] = _parse_qts_block(body)
 
