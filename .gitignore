@@ -10,3 +10,12 @@ server_nas/
 web_nas/
 state/
 *.log
+
+# WorkBuddy 项目记忆与本地工作区（不入库）
+.workbuddy/
+
+# 构建/同步过程误放的副本（不入库）
+server/app.js
+server/app-*.js
+server/index.html
+server/style*.css
