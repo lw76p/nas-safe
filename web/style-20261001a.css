@@ -940,3 +940,21 @@ code {
 .dup-purge { color: var(--red); border-color: var(--red-bg); }
 .dup-purge:hover { border-color: var(--red); }
 .dup-purge-all { margin-left: auto; flex: none; font-size: 12px; }
+
+/* 每组「清理勾选」按钮 */
+.dup-group-clean { color: var(--red); border-color: var(--red-bg); flex: none; font-size: 12px; }
+.dup-group-clean:hover { border-color: var(--red); }
+.dup-group-clean[disabled] { color: var(--text-3); border-color: var(--border); opacity: .6; }
+
+/* ----------------------- 磁盘垃圾清理 ----------------------- */
+.junk-card .junk-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 14px; border-bottom: 1px dashed var(--border);
+}
+.junk-card .junk-item:last-of-type { border-bottom: none; }
+.junk-more { padding: 6px 14px; font-size: 11.5px; }
+.junk-hint { padding: 7px 14px 10px; font-size: 11.5px; }
+.junk-empty { opacity: .72; }
+.junk-clean { color: var(--red); border-color: var(--red-bg); flex: none; font-size: 12px; }
+.junk-clean:hover { border-color: var(--red); }
+.junk-clean[disabled] { color: var(--text-3); border-color: var(--border); opacity: .6; }

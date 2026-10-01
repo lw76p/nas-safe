@@ -18,6 +18,7 @@ FILES = [
     ("server/qnap.py", "/app/server/qnap.py"),
     ("server/storage.py", "/app/server/storage.py"),
     ("server/duplicates.py", "/app/server/duplicates.py"),
+    ("server/junk.py", "/app/server/junk.py"),
     ("server/app.py", "/app/server/app.py"),
     ("scripts/desktop_agent.py", "/app/scripts/desktop_agent.py"),
     ("web/app.js", "/app/web/app.js"),

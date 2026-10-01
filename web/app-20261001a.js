@@ -1,5 +1,5 @@
 /* NAS Safe — 前端逻辑 */
-const APP_JS_VER = "20261001c";
+const APP_JS_VER = "20261001e";
 
 const $ = (id) => document.getElementById(id);
 
@@ -919,7 +919,7 @@ async function aiDiscover() {
 
 
 // 顶栏标签页：总览 / 快照时间轴 / 实时监控 / 重复文件 / 设置；风险横幅全局常驻。
-const VIEWS = ["home", "snapshots", "monitor", "dups", "settings"];
+const VIEWS = ["home", "snapshots", "monitor", "dups", "junk", "settings"];
 
 function applyView() {
   const view = localStorage.getItem("nassafe_view") || "home";
@@ -942,6 +942,7 @@ function showView(name) {
   if (name === "home") loadMetrics();
   // 进入重复文件页：恢复扫描进度 + 上次报告与隔离区
   if (name === "dups") { refreshDupStatus(); loadDupReport(); }
+  if (name === "junk") { refreshJunkStatus(); loadJunkReport(); }
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -2736,6 +2737,7 @@ function renderDupReport(d) {
           ${en.manual
             ? `<span class="dup-flag dup-flag-warn">建议人工确认</span>`
             : `<span class="dup-flag dup-flag-ok" data-role="flag"></span>`}
+          <button class="btn ghost dup-group-clean" data-gi="${i}" disabled>清理勾选</button>
         </div>
         ${rows}
         ${en.manual ? `<div class="dup-manual-note">文件名差异大且没有广告词，系统不猜哪份是原版 —— 核对后手动勾选多余的（每组至少保留一份）。</div>` : ""}
@@ -2780,7 +2782,41 @@ function renderDupReport(d) {
       : `当前没有勾选任何文件 —— 切换保留策略或手动勾选（每组至少保留一份）`;
     btn.textContent = cbs.length ? `清理 ${cbs.length} 项（释放 ${fmtBytes(bytes)}）` : "按推荐清理";
     btn.disabled = !cbs.length;
+    // 每组自己的「清理勾选」按钮：随本组勾选实时启停
+    box.querySelectorAll(".dup-group").forEach((grp) => {
+      const gcbs = [...grp.querySelectorAll(".dup-cb:checked")];
+      const gbytes = gcbs.reduce((s, cb) => s + (sizeMap[cb.dataset.path] || 0), 0);
+      const gbtn = grp.querySelector(".dup-group-clean");
+      if (!gbtn) return;
+      gbtn.textContent = gcbs.length ? `清理本组 ${gcbs.length} 项（${fmtBytes(gbytes)}）` : "清理勾选";
+      gbtn.disabled = !gcbs.length;
+    });
   }
+
+  // 手动勾选/取消时实时刷新汇总与按钮（含顶部 CTA 和每组按钮）
+  box.addEventListener("change", (ev) => {
+    if (ev.target && ev.target.classList && ev.target.classList.contains("dup-cb")) {
+      updateSummary();
+    }
+  });
+
+  // 每组「清理勾选」：只把本组勾选的文件移入隔离区
+  box.querySelectorAll(".dup-group-clean").forEach((gbtn) => {
+    gbtn.onclick = () => {
+      const grp = gbtn.closest(".dup-group");
+      const paths = [...grp.querySelectorAll(".dup-cb:checked")].map((cb) => cb.dataset.path);
+      if (!paths.length) { toast("本组没有勾选任何文件", "warn"); return; }
+      const gbytes = paths.reduce((s, p) => s + (sizeMap[p] || 0), 0);
+      openModal(
+        "清理本组勾选",
+        `<p>即将把本组勾选的 <b>${paths.length}</b> 个文件（约 ${fmtBytes(gbytes)}）移入隔离目录。</p>
+         <p class="muted">文件<b>不会被删除</b>，只是移入「.nassafe-quarantine」隔离目录，随时可以在隔离区一键恢复。</p>`,
+        `<button class="btn ghost" data-act="close">取消</button>
+         <button class="btn primary" data-act="ok">确认移入隔离区</button>`,
+        { ok: () => doDupQuarantine(paths) }
+      );
+    };
+  });
 
   box.querySelectorAll('input[name="dupPolicy"]').forEach((r) => { r.onchange = applySelection; });
   applySelection();
@@ -2979,3 +3015,148 @@ async function openDupPicker() {
 $("dupPickBtn").onclick = openDupPicker;
 $("dupScanBtn").onclick = startDupScan;
 if ((localStorage.getItem("nassafe_view") || "home") === "dups") loadDupReport();
+
+// ---- 磁盘垃圾清理：扫描 / 报告 / 按类清理 ----
+let junkPollTimer = null;
+
+function junkSetStatus(html, kind) {
+  const st = $("junkStatus");
+  if (!html) { st.style.display = "none"; return; }
+  st.style.display = "block";
+  st.className = "notice" + (kind ? " " + kind : "");
+  st.innerHTML = html;
+}
+
+async function startJunkScan() {
+  const btn = $("junkScanBtn");
+  btn.disabled = true;
+  try {
+    await api("/api/junk/scan", { method: "POST", body: "{}" });
+    toast("垃圾扫描已开始…", "ok");
+    pollJunkStatus();
+  } catch (e) {
+    toast("启动扫描失败：" + e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function pollJunkStatus() {
+  clearInterval(junkPollTimer);
+  junkPollTimer = setInterval(refreshJunkStatus, 2000);
+  refreshJunkStatus();
+}
+
+async function refreshJunkStatus() {
+  let st;
+  try { st = await api("/api/junk/status"); } catch { return; }
+  if (st.status === "scanning") {
+    const phaseName = { recycle: "回收站", thumbs: "缩略图缓存", logs: "旧日志", docker: "Docker 占用" }[st.phase] || "";
+    junkSetStatus(`<span class="spinner"></span>正在扫描${phaseName ? "（" + phaseName + "）" : "…"}（只读，不改动数据）`);
+  } else {
+    if (junkPollTimer) { clearInterval(junkPollTimer); junkPollTimer = null; }
+    if (st.status === "error") junkSetStatus("扫描失败：" + escapeHtml(st.error || "未知"), "warn");
+    else if (st.status === "done") junkSetStatus("");
+  }
+}
+
+async function loadJunkReport() {
+  refreshJunkStatus();
+  let d;
+  try { d = await api("/api/junk/report"); } catch { return; }
+  renderJunkReport(d);
+}
+
+function renderJunkReport(d) {
+  const box = $("junkResults");
+  if (d.empty || !d.categories) {
+    box.innerHTML = `<p class="muted">还没有扫描报告 —— 点「开始扫描」清点可回收空间。</p>`;
+    return;
+  }
+  const head = `
+    <div class="dup-summary">
+      <b>扫描完成</b>
+      <span class="muted">${escapeHtml(String(d.scanned_at).slice(0, 16).replace("T", " "))} · 各类垃圾单独确认后才清理</span>
+    </div>`;
+
+  const ICONS = { recycle: "🗑", thumbs: "🖼", logs: "📄", docker: "📦" };
+  const cards = d.categories.map((cat) => {
+    const count = cat.items.length;
+    const empty = !cat.total_bytes;
+    const rows = cat.items.slice(0, 12).map((i) => {
+      const size = i.kb != null ? fmtBytes(i.kb * 1024) : fmtBytes(i.size || 0);
+      return `<div class="junk-item"><span class="dup-path">${escapeHtml(i.path)}</span><span class="dup-meta">${size}</span></div>`;
+    }).join("");
+    const more = count > 12 ? `<div class="muted junk-more">…还有 ${count - 12} 项</div>` : "";
+    const dockerBlock = cat.key === "docker" ? renderJunkDocker(d.docker) : "";
+    return `
+      <div class="dup-group junk-card${empty ? " junk-empty" : ""}">
+        <div class="dup-group-head">
+          <b>${ICONS[cat.key] || "•"} ${escapeHtml(cat.name)}</b>
+          <span class="muted">${count ? count + " 项 · " : ""}${empty ? "没有可清理的" : fmtBytes(cat.total_bytes) + " 可回收"}</span>
+          <button class="btn ghost junk-clean" data-cat="${escapeAttr(cat.key)}" ${empty ? "disabled" : ""}>清理此类</button>
+        </div>
+        ${dockerBlock || rows + more}
+        <div class="junk-hint muted">${escapeHtml(cat.hint || "")}</div>
+      </div>`;
+  }).join("");
+
+  box.innerHTML = head + `<div class="dup-groups">${cards}</div>`;
+
+  box.querySelectorAll(".junk-clean").forEach((btn) => {
+    btn.onclick = () => {
+      const cat = d.categories.find((c) => c.key === btn.dataset.cat);
+      if (!cat) return;
+      const extra = cat.key === "docker"
+        ? `清理方式：清除<b>悬空镜像</b>与<b>构建缓存</b>（docker image/builder prune），<b>不会触碰任何在运行的容器和正在使用的镜像</b>。`
+        : cat.key === "thumbs"
+          ? `缩略图删除后，浏览图片时 QTS 会<b>自动重新生成</b>；HMP 海报在应用目录（黑名单内），不受任何影响。`
+          : cat.key === "logs"
+            ? `只删除 <b>30 天前</b>的轮转/压缩日志，活动日志一律不碰。`
+            : `回收站里的文件本来就是已删除状态，清空后彻底释放。`;
+      openModal(
+        "确认清理：" + cat.name,
+        `<p>将清理 <b>${cat.items.length}</b> 项，约 <b>${fmtBytes(cat.total_bytes)}</b>。</p>
+         <p class="muted">${extra}</p>
+         <p class="muted">此操作<b>不可恢复</b>（缩略图会自动重建，不在此列）。</p>`,
+        `<button class="btn ghost" data-act="close">取消</button>
+         <button class="btn primary" data-act="ok" style="color:var(--red);border-color:var(--red)">确认清理</button>`,
+        { ok: () => doJunkClean(cat.key) }
+      );
+    };
+  });
+}
+
+function renderJunkDocker(docker) {
+  if (!docker || !docker.df || !docker.df.length) return "";
+  const dfRows = docker.df.map((r) => `
+    <div class="junk-item"><span class="dup-path">Docker ${escapeHtml(r.type)}</span>
+    <span class="dup-meta">${escapeHtml(r.size)} · 可回收 ${escapeHtml(r.reclaimable)}</span></div>`).join("");
+  const dang = (docker.dangling_images || []);
+  const dangNote = dang.length
+    ? `<div class="muted junk-more">悬空镜像 ${dang.length} 个（如 ${escapeHtml(dang.slice(0, 3).map((x) => x.id).join("、"))}…）</div>`
+    : `<div class="muted junk-more">没有悬空镜像</div>`;
+  return dfRows + dangNote;
+}
+
+async function doJunkClean(category) {
+  junkSetStatus(`<span class="spinner"></span>正在清理（${category}）…`);
+  try {
+    const r = await api("/api/junk/clean", {
+      method: "POST",
+      body: JSON.stringify({ confirm: true, category }),
+    }, 120000);
+    closeModal();
+    const freed = r.freed_bytes || 0;
+    const msg = r.detail ? "已执行 Docker 清理" : `已清理 ${r.cleaned != null ? r.cleaned + " 项，" : ""}释放 ${fmtBytes(freed)}`;
+    toast(msg, "ok");
+    junkSetStatus("");
+    loadJunkReport();
+  } catch (e) {
+    junkSetStatus("清理失败：" + escapeHtml(e.message), "warn");
+  }
+}
+
+// ---- 磁盘垃圾清理：事件绑定 ----
+$("junkScanBtn").onclick = startJunkScan;
+if ((localStorage.getItem("nassafe_view") || "home") === "junk") loadJunkReport();

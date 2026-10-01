@@ -42,6 +42,7 @@
   <button class="tab" data-view="snapshots">◷ 快照时间轴</button>
   <button class="tab" data-view="monitor"><span id="monitorDot" class="monitor-dot monitor-dot-off">◉</span> 实时监控</button>
   <button class="tab" data-view="dups">⧉ 重复文件</button>
+  <button class="tab" data-view="junk">🧹 磁盘清理</button>
   <button class="tab" data-view="settings">⚙ 设置</button>
 </nav>
 
@@ -216,7 +217,28 @@
     <div id="dupQuarantine" class="monitor-results"></div>
   </section>
 
-  <!-- 功能区五：通知与 AI 设置 -->
+  <!-- 功能区五：磁盘垃圾清理 -->
+  <section class="panel zone zone-snapshot" id="junkPanel" data-view="junk" hidden>
+    <div class="panel-head">
+      <div class="zone-head">
+        <span class="zone-ico">🧹</span>
+        <div>
+          <h2>磁盘垃圾清理</h2>
+          <p class="sub">回收站 · 缩略图缓存 · Docker 悬空镜像 · 30 天前旧日志 —— 只读扫描出报告，确认后再清</p>
+        </div>
+      </div>
+    </div>
+    <div class="monitor-controls">
+      <button class="btn primary" id="junkScanBtn">开始扫描</button>
+      <span class="muted">HMP 海报、MoviePilot、Docker 数据卷等应用目录在黑名单里，永远不会被碰。</span>
+    </div>
+    <div id="junkStatus" class="notice" style="display:none"></div>
+    <div id="junkResults" class="monitor-results">
+      <p class="muted">点「开始扫描」清点可回收空间。扫描只读取目录大小，不会改动任何数据；每类垃圾单独确认后才会清理。</p>
+    </div>
+  </section>
+
+  <!-- 功能区六：通知与 AI 设置 -->
   <section class="panel zone zone-monitor" id="settingsPanel" data-view="settings">
     <div class="panel-head">
       <div class="zone-head">

@@ -27,6 +27,10 @@ NAS Safe — 后端 API 服务
   GET  /api/duplicates/quarantine 隔离区清单
   POST /api/duplicates/restore    从隔离区恢复到原位置
   POST /api/duplicates/purge      彻底删除隔离区文件（不可恢复，仅限隔离目录内）
+  POST /api/junk/scan             磁盘垃圾扫描（后台线程，只读）
+  GET  /api/junk/status           垃圾扫描进度
+  GET  /api/junk/report           垃圾报告（回收站/缩略图/Docker/旧日志）
+  POST /api/junk/clean            按类别清理（confirm=true；逐项校验报告内路径）
   GET  /api/health                健康检查
 
 安全约定：
@@ -64,6 +68,7 @@ import autosnapshot  # noqa: E402  自动快照调度器（每小时 vital 锁�
 import metrics  # noqa: E402  系统指标采集（仪表盘：CPU/RAM/温度/网速/磁盘/卷容量）
 import anomalies  # noqa: E402  异常判定 + 主动推送看门狗（小助手关闭时接管微信提醒）
 import duplicates  # noqa: E402  重复文件清理（只读报告 + 隔离式软删除）
+import junk  # noqa: E402  磁盘垃圾清理（回收站/缩略图/Docker缓存/旧日志，只读报告+按类清理）
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
@@ -615,6 +620,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"ok": True, **rpt})
             elif route == "/api/duplicates/quarantine":
                 self._send_json(duplicates.quarantine_list())
+            elif route == "/api/junk/status":
+                self._send_json(junk.get_status())
+            elif route == "/api/junk/report":
+                rpt = junk.load_report()
+                if not rpt:
+                    self._send_json({"ok": True, "empty": True})
+                else:
+                    self._send_json({"ok": True, **rpt})
             elif route == "/api/system":
                 self._send_json(build_system_info())
             elif route == "/api/volumes":
@@ -1008,6 +1021,14 @@ class Handler(BaseHTTPRequestHandler):
                 # 彻底删除隔离区文件（不可恢复）：confirm + 隔离日志白名单 + 路径格式三重护栏
                 self._send_json(duplicates.purge_quarantine(
                     payload.get("ids"), payload.get("confirm") is True))
+
+            elif route == "/api/junk/scan":
+                self._send_json(junk.start_scan())
+            elif route == "/api/junk/clean":
+                # 按类别清理：confirm 严格 True + 逐项校验属于该类别报告 + 黑名单路径拒绝
+                self._send_json(junk.clean(
+                    payload.get("category"), payload.get("confirm") is True,
+                    payload.get("paths")))
 
             else:
                 self._send_json({"ok": False, "error": f"未知接口: {route}"}, 404)
