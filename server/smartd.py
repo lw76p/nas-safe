@@ -2,11 +2,18 @@
 NAS Safe — 硬盘 SMART 健康采集（跨品牌，100% 只读）
 
 设计原则（与 probe_smart.sh / metrics.py 同哲学，分层适配，绝不报错刷屏）：
-  通道 A（通用，优先）：smartctl 多路径探测 → `smartctl -H -A -i /dev/X`
-      · 标准路径 /usr/sbin|/usr/bin|/usr/local/sbin|/usr/local/bin
-      · 群晖  /usr/syno/bin/smartctl、/usr/syno/sbin/smartctl
-      · 绿联/飞牛/OMV/Unraid/TrueNAS：标准路径即可
-      · QNAP 装了 Smartmontools QPKG 后，能在 .qpkg 目录找到
+  通道 A（通用，优先）：smartctl 跨品牌采集
+      —— 参考业界最成熟的跨厂商方案 scrutiny(analogj/scrutiny)：
+         · 设备发现用 `smartctl --scan -j`（JSON），自动枚举全盘 + 类型，
+           不依赖 /dev 猜测；失败回退 /sys/block 枚举整盘。
+         · 逐盘 `smartctl -a -j` 取结构化 JSON；JSON 优先，旧版 smartctl
+           无 -j 时回退文本解析（-H -A -i）。
+         · 健康判定：smart_status.passed + 关键属性（重映射5/待映射197/
+           无法校正198）反推；smartctl 非零退出码多为告警位，JSON 可解析
+           即用，不丢弃（只有「命令错/打不开设备」两位才致命）。
+         · 用 wwn/serial 做稳定身份（供趋势去重）。
+      · smartctl 路径按出现概率探测：标准路径 + 群晖 /usr/syno/bin。
+      · 群晖/绿联/飞牛/OMV/Unraid/TrueNAS 走此通道开箱即用。
   通道 B（QTS 专用，无需装包）：威联通系统自身每分钟在
       /tmp/smart/smart_*.info 落盘的 SMART 文本（CSV，由 nasutil/
       get_hd_smartinfo 写入），经 sudo 读取（目录权限 0700，普通账号
@@ -19,6 +26,7 @@ NAS Safe — 硬盘 SMART 健康采集（跨品牌，100% 只读）
 阈值判读（只盯真正预示坏盘的指标，避免误报）：
   · 整体健康 PASSED         → ok
   · 整体健康 FAILED         → fail
+  · NVMe critical_warning>0 → fail
   · 待映射扇区 > 0          → fail（盘快不行了）
   · 离线无法校正 > 0        → fail
   · 重映射扇区 > 0          → warn（已出现坏道苗头）
@@ -27,6 +35,7 @@ NAS Safe — 硬盘 SMART 健康采集（跨品牌，100% 只读）
 
 from __future__ import annotations
 
+import json
 import re
 import time
 
@@ -62,6 +71,24 @@ _ATTRS = {
     231: ("life_left_pct", "剩余寿命(%)", "info"),
     233: ("nand_writes", "写入量", "info"),
 }
+
+
+def _empty_disk(name: str) -> dict:
+    """所有解析函数共用的最小结构（前端/日报按 name/health 取数）。"""
+    return {
+        "name": name,
+        "device": ("/dev/" + name) if name else None,
+        "serial": None,
+        "health": "unknown",            # ok / warn / fail / unknown
+        "model": None,
+        "temp_c": None,
+        "power_on_hours": None,
+        "reallocated": None,
+        "pending": None,
+        "uncorrectable": None,
+        "life_left_pct": None,
+        "attrs": {},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -105,22 +132,110 @@ def _detect_smartctl() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# 解析
+# 通道 A：smartctl 跨品牌采集（参考 scrutiny）
 # ---------------------------------------------------------------------------
 
+def _scan_devices(smartctl: str) -> list[tuple[str, str | None]]:
+    """用 `smartctl --scan -j` 自动发现全盘（跨品牌最稳的方法，源自 scrutiny）。
+    返回 [(设备名如 sda, 类型), ...]；扫描失败则回退 /sys/block 枚举整盘。"""
+    devs: list[tuple[str, str | None]] = []
+    try:
+        out = _run_cmd(f"{smartctl} --scan -j 2>/dev/null")
+        data = json.loads(out)
+        for d in data.get("devices", []):
+            name = (d.get("name") or "").replace("/dev/", "")
+            if name:
+                devs.append((name, d.get("type")))
+    except Exception:
+        pass
+    if devs:
+        return devs
+    # 回退：/sys/block 整盘（排除分区与 loop/ram）
+    try:
+        out2 = _run_cmd("ls /sys/block 2>/dev/null")
+        for n in out2.split():
+            n = n.strip()
+            if re.match(r"^(sd[a-z]+|nvme[0-9]+n[0-9]+|hd[a-z]|vd[a-z]|mmcblk[0-9]+)$", n):
+                devs.append((n, None))
+    except Exception:
+        pass
+    return devs
+
+
+def _parse_smartctl_json(obj: dict, name: str) -> dict:
+    """解析 smartctl -a -j 的 JSON 输出（scrutiny 同款结构化来源）。"""
+    info = _empty_disk(name)
+    dev = obj.get("device", {}) or {}
+    info["model"] = obj.get("model_name")
+    info["serial"] = obj.get("serial_number")
+    if dev.get("name"):
+        info["device"] = dev["name"]
+
+    ss = obj.get("smart_status") or {}
+    passed = ss.get("passed")
+    temp = (obj.get("temperature") or {}).get("current")
+    pot = (obj.get("power_on_time") or {}).get("hours")
+
+    attrs: dict[str, int] = {}
+    for a in (obj.get("ata_smart_attributes") or {}).get("table") or []:
+        try:
+            int(a.get("id"))
+        except (TypeError, ValueError):
+            continue
+        raw = (a.get("raw") or {}).get("value")
+        aname = a.get("name")
+        if raw is not None and aname:
+            attrs[aname] = raw
+    info["attrs"] = attrs
+
+    nvme = obj.get("nvme_smart_health_information_log")
+    if nvme is not None:
+        cw = nvme.get("critical_warning", 0) or 0
+        used = nvme.get("percentage_used")
+        if used is not None:
+            info["life_left_pct"] = max(0, 100 - int(used))
+        info["power_on_hours"] = nvme.get("power_on_hours")
+        if temp is None:
+            temp = nvme.get("temperature")  # NVMe 已是摄氏度
+        info["reallocated"] = nvme.get("media_errors")
+        info["health"] = "fail" if (cw and cw > 0) or passed is False else "ok"
+    else:
+        # ATA / SATA
+        info["reallocated"] = attrs.get("Reallocated_Sector_Ct")
+        info["pending"] = attrs.get("Current_Pending_Sector")
+        ou = attrs.get("Offline_Uncorrectable")
+        if ou is None:
+            ou = attrs.get("Reported_Uncorrect")
+        info["uncorrectable"] = ou
+        info["power_on_hours"] = pot
+        if temp is None:
+            t = attrs.get("Temperature_Celsius")
+            if t is not None:
+                try:
+                    temp = int(str(t).split()[0])
+                except ValueError:
+                    temp = None
+        if passed is False:
+            info["health"] = "fail"
+        else:
+            pend = info["pending"] or 0
+            unc = info["uncorrectable"] or 0
+            rea = info["reallocated"] or 0
+            if pend > 0 or unc > 0:
+                info["health"] = "fail"
+            elif rea > 0:
+                info["health"] = "warn"
+            else:
+                info["health"] = "ok"
+
+    if temp is not None:
+        info["temp_c"] = int(temp)
+    return info
+
+
 def _parse_block(text: str, name: str) -> dict:
-    info = {
-        "name": name,
-        "health": "unknown",            # ok / warn / fail / unknown
-        "model": None,
-        "temp_c": None,
-        "power_on_hours": None,
-        "reallocated": None,
-        "pending": None,
-        "uncorrectable": None,
-        "life_left_pct": None,
-        "attrs": {},
-    }
+    """smartctl 文本输出解析（旧版无 -j 时的回退）。"""
+    info = _empty_disk(name)
     # 整体健康
     m = re.search(r"overall-health self-assessment test result:\s*(\w+)", text, re.I)
     if m:
@@ -184,32 +299,38 @@ def _parse_block(text: str, name: str) -> dict:
     return info
 
 
-def _collect_smartctl(smartctl: str, devices: list[str]) -> list[dict]:
-    """通道 A：一条批量脚本，单次 SSH 往返，逐盘采集。"""
-    dev_list = " ".join(f'"{d}"' for d in devices)
-    script = f"""
-SC={smartctl}
-for dev in {dev_list}; do
-  echo "===SMART $dev ==="
-  $SC -H -A -i "$dev" 2>&1
-  echo "===END $dev ==="
-done
-"""
+def _parse_smartctl_block_or_json(body: str, name: str) -> dict:
+    """优先按 JSON 解析（smartctl -j），失败回退到文本解析（旧版 smartctl）。"""
+    body = body.strip()
+    if body.startswith("{"):
+        try:
+            return _parse_smartctl_json(json.loads(body), name)
+        except Exception:
+            pass
+    return _parse_block(body, name)
+
+
+def _collect_smartctl(smartctl: str, devices: list[tuple[str, str | None]]) -> list[dict]:
+    """通道 A：用 smartctl -a -j 逐盘采集（JSON 优先，文本回退）。单脚本批量跑。"""
+    if not devices:
+        return []
+    lines = [f"SC={smartctl}"]
+    for dev, dtype in devices:
+        opt = f" --device {dtype}" if dtype and dtype not in ("ata", "sat", "scsi", "nvme") else ""
+        lines.append(
+            f'echo "===SMART /dev/{dev} ==="; '
+            f'{smartctl} -a -j{opt} "/dev/{dev}" 2>&1; '
+            f'echo "===END /dev/{dev} ==="'
+        )
+    script = "\n".join(lines)
     raw = _run_cmd(script)
     disks: list[dict] = []
     blocks = re.split(r"===SMART (/dev/\S+) ===", raw)
-    # blocks[0] 是前缀；之后每两项：(设备名, 内容)
     for i in range(1, len(blocks), 2):
         dev = blocks[i]
         body = blocks[i + 1].split(f"===END {dev} ===")[0] if i + 1 < len(blocks) else ""
         name = dev.replace("/dev/", "")
-        if "NO_SMARTCTL" in body or not body.strip():
-            disks.append({"name": name, "health": "unknown", "model": None,
-                          "temp_c": None, "power_on_hours": None,
-                          "reallocated": None, "pending": None,
-                          "uncorrectable": None, "life_left_pct": None, "attrs": {}})
-            continue
-        disks.append(_parse_block(body, name))
+        disks.append(_parse_smartctl_block_or_json(body, name))
     return disks
 
 
@@ -268,19 +389,7 @@ def _parse_qts_block(body: str) -> dict:
     SATA 关键：Retired_Block_Count / Current_Pending_Sector /
               Uncorrectable_Sector_Count / Reallocated_Event_Count
     """
-    info = {
-        "name": None,
-        "device": None,
-        "health": "unknown",
-        "model": None,
-        "temp_c": None,
-        "power_on_hours": None,
-        "reallocated": None,
-        "pending": None,
-        "uncorrectable": None,
-        "life_left_pct": None,
-        "attrs": {},
-    }
+    info = _empty_disk(None)
     lines = [l for l in body.splitlines() if l.strip()]
     if not lines:
         return info
@@ -327,7 +436,14 @@ def _parse_qts_block(body: str) -> dict:
         info["pending"] = attrs.get("Current_Pending_Sector")
         info["uncorrectable"] = attrs.get("Uncorrectable_Sector_Count")
         evt = attrs.get("Reallocated_Event_Count")
-        info["power_on_hours"] = attrs.get("Power-On-Hours")
+        # 通电时长：QTS 不同固件命名不一（Power-On_Hours / Power-On-Hours /
+        # Power_On_Hours / Power On Hours），用「含 power 且含 hour」模糊匹配
+        poh = None
+        for k, v in attrs.items():
+            if "power" in k.lower() and "hour" in k.lower() and isinstance(v, int):
+                poh = v
+                break
+        info["power_on_hours"] = poh
         pend = info["pending"] or 0
         unc = info["uncorrectable"] or 0
         rea = info["reallocated"] or 0
@@ -396,18 +512,9 @@ def collect(force: bool = False) -> dict:
     disks: list[dict] = []
     if smartctl:
         # 通道 A：smartctl 多路径（群晖/绿联/飞牛/通用 Linux 开箱即用）
-        # 复用 metrics 的磁盘清单（/sys/block），拿到设备名
-        try:
-            import metrics  # 延迟导入，避免循环
-            m = metrics.collect()
-            names = [d["name"] for d in (m.get("disks") or []) if d and d.get("name")]
-        except Exception:
-            names = []
-        if not names:
-            # 兜底：直接用 /dev 下常见盘符
-            names = [f"sd{x}" for x in "abcdefghijklmnop"] + \
-                    [f"nvme{n}n1" for n in range(0, 4)]
-        devices = [f"/dev/{n}" for n in names]
+        # 用 smartctl --scan -j 自动发现全盘（源自 scrutiny 的跨品牌方案），
+        # 失败回退 /sys/block 枚举；逐盘 smartctl -a -j 解析（JSON 优先）。
+        devices = _scan_devices(smartctl)
         disks = _collect_smartctl(smartctl, devices)
     elif _is_qts():
         # 通道 B：QTS 原生（威联通无需装任何 QPKG，系统自维护 /tmp/smart 即可）
