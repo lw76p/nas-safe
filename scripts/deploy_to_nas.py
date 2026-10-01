@@ -26,7 +26,7 @@ FILES = [
     ("web/app-20261001b.js", "/app/web/app-20261001b.js"),
     ("web/index.html", "/app/web/index.html"),
     ("web/style.css", "/app/web/style.css"),
-    ("web/style-20261001a.css", "/app/web/style-20261001a.css"),
+    ("web/style-20261001c.css", "/app/web/style-20261001c.css"),
     ("agent/桌面助手.exe", "/app/agent/桌面助手.exe"),
     ("agent/NASSafeAgent.exe", "/app/agent/NASSafeAgent.exe"),
     ("agent/nassafe_agent.ico", "/app/agent/nassafe_agent.ico"),
