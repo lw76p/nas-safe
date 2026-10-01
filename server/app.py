@@ -630,7 +630,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send_json({"ok": True, **rpt})
             elif route == "/api/daily-report":
-                # 返回日报配置 + 上次报告（前端设置页与首页概览共用）
+                # 返回日报配置 + 上次报告（前端设置页用）
                 self._send_json({
                     "ok": True,
                     "config": daily_report.load_config(),
@@ -1041,8 +1041,8 @@ class Handler(BaseHTTPRequestHandler):
                     payload.get("paths"), payload.get("categories")))
 
             elif route == "/api/daily-report/run":
-                # 立即生成并推送一次每日健康日报（手动测试 / 即时发送）
-                self._send_json(daily_report.send_daily())
+                # 立即生成并推送一次每日状态日报（手动测试 / 即时发送）
+                self._send_json({"ok": True, "last": daily_report.send_daily()})
 
             elif route == "/api/daily-report/config":
                 # 保存日报开关与推送时间（hour/minute）

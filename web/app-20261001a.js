@@ -951,9 +951,21 @@ function onEnterView(name) {
       loadSnapshots(); // 卷已恢复但时间轴还没拉过：补拉（幂等，重复调用不会双载）
   } else if (name === "home") {
     loadMetrics();
-    loadDailyGlance();
+  } else if (name === "settings") {
+    const tab = localStorage.getItem("nassafe_settings_tab") || "notify";
+    showSettingsTab(tab);
   } else if (name === "dups") { refreshDupStatus(); loadDupReport(); }
   else if (name === "junk") { refreshJunkStatus(); loadJunkReport(); }
+}
+
+function showSettingsTab(tab) {
+  localStorage.setItem("nassafe_settings_tab", tab);
+  document.querySelectorAll(".settings-tab").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tab === tab);
+  });
+  document.querySelectorAll(".settings-pane").forEach((pane) => {
+    pane.classList.toggle("active", pane.dataset.pane === tab);
+  });
 }
 
 async function autoSelectVolume() {
@@ -2529,7 +2541,13 @@ $("autoSnapRunBtn").onclick = runAutoSnap;
 loadDaily();
 $("dailySaveBtn").onclick = saveDaily;
 $("dailyRunBtn").onclick = runDaily;
-$("dailyGlanceOpen").onclick = () => showView("settings");
+
+// ---- 设置页菜单切换 ----
+document.querySelectorAll(".settings-tab").forEach((btn) => {
+  btn.onclick = () => showSettingsTab(btn.dataset.tab);
+});
+const savedTab = localStorage.getItem("nassafe_settings_tab") || "notify";
+showSettingsTab(savedTab);
 
 function loadAutoSnap() {
   api("/api/autosnapshot").then((d) => {
@@ -2594,38 +2612,6 @@ function loadDaily() {
     $("dailyMinute").value = c.minute != null ? c.minute : 0;
     renderDailyLast(d.last);
   }).catch(() => {});
-}
-
-function nextDailyTime(c) {
-  const now = new Date();
-  const h = c.hour != null ? c.hour : 8;
-  const m = c.minute != null ? c.minute : 0;
-  let t = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
-  if (t.getTime() <= now.getTime() + 30000) t.setDate(t.getDate() + 1);
-  const pad = (x) => String(x).padStart(2, "0");
-  return `每天 ${pad(h)}:${pad(m)}（下次 ${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}）`;
-}
-
-function loadDailyGlance() {
-  const box = $("dailyGlanceBody");
-  if (!box) return;
-  api("/api/daily-report").then((d) => {
-    if (!d || !d.ok) { box.className = "notice"; box.textContent = "日报模块未就绪"; return; }
-    const c = d.config || {};
-    const last = d.last;
-    let html = "";
-    if (!c.enabled) {
-      html = `📴 日报未开启 —— ${nextDailyTime(c)} 自动推送（需在设置里开启并配置通知通道）。<br><span class="muted">开启后，每天把一份健康卡片安静地送到你微信/邮箱。</span>`;
-    } else if (last && last.report) {
-      const r = last.report;
-      html = `✅ 已开启 · ${nextDailyTime(c)}<br>` +
-        `<div class="muted" style="margin-top:6px;line-height:1.8">上次（${escapeHtml(last.sent_at || "")}）：${escapeHtml(r.summary || "")}</div>`;
-    } else {
-      html = `✅ 已开启 · ${nextDailyTime(c)}<br><span class="muted" style="margin-top:6px;display:inline-block">还没发过，点「立即发送一次」试试，或等下次定时推送。</span>`;
-    }
-    box.className = "notice";
-    box.innerHTML = html;
-  }).catch(() => { box.className = "notice warn"; box.textContent = "加载日报概览失败"; });
 }
 
 function renderDailyLast(last) {

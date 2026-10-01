@@ -1,18 +1,17 @@
 """
-NAS Safe — 每日健康日报（免费留存钩子，复用现有通知链路）
+NAS Safe — 每日状态日报
 
-目标：每天定时把一份「快照保护 / 告警 / 可释放空间 / 硬盘健康」卡片推到用户
-已配置的通道（微信服务号 / 邮件 / 群机器人 / Bark 等），让用户天天看到产品在
-干活 —— 这是续费感最强的免费功能（见 docs/BUSINESS.md：日报免费做获客钩子）。
+每天定时把 NAS 状态（备份、异常、能清理的空间、硬盘状态）发到用户已配置的
+微信 / 邮箱 / 群机器人等。完全复用现有通知链路，不需要额外权限。
 
-数据源（全部复用既有模块，零新增权限）：
-  · 快照保护状态  → storage.list_all_volumes / list_all_snapshots
-  · 实时告警      → anomalies.collect_anomalies
-  · 可释放空间    → junk.load_report（用户先扫过才有数字，否则只提示「未扫描」）
-  · 硬盘健康/容量 → metrics.collect（温度、卷用量、存满趋势）
+数据源：
+  · 备份情况  → storage 列卷/快照
+  · 异常提醒  → anomalies.collect_anomalies
+  · 可清空间  → junk.load_report（先扫过才有数字）
+  · 硬盘状态  → metrics.collect（温度、用量、多久会满）
 
-推送：复用 notify.dispatch（events 形态），自动走用户已启用的所有通道，不配通道则空操作。
-调度：后台守护线程，按用户设定的 hour:minute 每天跑一次（默认 08:00）。
+推送：复用 notify.dispatch，自动走所有已启用通道。
+调度：后台守护线程，按用户设定的时间每天跑一次（默认 08:00）。
 """
 
 from __future__ import annotations
@@ -133,6 +132,9 @@ def _snapshot_summary() -> dict:
             "protected_volumes": protected, "latest_snapshot": latest}
 
 
+# 以下文案统一用大白话，避免「快照/告警/可释放空间/硬盘健康」等术语直接推到用户眼前
+
+
 def _freeable_summary() -> dict:
     rpt = junk.load_report()
     if not rpt or not rpt.get("categories"):
@@ -176,22 +178,22 @@ def _summary_line(r: dict) -> str:
     snap = r.get("snapshots")
     if snap:
         if snap.get("protected_volumes"):
-            parts.append(f"{snap['protected_volumes']} 个卷已上锁保护、共 {snap['snapshot_count']} 张快照")
+            parts.append(f"{snap['protected_volumes']} 个盘已保护、共 {snap['snapshot_count']} 个备份点")
         else:
-            parts.append("暂未对任何卷创建快照（建议立即拍一张）")
+            parts.append("还没给任何盘建备份点（建议立即建一个）")
     al = r.get("alerts") or {}
     if al.get("total"):
-        parts.append(f"{al['critical']} 项严重、{al['warn']} 项需注意的告警")
+        parts.append(f"{al['critical']} 项严重、{al['warn']} 项需要注意")
     else:
-        parts.append("无新增告警")
+        parts.append("没有新异常")
     fb = r.get("freeable")
     if fb and fb.get("scanned"):
         if fb.get("total_bytes"):
-            parts.append(f"可清理释放 {_fmt_bytes(fb['total_bytes'])}")
+            parts.append(f"能清理出 {_fmt_bytes(fb['total_bytes'])}")
         else:
-            parts.append("暂无可清理空间")
+            parts.append("没有能清理的空间")
     else:
-        parts.append("垃圾未扫描（去「磁盘清理」扫一次可出数字）")
+        parts.append("还没扫过垃圾（去「磁盘清理」扫一次就有数字）")
     return "；".join(parts) + "。"
 
 
@@ -206,39 +208,39 @@ def _fmt_bytes(n) -> str:
 
 def format_text(report: dict) -> str:
     """把结构化报告压成一条适合推送的纯文本卡片。"""
-    lines = ["📋 NAS Safe 每日健康日报", f"⏰ {report.get('generated_at','')}", ""]
+    lines = ["📋 NAS Safe 每日状态", f"⏰ {report.get('generated_at','')}", ""]
     snap = report.get("snapshots") or {}
-    lines.append("【快照保护】")
+    lines.append("【备份情况】")
     if snap:
-        lines.append(f"  · 存储卷 {snap.get('volume_count')} 个，已保护 {snap.get('protected_volumes')} 个")
-        lines.append(f"  · 快照总数 {snap.get('snapshot_count')} 张，最新：{snap.get('latest_snapshot') or '无'}")
+        lines.append(f"  · 共 {snap.get('volume_count')} 个盘，{snap.get('protected_volumes')} 个已保护")
+        lines.append(f"  · 备份点共 {snap.get('snapshot_count')} 个，最新：{snap.get('latest_snapshot') or '无'}")
     else:
         lines.append("  · 数据暂不可用")
 
     al = report.get("alerts") or {}
-    lines.append("【告警】")
+    lines.append("【异常提醒】")
     if al.get("total"):
-        lines.append(f"  · 共 {al['total']} 项（严重 {al['critical']} / 注意 {al['warn']}）")
+        lines.append(f"  · 共 {al['total']} 项（严重 {al['critical']} / 需要注意 {al['warn']}）")
         for it in (al.get("items") or [])[:5]:
             icon = "🔴" if it.get("sev") == 2 else "🟠"
             lines.append(f"    {icon} {it.get('title')}")
     else:
-        lines.append("  · 无新增告警 ✓")
+        lines.append("  · 没有新异常 ✓")
 
     fb = report.get("freeable")
-    lines.append("【可释放空间】")
+    lines.append("【能清理的空间】")
     if fb and fb.get("scanned"):
         if fb.get("total_bytes"):
-            lines.append(f"  · 可清理释放 {_fmt_bytes(fb['total_bytes'])}")
+            lines.append(f"  · 能清出 {_fmt_bytes(fb['total_bytes'])}")
             for c in fb.get("categories") or []:
                 lines.append(f"    - {c['name']}：{c['items']} 项 / {_fmt_bytes(c['bytes'])}")
         else:
-            lines.append("  · 暂无可清理空间")
+            lines.append("  · 没有能清理的空间")
     else:
-        lines.append("  · 尚未扫描（建议去「磁盘清理」扫一次）")
+        lines.append("  · 还没扫过垃圾（建议去「磁盘清理」扫一次）")
 
     dk = report.get("disk") or {}
-    lines.append("【硬盘健康】")
+    lines.append("【硬盘状态】")
     if dk:
         if dk.get("cpu_temp") is not None:
             lines.append(f"  · CPU 温度 {dk['cpu_temp']}°C")
@@ -247,10 +249,10 @@ def format_text(report: dict) -> str:
                 lines.append(f"  · 磁盘 {h['name']} 温度 {h['temp_c']}°C")
         if dk.get("tight_volumes"):
             for v in dk["tight_volumes"][:4]:
-                lines.append(f"  · 卷 {v['mount']} 已用 {v['percent']}%")
+                lines.append(f"  · 盘 {v['mount']} 已用 {v['percent']}%")
         if dk.get("days_to_full"):
             for t in dk["days_to_full"][:3]:
-                lines.append(f"  · 卷 {t['mount']} 约 {t['days_to_full']} 天后存满")
+                lines.append(f"  · 盘 {t['mount']} 约 {t['days_to_full']} 天后会满")
         if not (dk.get("cpu_temp") is not None or dk.get("hot_disks")
                 or dk.get("tight_volumes") or dk.get("days_to_full")):
             lines.append("  · 各项指标正常 ✓")
@@ -276,10 +278,11 @@ def send_daily() -> dict:
         # 复用 notify.dispatch：把日报作为「事件」推送，自动走所有已启用通道
         sent = notify.dispatch(
             alerts=[],
-            events=[{"title": "每日健康日报", "detail": text}],
+            events=[{"title": "NAS Safe 每日状态", "detail": text}],
         )
-    save_last({"report": report, "text": text, "sent_at": report.get("generated_at"), "dispatch": sent})
-    return {"report": report, "dispatch": sent}
+    last = {"report": report, "text": text, "sent_at": report.get("generated_at"), "dispatch": sent}
+    save_last(last)
+    return last
 
 
 # ---------------------------------------------------------------------------

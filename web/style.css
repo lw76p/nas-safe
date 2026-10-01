@@ -788,6 +788,22 @@ body.light .ov-card.zone-monitor.is-off .ov-ico { background: rgba(126,140,160,.
 #monitorPanel { animation-delay: .2s; }
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
 
+/* --------------------- 设置页：左侧菜单切换 --------------------- */
+.settings-layout { display: flex; gap: 18px; align-items: flex-start; }
+.settings-menu { display: flex; flex-direction: column; gap: 6px; min-width: 120px; padding-right: 14px; border-right: 1px solid var(--border); }
+.settings-tab { background: transparent; border: none; color: var(--text); text-align: left; padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; transition: background .15s; }
+.settings-tab:hover, .settings-tab.active { background: var(--surface-2); }
+.settings-body { flex: 1; min-width: 0; }
+.settings-pane { display: none; }
+.settings-pane.active { display: block; }
+.settings-pane .sub-h:first-of-type { margin-top: 0; border-top: none; padding-top: 0; }
+
+@media (max-width: 620px) {
+  .settings-layout { flex-direction: column; gap: 12px; }
+  .settings-menu { flex-direction: row; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border); padding-right: 0; padding-bottom: 8px; min-width: auto; }
+  .settings-tab { white-space: nowrap; }
+}
+
 /* ----------------------------- 响应式 ----------------------------- */
 @media (max-width: 760px) {
   .overview { grid-template-columns: repeat(2, 1fr); }

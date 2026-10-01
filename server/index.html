@@ -110,6 +110,23 @@
     </div>
   </section>
 
+  <!-- 每日健康日报概览（免费留存钩子） -->
+  <section class="panel zone zone-monitor" id="dailyGlance" data-view="home" style="margin-top:14px">
+    <div class="panel-head">
+      <div class="zone-head">
+        <span class="zone-ico">📋</span>
+        <div>
+          <h2>每日健康日报</h2>
+          <p class="sub">每天自动汇总「快照保护 / 告警 / 可释放空间 / 硬盘健康」，推送到你的微信或邮箱——让你天天看得到产品在干活（纯免费）</p>
+        </div>
+      </div>
+    </div>
+    <div id="dailyGlanceBody" class="notice">正在加载上次日报…</div>
+    <div class="set-actions">
+      <button class="btn ghost" id="dailyGlanceOpen">去设置推送时间</button>
+    </div>
+  </section>
+
   <!-- 功能区一：存储单元 -->
   <section class="panel zone zone-storage" id="storageZone" data-view="home">
     <div class="panel-head">
@@ -238,162 +255,134 @@
     </div>
   </section>
 
+  <!-- 功能区六：通知与 AI 设置 -->
   <section class="panel zone zone-monitor" id="settingsPanel" data-view="settings">
     <div class="panel-head">
       <div class="zone-head">
         <span class="zone-ico">⚙</span>
         <div>
-          <h2>设置</h2>
-          <p class="sub">按类别管理通知、快照、日报、AI 和外观</p>
+          <h2>通知与 AI 设置</h2>
+          <p class="sub">告警自动推送到微信服务号 / 群机器人；AI 把报告翻译成大白话</p>
         </div>
       </div>
     </div>
 
-    <div class="settings-layout">
-      <nav class="settings-menu">
-        <button class="settings-tab active" data-tab="notify">通知</button>
-        <button class="settings-tab" data-tab="autosnap">自动快照</button>
-        <button class="settings-tab" data-tab="daily">日报</button>
-        <button class="settings-tab" data-tab="ai">AI 解读</button>
-        <button class="settings-tab" data-tab="appearance">外观</button>
-        <button class="settings-tab" data-tab="agent">桌面提醒</button>
-      </nav>
+    <h3 class="sub-h">通知通道</h3>
+    <label class="chk-inline"><input type="checkbox" id="notifyEnabled"> 启用通知（开启后告警与变动自动推送）</label>
+    <div class="set-row">
+      <span class="set-label">通道类型</span>
+      <select id="notifyType" class="sel-input">
+        <option value="relay">📧 邮件接收（现在就能用 · 只填邮箱）</option>
+        <option value="wechat_service_account">💬 微信服务号（微信内强提醒 · 上线后自动成为首选）</option>
+        <optgroup label="极客选项：用你自己的服务（普通用户不用管）">
+          <option value="webhook">群机器人（企业微信 / 飞书 / 钉钉机器人地址）</option>
+          <option value="bark">Bark（iPhone 上装了 Bark 才用）</option>
+          <option value="ntfy">ntfy（自己搭的推送服务）</option>
+          <option value="email">自备邮箱 SMTP（自己填服务器和授权码）</option>
+        </optgroup>
+      </select>
+    </div>
+    <p class="muted" style="margin:6px 0 0">说明：默认由厂商中转，微信是主通道；微信还没开通时自动走邮件。上面「极客选项」是给已有自建服务的用户，多数人不用碰。</p>
+    <div id="relayHint" class="notice" style="display:none"></div>
+    <div id="notifyFields"></div>
+    <div class="set-actions">
+      <button class="btn ghost" id="notifyTestBtn">发送测试</button>
+      <button class="btn primary" id="notifySaveBtn">保存通知设置</button>
+    </div>
 
-      <div class="settings-body">
-        <!-- 通知 -->
-        <div class="settings-pane active" data-pane="notify">
-          <h3 class="sub-h">通知通道</h3>
-          <label class="chk-inline"><input type="checkbox" id="notifyEnabled"> 启用通知</label>
-          <div class="set-row">
-            <span class="set-label">通道类型</span>
-            <select id="notifyType" class="sel-input">
-              <option value="relay">邮件（填邮箱就能收）</option>
-              <option value="wechat_service_account">微信服务号（微信里强提醒）</option>
-              <optgroup label="自建服务（多数用户不用选）">
-                <option value="webhook">群机器人</option>
-                <option value="bark">Bark</option>
-                <option value="ntfy">ntfy</option>
-                <option value="email">自备 SMTP</option>
-              </optgroup>
-            </select>
-          </div>
-          <p class="muted" style="margin:6px 0 0">微信没开通前会自动走邮件。多数用户只填邮箱就够了。</p>
-          <div id="relayHint" class="notice" style="display:none"></div>
-          <div id="notifyFields"></div>
-          <div class="set-actions">
-            <button class="btn ghost" id="notifyTestBtn">发送测试</button>
-            <button class="btn primary" id="notifySaveBtn">保存通知设置</button>
-          </div>
-        </div>
+    <!-- 自动快照 -->
+    <h3 class="sub-h">自动快照（防勒索自动防护）</h3>
+    <label class="chk-inline"><input type="checkbox" id="autoSnapEnabled"> 开启自动快照（按周期对受保护卷锁定快照）</label>
+    <div class="set-row">
+      <span class="set-label">间隔（小时）</span>
+      <input id="autoSnapInterval" class="text-input" type="number" min="1" max="8760" value="1" style="width:90px">
+    </div>
+    <div class="set-row">
+      <span class="set-label">每卷保留</span>
+      <input id="autoSnapKeep" class="text-input" type="number" min="1" max="999" value="48" style="width:90px">
+      <span class="muted">个（超出自动清理最旧的自动快照）</span>
+    </div>
+    <div class="set-row">
+      <span class="set-label">保护卷</span>
+      <input id="autoSnapVolumes" class="text-input" placeholder="留空=全部；多个卷用逗号分隔（卷ID或名称）">
+    </div>
+    <div id="autoSnapStatus" class="notice" style="display:none"></div>
+    <div class="set-actions">
+      <button class="btn ghost" id="autoSnapRunBtn">立即执行一次</button>
+      <button class="btn primary" id="autoSnapSaveBtn">保存自动快照设置</button>
+    </div>
 
-        <!-- 自动快照 -->
-        <div class="settings-pane" data-pane="autosnap">
-          <h3 class="sub-h">自动快照</h3>
-          <label class="chk-inline"><input type="checkbox" id="autoSnapEnabled"> 开启自动快照</label>
-          <div class="set-row">
-            <span class="set-label">间隔（小时）</span>
-            <input id="autoSnapInterval" class="text-input" type="number" min="1" max="8760" value="1" style="width:90px">
-          </div>
-          <div class="set-row">
-            <span class="set-label">每卷保留</span>
-            <input id="autoSnapKeep" class="text-input" type="number" min="1" max="999" value="48" style="width:90px">
-            <span class="muted">个（超出自动删最旧的）</span>
-          </div>
-          <div class="set-row">
-            <span class="set-label">保护卷</span>
-            <input id="autoSnapVolumes" class="text-input" placeholder="留空=全部；多个卷用逗号分隔（卷ID或名称）">
-          </div>
-          <div id="autoSnapStatus" class="notice" style="display:none"></div>
-          <div class="set-actions">
-            <button class="btn ghost" id="autoSnapRunBtn">立即执行一次</button>
-            <button class="btn primary" id="autoSnapSaveBtn">保存自动快照设置</button>
-          </div>
-        </div>
+    <h3 class="sub-h">每日健康日报（免费 · 天天帮你盯着）</h3>
+    <p class="muted" style="margin:6px 0 8px">每天定时把「快照保护 / 告警 / 可释放空间 / 硬盘健康」汇成一张卡片，推送到你已配置的通知通道。让你天天看得到产品在干活——纯免费功能。</p>
+    <label class="chk-inline"><input type="checkbox" id="dailyEnabled"> 开启每日健康日报</label>
+    <div class="set-row">
+      <span class="set-label">推送时间</span>
+      <input id="dailyHour" class="text-input" type="number" min="0" max="23" value="8" style="width:64px"> :
+      <input id="dailyMinute" class="text-input" type="number" min="0" max="59" value="0" style="width:64px">
+      <span class="muted">时 : 分（当地时间）</span>
+    </div>
+    <div id="dailyLast" class="notice" style="display:none"></div>
+    <div class="set-actions">
+      <button class="btn ghost" id="dailyRunBtn">立即发送一次</button>
+      <button class="btn primary" id="dailySaveBtn">保存日报设置</button>
+    </div>
 
-        <!-- 日报 -->
-        <div class="settings-pane" data-pane="daily">
-          <h3 class="sub-h">日报</h3>
-          <p class="muted" style="margin:6px 0 8px">每天定时汇总这台 NAS 的状态，包括备份情况、有没有异常、能不能清理空间、硬盘热不热，发到你的微信或邮箱。需要先配置上面的通知。</p>
-          <label class="chk-inline"><input type="checkbox" id="dailyEnabled"> 开启日报</label>
-          <div class="set-row">
-            <span class="set-label">推送时间</span>
-            <input id="dailyHour" class="text-input" type="number" min="0" max="23" value="8" style="width:64px"> :
-            <input id="dailyMinute" class="text-input" type="number" min="0" max="59" value="0" style="width:64px">
-            <span class="muted">时 : 分（当地时间）</span>
-          </div>
-          <div id="dailyLast" class="notice" style="display:none"></div>
-          <div class="set-actions">
-            <button class="btn ghost" id="dailyRunBtn">立即发送一次</button>
-            <button class="btn primary" id="dailySaveBtn">保存日报设置</button>
-          </div>
-        </div>
+    <h3 class="sub-h">AI 解读</h3>
+    <label class="chk-inline"><input type="checkbox" id="aiEnabled"> 启用 AI 解读</label>
+    <div class="set-row">
+      <span class="set-label">供应商</span>
+      <select id="aiProvider" class="sel-input">
+        <option value="deepseek">DeepSeek（云端，推荐）</option>
+        <option value="openai">OpenAI（云端）</option>
+        <option value="qwen">通义千问（云端）</option>
+        <option value="zhipu">智谱 GLM（云端）</option>
+        <option value="qiniu">七牛云 AI（云端）</option>
+        <option value="ollama">本地 AI（Ollama / LM Studio / llama.cpp 等，免密钥）</option>
+      </select>
+    </div>
+    <div class="set-row" id="aiKeyRow">
+      <span class="set-label">API Key</span>
+      <input id="aiKey" class="text-input" placeholder="云端供应商填这里；本地 Ollama 留空">
+    </div>
+    <div class="set-row" id="aiBaseRow" style="display:none">
+      <span class="set-label">服务地址</span>
+      <input id="aiBase" class="text-input" placeholder="http://NAS的IP:11434/v1">
+    </div>
+    <div class="set-row" id="aiModelRow" style="display:none">
+      <span class="set-label">模型</span>
+      <input id="aiModel" class="text-input" placeholder="qwen2.5:7b">
+    </div>
+    <p class="muted" id="aiHint" style="margin:8px 0 0; line-height:1.8"></p>
+    <div class="set-actions">
+      <button class="btn ghost" id="aiDiscoverBtn">🔍 自动搜索本地 AI</button>
+      <button class="btn primary" id="aiSaveBtn">保存 AI 设置</button>
+    </div>
+    <p class="muted" style="margin-top:12px">密钥仅保存在本机 state 目录，不会进入代码仓库；未配置时相关功能自动隐藏，核心防勒索不受影响。</p>
 
-        <!-- AI -->
-        <div class="settings-pane" data-pane="ai">
-          <h3 class="sub-h">AI 解读</h3>
-          <label class="chk-inline"><input type="checkbox" id="aiEnabled"> 启用 AI 解读</label>
-          <div class="set-row">
-            <span class="set-label">AI 来源</span>
-            <select id="aiProvider" class="sel-input">
-              <option value="deepseek">DeepSeek</option>
-              <option value="openai">OpenAI</option>
-              <option value="qwen">通义千问</option>
-              <option value="zhipu">智谱 GLM</option>
-              <option value="qiniu">七牛云 AI</option>
-              <option value="ollama">本地 AI（Ollama 等）</option>
-            </select>
-          </div>
-          <div class="set-row" id="aiKeyRow">
-            <span class="set-label">API Key</span>
-            <input id="aiKey" class="text-input" placeholder="云端 AI 填这里；本地 Ollama 留空">
-          </div>
-          <div class="set-row" id="aiBaseRow" style="display:none">
-            <span class="set-label">服务地址</span>
-            <input id="aiBase" class="text-input" placeholder="http://NAS的IP:11434/v1">
-          </div>
-          <div class="set-row" id="aiModelRow" style="display:none">
-            <span class="set-label">模型</span>
-            <input id="aiModel" class="text-input" placeholder="qwen2.5:7b">
-          </div>
-          <p class="muted" id="aiHint" style="margin:8px 0 0; line-height:1.8"></p>
-          <div class="set-actions">
-            <button class="btn ghost" id="aiDiscoverBtn">自动搜索本地 AI</button>
-            <button class="btn primary" id="aiSaveBtn">保存 AI 设置</button>
-          </div>
-          <p class="muted" style="margin-top:12px">密钥只存在本机，不进代码仓库。没配 AI 时相关按钮自动隐藏。</p>
-        </div>
+    <h3 class="sub-h">外观（护眼）</h3>
+    <label class="chk-inline"><input type="checkbox" id="autoThemeChk"> 随日出日落自动调整界面颜色（白天浅色、夜间深色，不伤眼）</label>
+    <p class="muted" style="margin:6px 0 0">按本机时间自动切换（日出约 6 点、日落约 18 点半，随季节微调），每分钟检查一次；关闭则始终使用当前深色界面。</p>
 
-        <!-- 外观 -->
-        <div class="settings-pane" data-pane="appearance">
-          <h3 class="sub-h">外观</h3>
-          <label class="chk-inline"><input type="checkbox" id="autoThemeChk"> 自动切换深色/浅色</label>
-          <p class="muted" style="margin:6px 0 0">按时间自动切换界面颜色（白天浅色、晚上深色）。关闭则保持当前颜色。</p>
-        </div>
-
-        <!-- 桌面提醒 -->
-        <div class="settings-pane" data-pane="agent">
-          <h3 class="sub-h">桌面提醒</h3>
-          <label class="chk-inline"><input type="checkbox" id="agentChk"> 启用桌面小助手</label>
-          <p class="muted" style="margin:2px 0 6px">装好后电脑右下角会有托盘图标。有异常时图标变红并弹一次通知，看过的不再重复打扰。</p>
-          <div id="webNotifyRow" hidden>
-            <label class="chk-inline"><input type="checkbox" id="deskNotifyChk"> 用网页弹窗提醒（网页要保持打开）</label>
-            <div class="set-actions">
-              <button class="btn ghost" id="notifyPermBtn">授权网页弹窗</button>
-            </div>
-          </div>
-          <div class="set-actions">
-            <button class="btn ghost" id="agentInstallBtn">安装 / 重装小助手</button>
-            <button class="btn ghost" id="pushTestBtn">发一条测试提醒</button>
-            <span id="testResult" class="muted" style="margin-left:10px"></span>
-          </div>
-          <p class="muted" style="margin-top:8px; line-height:1.8">
-            前端版本 <span id="jsVer">…</span>。电脑弹窗需要网页保持运行（可最小化、切到别的标签）。「桌面小助手」装好后勾选即启动：
-            彻底关掉网页它也在电脑上守护，开机自启；取消勾选即自动退出。
-            本地 AI 打开时会自动用它生成提醒文字（数据不出本机），同时推送到微信 / 邮件，多个通道都配时会并行发送。
-          </p>
-        </div>
+    <h3 class="sub-h">异常主动提醒</h3>
+    <label class="chk-inline"><input type="checkbox" id="agentChk"> 启用桌面小助手（推荐 · 此功能需配合本地AI模型使用）<span class="muted" id="agentState" style="margin-left:8px"></span></label>
+    <p class="muted" style="margin:2px 0 6px">装好后电脑提醒全部交给它：缩在右下角托盘图标里（绿色盾牌，和软件界面同色，鼠标放上去显示「NAS Safe · 快照保护中」）；有异常时图标中间亮起红色感叹号，并弹一次 Windows 通知后自动消失 —— 看过的不再提醒，没读的不会重复打扰，只在托盘上留红色标记，点开即读。开机自启，关掉网页也守护。</p>
+    <div id="webNotifyRow" hidden>
+      <label class="chk-inline"><input type="checkbox" id="deskNotifyChk"> 备选：网页弹窗提醒（需网页保持打开，且浏览器允许通知）</label>
+      <div class="set-actions">
+        <button class="btn ghost" id="notifyPermBtn">授权网页弹窗</button>
       </div>
     </div>
+    <div class="set-actions">
+      <button class="btn ghost" id="agentInstallBtn">安装 / 重装小助手</button>
+      <button class="btn ghost" id="pushTestBtn">发一条测试提醒</button>
+      <span id="testResult" class="muted" style="margin-left:10px"></span>
+    </div>
+    <p class="muted" style="margin-top:8px; line-height:1.8">
+      前端版本 <span id="jsVer">…</span>。电脑弹窗需要网页保持运行（可最小化、切到别的标签）。「桌面小助手」装好后勾选即启动：
+      彻底关掉网页它也在电脑上守护，开机自启；取消勾选即自动退出。
+      异常提醒为默认开启：AI 供应商为「本地 AI」时自动用本地 AI 生成提醒文案（数据不出本机），
+      同时自动推送到微信 / 邮件，多个通道同时配置时谁最快用谁。
+    </p>
   </section>
 </main>
 
