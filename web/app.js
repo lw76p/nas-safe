@@ -424,6 +424,28 @@ function renderMetrics(m) {
   const smartMap = {};
   (smart ? (smart.disks || []) : []).forEach((s) => { smartMap[s.name] = s; });
   const smartWorst = smart ? (smart.worst || 0) : 0;
+  // SMART 四级严重程度：ok 正常绿 / warn 注意黄 / danger 警告橙 / bad 异常红
+  const smartTier = (s) => {
+    if (!s || !s.health || s.health === "unknown") return "na";
+    if (s.health === "fail") return "bad";
+    if (s.health === "warn") {
+      const critical = (s.reallocated || 0) > 0 || (s.pending || 0) > 0 || (s.uncorrectable || 0) > 0 ||
+                       (s.critical_warning || 0) > 0 || (s.media_errors || 0) > 0 ||
+                       (s.percentage_used != null && s.percentage_used >= 95);
+      return critical ? "danger" : "warn";
+    }
+    return "ok";
+  };
+  const smartCounts = { ok: 0, warn: 0, danger: 0, bad: 0, na: 0 };
+  const TIER_ORDER = ["ok", "warn", "danger", "bad"];
+  let smartWorstTier = "ok";
+  if (smart) {
+    (smart.disks || []).forEach((s) => {
+      const tier = smartTier(s);
+      smartCounts[tier]++;
+      if (TIER_ORDER.indexOf(tier) > TIER_ORDER.indexOf(smartWorstTier)) smartWorstTier = tier;
+    });
+  }
   const g4 = Math.max(
     disks.reduce((g, d) => Math.max(g, gDisk(d)), 0),
     smartWorst
@@ -438,17 +460,18 @@ function renderMetrics(m) {
     const tb = hasSize ? `<span>${(d.size_b / 1024**4).toFixed(1)}TB</span>` : "";
     const gd = gDisk(d);
     const temp = d.temp_c != null ? `<span class="chip-temp ${GRADE[gd][0]}">${d.temp_c}°C</span>` : "";
-    // SMART 健康小徽标（良/注意/异常），取不到不显示
+    // SMART 健康小徽标与整块盘变色（绿/黄/橙/红）
     const sm = smartMap[d.name];
+    const smTier = smartTier(sm);
     let smBadge = "";
-    if (sm && sm.health && sm.health !== "unknown") {
-      const cls = sm.health === "fail" ? "bad" : sm.health === "warn" ? "warn" : "ok";
-      const txt = sm.health === "fail" ? "异常" : sm.health === "warn" ? "注意" : "良";
-      smBadge = `<span class="chip-smart ${cls}">${txt}</span>`;
+    if (smTier !== "na") {
+      const txtMap = { ok: "良", warn: "注意", danger: "警告", bad: "异常" };
+      smBadge = `<span class="chip-smart ${smTier}">${txtMap[smTier]}</span>`;
     }
+    const smCls = smTier !== "na" ? ` ${smTier}` : "";
     const title = d.model ? ` title="${escapeHtml(d.model)}${hasSize ? " " + (d.size_b / 1024**4).toFixed(1) + "TB" : ""}"` : "";
     return `
-      <div class="disk-chip"${title}>
+      <div class="disk-chip${smCls}"${title}>
         <b>${label}</b>
         ${tb}
         ${temp}
@@ -479,16 +502,43 @@ function renderMetrics(m) {
       <circle cx="15.6" cy="16.5" r="1.4" fill="${c}" stroke="none"/>
     </svg>`;
   };
-  // SMART 汇总脚注：可用显示结论；不可用给白话开启提示（不报错）
-  let smartFoot = "";
+  // SMART 健康总览横条：绿/黄/橙/红四级，异常时红色脉冲告警
+  let smartBanner = "";
   if (smart) {
-    smartFoot = `<div class="smart-foot"><span class="muted">SMART 健康：${smart.health_label}（${smart.disk_count} 块盘）</span></div>`;
-  } else if (m.smart) {
+    const txtMap = { ok: "正常", warn: "注意", danger: "警告", bad: "异常" };
+    const bcls = smartWorstTier;
+    const blabel = txtMap[smartWorstTier];
+    const alertText = smartCounts.bad
+      ? `⚠ 有 ${smartCounts.bad} 块硬盘状态异常，建议立即备份并排查`
+      : smartCounts.danger
+      ? `⚠ 有 ${smartCounts.danger} 块硬盘存在严重告警，请关注`
+      : smartCounts.warn
+      ? `⚠ 有 ${smartCounts.warn} 块硬盘处于注意状态`
+      : "";
+    smartBanner = `
+      <div class="smart-banner ${bcls}">
+        <div class="sb-main">
+          <span class="sb-title">SMART 硬盘健康</span>
+          <span class="sb-grade">${blabel}</span>
+        </div>
+        <div class="sb-stats">
+          ${smartCounts.ok ? `<span class="sb-ok">${smartCounts.ok} 良好</span>` : ""}
+          ${smartCounts.warn ? `<span class="sb-warn">${smartCounts.warn} 注意</span>` : ""}
+          ${smartCounts.danger ? `<span class="sb-danger">${smartCounts.danger} 警告</span>` : ""}
+          ${smartCounts.bad ? `<span class="sb-bad">${smartCounts.bad} 异常</span>` : ""}
+          ${smartCounts.na ? `<span class="sb-na">${smartCounts.na} 未检</span>` : ""}
+        </div>
+        ${alertText ? `<div class="sb-alert">${alertText}</div>` : ""}
+      </div>`;
+  }
+  // SMART 脚注：未取到时给白话开启提示（不报错）
+  let smartFoot = "";
+  if (!smart && m.smart) {
     smartFoot = `<div class="smart-foot"><span class="muted">硬盘健康检测需装 Smartmontools（威联通应用中心免费）即开启</span></div>`;
   }
   const card5 = disks.length ? `
     <div class="metric-card metric-card-wide mc-${GRADE[g4][0]}">
-      ${cardHead(`${bayIco(g4)}磁盘`, g4, `<span class="muted">${okCount}/${disks.length} 正常</span>`)}
+      ${smartBanner}
       ${diskGroups}
       ${smartFoot}
     </div>` : "";
@@ -2076,7 +2126,6 @@ $("aiDiagnoseBtn").onclick = aiDiagnose;
 $("aiAskBtn").onclick = aiAsk;
 // AI 全页悬浮窗：任意页面点击即可提问（复用 aiAsk 弹窗）
 if ($("aiFabBtn")) $("aiFabBtn").onclick = aiAsk;
-
 $("notifyType").onchange = () => renderNotifyFields($("notifyType").value);
 $("notifySaveBtn").onclick = saveNotify;
 $("notifyTestBtn").onclick = testNotify;

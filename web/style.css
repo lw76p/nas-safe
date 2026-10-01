@@ -31,6 +31,8 @@
   --amber-bg: rgba(251,191,36,.14);
   --red: #f87171;
   --red-bg: rgba(248,113,113,.15);
+  --orange: #fb923c;
+  --orange-bg: rgba(251,146,60,.15);
 
   --radius: 16px;
   --radius-sm: 10px;
@@ -357,6 +359,34 @@ h1, h2, h3 { font-family: var(--font-display); letter-spacing: -.01em; }
 .chip-smart.bad { color: var(--red); }
 .chip-io { font-family: var(--font-mono); font-size: 10px; white-space: normal; word-break: break-all; line-height: 1.3; }
 .smart-foot { margin-top: 8px; font-size: 11px; }
+
+/* SMART 健康总览横条：正常绿 / 注意黄 / 警告橙 / 异常红 */
+.smart-banner {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 10px 16px; padding: 12px 18px; border-radius: 14px;
+  margin-bottom: 12px; color: #fff;
+}
+.smart-banner .sb-main { display: flex; align-items: baseline; gap: 10px; }
+.smart-banner .sb-title { font-size: 13px; font-weight: 700; opacity: .92; color: #fff; }
+.smart-banner .sb-grade { font-size: 20px; font-weight: 800; line-height: 1; color: #fff; }
+.smart-banner .sb-stats { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; font-weight: 600; opacity: .92; }
+.smart-banner .sb-ok, .smart-banner .sb-warn, .smart-banner .sb-danger, .smart-banner .sb-bad, .smart-banner .sb-na { color: rgba(255,255,255,.92); }
+.smart-banner .sb-alert { flex-basis: 100%; font-size: 12px; font-weight: 600; color: #fff; }
+.smart-banner.ok { background: linear-gradient(135deg, #10b981, #34d399); box-shadow: -4px 4px 18px rgba(16,185,129,.35); }
+.smart-banner.warn { background: linear-gradient(135deg, #f59e0b, #fbbf24); box-shadow: -4px 4px 18px rgba(245,158,11,.35); }
+.smart-banner.danger { background: linear-gradient(135deg, #f97316, #fb923c); box-shadow: -4px 4px 18px rgba(249,115,22,.35); }
+.smart-banner.bad { background: linear-gradient(135deg, #ef4444, #f87171); box-shadow: -4px 4px 18px rgba(239,68,68,.35); animation: sbPulse 1.6s ease-in-out infinite; }
+@keyframes sbPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.0); }
+  50% { box-shadow: 0 0 0 4px rgba(239,68,68,.18); }
+}
+
+/* 磁盘按 SMART 健康状态变色：正常绿 / 注意黄 / 警告橙 / 异常红 */
+.disk-chip.ok { border-top-color: var(--green); }
+.disk-chip.warn { border-top-color: var(--amber); background: var(--amber-bg); }
+.disk-chip.danger { border-top-color: var(--orange); background: var(--orange-bg); }
+.disk-chip.bad { border-top-color: var(--red); background: var(--red-bg); }
+.chip-smart.danger { color: var(--orange); }
 
 /* 仪表盘交互组件：大字评级 / 下拉选择 / 存储环形图区 */
 .grade-big {
