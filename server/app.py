@@ -26,6 +26,7 @@ NAS Safe — 后端 API 服务
   POST /api/duplicates/quarantine 隔离勾选的重复文件（软删除，可恢复，每组至少留一份）
   GET  /api/duplicates/quarantine 隔离区清单
   POST /api/duplicates/restore    从隔离区恢复到原位置
+  POST /api/duplicates/purge      彻底删除隔离区文件（不可恢复，仅限隔离目录内）
   GET  /api/health                健康检查
 
 安全约定：
@@ -1001,6 +1002,11 @@ class Handler(BaseHTTPRequestHandler):
 
             elif route == "/api/duplicates/restore":
                 self._send_json(duplicates.restore_files(
+                    payload.get("ids"), payload.get("confirm") is True))
+
+            elif route == "/api/duplicates/purge":
+                # 彻底删除隔离区文件（不可恢复）：confirm + 隔离日志白名单 + 路径格式三重护栏
+                self._send_json(duplicates.purge_quarantine(
                     payload.get("ids"), payload.get("confirm") is True))
 
             else:

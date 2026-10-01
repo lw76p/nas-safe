@@ -935,3 +935,8 @@ code {
 .dup-flag-warn { color: var(--amber); background: var(--amber-bg); }
 .dup-manual { border-color: var(--amber); }
 .dup-manual-note { padding: 8px 14px 10px; font-size: 12px; color: var(--text-3); }
+
+/* 隔离区：彻底删除 */
+.dup-purge { color: var(--red); border-color: var(--red-bg); }
+.dup-purge:hover { border-color: var(--red); }
+.dup-purge-all { margin-left: auto; flex: none; font-size: 12px; }

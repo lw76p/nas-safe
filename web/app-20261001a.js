@@ -1,5 +1,5 @@
 /* NAS Safe — 前端逻辑 */
-const APP_JS_VER = "20261001b";
+const APP_JS_VER = "20261001c";
 
 const $ = (id) => document.getElementById(id);
 
@@ -2829,12 +2829,14 @@ async function loadDupQuarantine() {
       <span class="dup-path" title="${escapeAttr(e.original)}">🛡 ${escapeHtml(e.original)}</span>
       <span class="dup-meta">${fmtBytes(e.size)} · ${escapeHtml(String(e.time || "").slice(0, 16).replace("T", " "))}</span>
       <button class="btn ghost dup-restore" data-id="${escapeAttr(e.id)}">恢复</button>
+      <button class="btn ghost dup-purge" data-id="${escapeAttr(e.id)}" data-name="${escapeAttr(e.original)}" data-size="${e.size || 0}">彻底删除</button>
     </div>`).join("");
   box.innerHTML = `
     <div class="dup-group">
       <div class="dup-group-head">
         <b>🛡 隔离区</b>
-        <span class="muted">${d.count} 个文件 · 约 ${fmtBytes(d.total_bytes)} · 原文件完好保存在隔离目录，点「恢复」放回原位置</span>
+        <span class="muted">${d.count} 个文件 · 约 ${fmtBytes(d.total_bytes)} · 原文件完好保存在隔离目录，点「恢复」放回原位置，确认没问题后点「彻底删除」释放空间</span>
+        <button class="btn ghost dup-purge dup-purge-all" id="dupPurgeAllBtn">清空隔离区（${d.count}）</button>
       </div>
       ${rows}
     </div>`;
@@ -2854,6 +2856,49 @@ async function loadDupQuarantine() {
       }
     };
   });
+  const askPurge = (ids, title, html) => {
+    openModal(
+      title,
+      html + `<p class="muted" style="margin-top:8px">彻底删除<b>不进回收站、不可恢复</b>——如果还有一点犹豫，先点「恢复」放回原位。</p>`,
+      `<button class="btn ghost" data-act="close">取消</button>
+       <button class="btn primary" data-act="ok" style="color:var(--red);border-color:var(--red)">确认彻底删除</button>`,
+      { ok: () => doDupPurge(ids) }
+    );
+  };
+  box.querySelectorAll(".dup-purge:not(.dup-purge-all)").forEach((btn) => {
+    btn.onclick = () => askPurge(
+      [btn.dataset.id],
+      "彻底删除该文件",
+      `<p>将永久删除 <b>${escapeHtml(btn.dataset.name)}</b>（${fmtBytes(Number(btn.dataset.size) || 0)}）。</p>`
+    );
+  });
+  const allBtn = $("dupPurgeAllBtn");
+  if (allBtn) {
+    allBtn.onclick = () => askPurge(
+      (d.entries || []).map((e) => e.id),
+      "清空隔离区",
+      `<p>将永久删除隔离区里<b>全部 ${d.count} 个文件</b>（约 ${fmtBytes(d.total_bytes)}）。</p>`
+    );
+  }
+}
+
+async function doDupPurge(ids) {
+  dupSetStatus(`<span class="spinner"></span>正在彻底删除…`);
+  try {
+    const r = await api("/api/duplicates/purge", {
+      method: "POST",
+      body: JSON.stringify({ confirm: true, ids }),
+    }, 120000);
+    closeModal();
+    const fail = (r.failed || []).length;
+    let msg = `已彻底删除 ${r.purged} 个文件，释放 ${fmtBytes(r.freed_bytes || 0)}`;
+    if (fail) msg += `；${fail} 个失败`;
+    toast(msg, fail ? "warn" : "ok");
+    dupSetStatus("");
+    loadDupQuarantine();
+  } catch (e) {
+    dupSetStatus("删除失败：" + escapeHtml(e.message), "warn");
+  }
 }
 
 // 重复文件扫描路径选择：单选（与监控路径多选选择器不同）

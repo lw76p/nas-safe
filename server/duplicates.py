@@ -549,3 +549,80 @@ def quarantine_list() -> dict:
     total = sum(e.get("size") or 0 for e in entries)
     return {"ok": True, "entries": entries, "count": len(entries),
             "total_bytes": total}
+
+
+def purge_quarantine(ids: list, confirm: bool) -> dict:
+    """彻底删除隔离区里的文件（不可恢复）。
+
+    护栏：
+      - confirm 必须 True；
+      - 只允许删除隔离日志里登记的条目；
+      - 磁盘路径必须位于「.nassafe-quarantine」目录内，且文件名必须是
+        「4位序号__原文件名」的隔离格式（双保险，防接口滥用删任意文件）。
+    """
+    if confirm is not True:
+        raise DuplicateError("彻底删除需要 confirm=true 确认参数")
+    if not isinstance(ids, list) or not ids:
+        raise DuplicateError("缺少要删除的条目 ID")
+
+    log = load_quarantine_log()
+    entries = {e["id"]: e for e in log.get("entries", [])}
+    targets = []
+    for i in ids:
+        e = entries.get(str(i))
+        if not e:
+            raise DuplicateError(f"找不到隔离记录: {i}")
+        qp = _norm(e["quarantined"])
+        # 双保险：路径必须落在 .nassafe-quarantine 内，且为「0000__原名」格式
+        if "/.nassafe-quarantine/" not in qp or ".." in qp.split("/"):
+            raise DuplicateError(f"路径不在隔离目录内，拒绝删除: {e['quarantined']}")
+        fname = posixpath.basename(qp)
+        orig_name = posixpath.basename(_norm(e["original"]))
+        if not (len(fname) > 5 and fname[:4].isdigit() and fname[4:6] == "__"
+                and fname[6:] == orig_name):
+            raise DuplicateError(f"隔离文件名格式异常，拒绝删除: {e['quarantined']}")
+        targets.append(e)
+
+    q = shlex.quote
+    client = _client()
+    purged: list[str] = []
+    freed = 0
+    try:
+        lines = []
+        for e in targets:
+            lines.append(
+                f"if rm -f -- {q(_norm(e['quarantined']))} 2>/dev/null; then "
+                f"printf 'OK\\t%s\\n' {q(e['id'])}; else printf 'FAIL\\t%s\\n' {q(e['id'])}; fi"
+            )
+        out = client.run_shell(" ; ".join(lines))
+        ok_ids = set()
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) == 2 and parts[0] == "OK":
+                ok_ids.add(parts[1])
+        purged = [e["id"] for e in targets if e["id"] in ok_ids]
+        freed = sum(e.get("size") or 0 for e in targets if e["id"] in ok_ids)
+
+        # 清掉空批次目录（只删空目录，误删风险为零）
+        if purged:
+            qroots = set()
+            for e in targets:
+                qp = _norm(e["quarantined"])
+                idx = qp.find("/.nassafe-quarantine/")
+                if idx > 0:
+                    qroots.add(qp[:idx + len("/.nassafe-quarantine")])
+            for qr in qroots:
+                client.run_shell(
+                    f"find {q(qr)} -mindepth 1 -type d -empty -delete 2>/dev/null ; true")
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if purged:
+        log["entries"] = [e for e in log.get("entries", []) if e["id"] not in set(purged)]
+        _save_quarantine_log(log)
+    failed = [str(i) for i in ids if str(i) not in set(purged)]
+    return {"ok": True, "purged": len(purged), "failed": failed,
+            "freed_bytes": freed}
