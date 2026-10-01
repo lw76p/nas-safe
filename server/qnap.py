@@ -390,6 +390,48 @@ class QnapClient:
 
         return self._exec_ssh(lambda cli: cli.exec_command(script, timeout=self.timeout))
 
+    def run_privileged(self, script: str) -> str:
+        """以 root 身份执行脚本（经 sudo，用本客户端密码）。
+
+        用于需要 root 的只读探测：例如威联通 /tmp/smart 目录权限为 0700，
+        普通管理员账号（administrators 组但非 root）读不到，必须 sudo。
+
+        密码经 stdin 传入 sudo（而非命令行/环境变量），避免 shell 转义与泄露。"""
+        if self.mode == "local":
+            import os as _os
+            import subprocess as _sp
+
+            if _os.geteuid() == 0:
+                proc = _sp.run(
+                    ["/bin/sh", "-c", script], capture_output=True, text=True,
+                    timeout=self.timeout,
+                )
+                return (proc.stdout or "") + (proc.stderr or "")
+            proc = _sp.run(
+                ["sudo", "-S", "/bin/sh", "-c", script],
+                input=(self.password or "") + "\n",
+                capture_output=True, text=True, timeout=self.timeout,
+            )
+            return (proc.stdout or "") + (proc.stderr or "")
+        import paramiko  # noqa: F401  懒加载依赖标记
+
+        last_exc: Exception | None = None
+        for _ in range(2):
+            cli = self._get_ssh()
+            try:
+                cmd = "sudo -S -p '' bash -c " + shlex.quote(script)
+                _stdin, stdout, stderr = cli.exec_command(cmd, timeout=self.timeout)
+                _stdin.write((self.password or "") + "\n")
+                _stdin.flush()
+                out = stdout.read().decode(errors="replace")
+                err = stderr.read().decode(errors="replace")
+                return out + err
+            except (OSError, EOFError, paramiko.SSHException) as exc:
+                last_exc = exc
+                _pool_drop((self.host, self.user, self.password), cli)
+                self._ssh = None
+        raise QnapError(f"特权命令执行失败（已自动重试一次）: {last_exc}")
+
     # -- 登录 ----------------------------------------------------------
 
     def login(self) -> None:

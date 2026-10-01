@@ -7,7 +7,9 @@ NAS Safe — 硬盘 SMART 健康采集（跨品牌，100% 只读）
       · 群晖  /usr/syno/bin/smartctl、/usr/syno/sbin/smartctl
       · 绿联/飞牛/OMV/Unraid/TrueNAS：标准路径即可
       · QNAP 装了 Smartmontools QPKG 后，能在 .qpkg 目录找到
-  通道 B（QTS 专用兜底）：/tmp/smart/disk_data_pkg_*（威联通 Drive Analyzer 落盘）
+  通道 B（QTS 专用，无需装包）：威联通系统自身每分钟在
+      /tmp/smart/smart_0_N.info 落盘的 SMART 文本（CSV），经 sudo 读取
+      （目录权限 0700，普通账号读不到）；槽位→设备映射用 /proc/partitions。
 
 每个字段都可缺省；capabilities 告诉前端「这台机器有没有 SMART 能力」——
 没有就显示「装 Smartmontools 即可开启」，而不是报错。
@@ -209,13 +211,161 @@ done
     return disks
 
 
-def _collect_qts_pkg() -> list[dict] | None:
-    """通道 B：QTS Drive Analyzer 落盘的 disk_data_pkg_*（尽力而为）。"""
-    out = _run_cmd("ls /tmp/smart/disk_data_pkg_* 2>/dev/null").strip()
-    if not out:
-        return None
-    # 不同 QTS 版本格式不一，这里只做占位：标记「有 QTS 包但暂未解析」
-    return None
+def _is_qts() -> bool:
+    """是否威联通 QTS 系统（读 /etc/os-release，无需提权）。"""
+    out = _run_cmd("cat /etc/os-release 2>/dev/null")
+    return ("ID=qts" in out) or ('NAME="QTS"' in out)
+
+
+def _collect_qts_native() -> list[dict]:
+    """通道 B（QTS 原生，优先于装 QPKG）：威联通系统自己每分钟在
+    /tmp/smart/smart_0_N.info 落盘的 SMART 文本（CSV）。
+
+    该目录权限 0700（admin），普通管理员账号读不到，必须 sudo。
+    槽位→设备 映射：/proc/partitions 里 nvme*/sd* 整盘的有序序号
+    （QTS 编号 = 内核枚举序，已真机验证：slot1=nvme0n1）。
+
+    返回与 _parse_block 同 schema 的磁盘列表（带 device/name）。"""
+    from qnap import default_client
+
+    client = default_client()
+    try:
+        script = (
+            "echo ===PARTITIONS===; "
+            "grep -E ' sd[a-z]+$| nvme[0-9]+n1$' /proc/partitions; "
+            "echo ===SMART===; "
+            "for f in /tmp/smart/smart_0_*.info; do "
+            "  [ -f \"$f\" ] || continue; "
+            "  echo \"##FILE:$(basename \"$f\")\"; "
+            "  cat \"$f\"; "
+            "  echo; "
+            "done"
+        )
+        out = client.run_privileged(script)
+    except Exception:
+        out = ""
+    finally:
+        client.close()
+
+    return _parse_qts(out)
+
+
+def _parse_qts_block(body: str) -> dict:
+    """解析单块盘的 CSV（QTS smart_0_N.info 格式）。
+
+    NVMe 示例首行：15,4,0,0,0,0,0,0,37,0x0000,-1,-1,0  → 第9列=温度(℃)
+    属性行（7 列）：ID,NAME,VALUE,WORST,THRESH,RAW,FLAG
+    NVMe 关键：Critial Warning / Percentage Used / Composite Temperature
+    SATA 关键：Retired_Block_Count / Current_Pending_Sector /
+              Uncorrectable_Sector_Count / Reallocated_Event_Count
+    """
+    info = {
+        "name": None,
+        "device": None,
+        "health": "unknown",
+        "model": None,
+        "temp_c": None,
+        "power_on_hours": None,
+        "reallocated": None,
+        "pending": None,
+        "uncorrectable": None,
+        "life_left_pct": None,
+        "attrs": {},
+    }
+    lines = [l for l in body.splitlines() if l.strip()]
+    if not lines:
+        return info
+
+    # 首行 header：第 9 列（index 8）为温度 ℃
+    header = lines[0].split(",")
+    if len(header) > 8:
+        try:
+            info["temp_c"] = int(header[8])
+        except ValueError:
+            pass
+
+    attrs: dict[str, int] = {}
+    for line in lines[1:]:
+        p = line.split(",")
+        if len(p) >= 6 and p[0].isdigit():
+            name = p[1].strip()
+            try:
+                raw = int(p[5])
+            except ValueError:
+                raw = None
+            if name and raw is not None:
+                attrs[name] = raw
+    info["attrs"] = attrs
+
+    is_nvme = (
+        "Composite Temperature" in attrs
+        or "Percentage Used" in attrs
+        or "Critial Warning" in attrs
+    )
+
+    if is_nvme:
+        cw = attrs.get("Critial Warning", 0) or 0
+        used = attrs.get("Percentage Used")
+        if used is not None:
+            info["life_left_pct"] = max(0, 100 - used)
+        info["power_on_hours"] = attrs.get("Power On Hours")
+        ct = attrs.get("Composite Temperature")
+        if ct is not None:
+            info["temp_c"] = ct - 273  # NVMe 温度单位为开尔文
+        info["health"] = "fail" if cw > 0 else "ok"
+    else:
+        info["reallocated"] = attrs.get("Retired_Block_Count")
+        info["pending"] = attrs.get("Current_Pending_Sector")
+        info["uncorrectable"] = attrs.get("Uncorrectable_Sector_Count")
+        evt = attrs.get("Reallocated_Event_Count")
+        info["power_on_hours"] = attrs.get("Power-On-Hours")
+        pend = info["pending"] or 0
+        unc = info["uncorrectable"] or 0
+        rea = info["reallocated"] or 0
+        if pend > 0 or unc > 0:
+            info["health"] = "fail"
+        elif rea > 0 or (evt or 0) > 0:
+            info["health"] = "warn"
+        else:
+            info["health"] = "ok"
+    return info
+
+
+def _parse_qts(out: str) -> list[dict]:
+    """从 run_privileged 输出中切出分区序 + 各盘 SMART，完成槽位→设备映射。"""
+    disks: list[dict] = []
+
+    # 分区序（整盘：nvme*/sd*），顺序即 QTS 槽位序
+    dev_order: list[str] = []
+    pm = re.search(r"===PARTITIONS===(.*?)===SMART===", out, re.S)
+    if pm:
+        for line in pm.group(1).splitlines():
+            toks = line.split()
+            if toks and re.match(r"^(sd[a-z]+|nvme[0-9]+n1)$", toks[-1]):
+                dev_order.append(toks[-1])
+
+    # 各盘 SMART（按 ##FILE:smart_0_N.info 切分）
+    sm = re.search(r"===SMART===(.*)$", out, re.S)
+    smart_section = sm.group(1) if sm else ""
+    files = re.split(r"##FILE:(\S+)", smart_section)
+    slot_data: dict[int, dict] = {}
+    for i in range(1, len(files), 2):
+        fname = files[i]
+        body = files[i + 1] if i + 1 < len(files) else ""
+        mm = re.search(r"smart_0_(\d+)\.info", fname)
+        slot = int(mm.group(1)) if mm else None
+        slot_data[slot] = _parse_qts_block(body)
+
+    for slot, info in slot_data.items():
+        if slot and 1 <= slot <= len(dev_order):
+            dev = dev_order[slot - 1]
+            info["device"] = "/dev/" + dev
+            info["name"] = dev
+        else:
+            info["name"] = f"disk{slot}" if slot else None
+            info["device"] = None
+        disks.append(info)
+    return disks
 
 
 # ---------------------------------------------------------------------------
@@ -231,9 +381,11 @@ def collect(force: bool = False) -> dict:
 
     smartctl = _detect_smartctl()
     available = bool(smartctl)
+    platform_hint = ""
 
     disks: list[dict] = []
     if smartctl:
+        # 通道 A：smartctl 多路径（群晖/绿联/飞牛/通用 Linux 开箱即用）
         # 复用 metrics 的磁盘清单（/sys/block），拿到设备名
         try:
             import metrics  # 延迟导入，避免循环
@@ -247,9 +399,14 @@ def collect(force: bool = False) -> dict:
                     [f"nvme{n}n1" for n in range(0, 4)]
         devices = [f"/dev/{n}" for n in names]
         disks = _collect_smartctl(smartctl, devices)
+    elif _is_qts():
+        # 通道 B：QTS 原生（威联通无需装任何 QPKG，系统自维护 /tmp/smart 即可）
+        disks = _collect_qts_native()
+        available = bool(disks)
+        if not available:
+            platform_hint = "威联通(QNAP) 未取到 SMART 数据，请确认系统 SMART 服务已开启"
     else:
-        # 通道 B 兜底（当前基本不会命中，留作扩展）
-        _collect_qts_pkg()
+        platform_hint = "未检测到 smartctl；群晖/绿联/飞牛/通用 Linux 开箱即用，可安装 Smartmontools 后自动开启"
 
     # 汇总评级
     grades = {"ok": 0, "warn": 1, "fail": 2, "unknown": 0}
@@ -265,7 +422,7 @@ def collect(force: bool = False) -> dict:
     data = {
         "available": available,
         "smartctl": smartctl,
-        "platform_hint": "" if available else "未检测到 smartctl；群晖/绿联/飞牛/通用 Linux 开箱即用，威联通(QNAP) 请在应用中心装免费的『Smartmontools』后自动开启",
+        "platform_hint": platform_hint,
         "disk_count": len(disks),
         "health_label": health_label,
         "worst": worst,
