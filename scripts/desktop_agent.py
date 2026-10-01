@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.11"
+AGENT_VER = "1.0.6.12"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -96,22 +96,14 @@ def _open_inbox_window():
 
 
 def notify(title, text, level="info"):
-    """弹出提醒：优先 Win32 自定义弹窗（必现、可控、不依赖系统通知权限），
-    同时尝试托盘气球作补充；若弹窗初始化失败，回退系统 MessageBoxW 保证"至少有提醒"。
-
-    气泡只承载"标题消息 + 点击查看"：完整内容由未读界面展示，点击气泡/托盘即打开。
+    """弹出提醒：使用 Win32 自绘 Toast 弹窗（必现、样式可控、不依赖系统通知权限），
+    不再调用系统托盘气球通知——Windows 原生通知边框/字体不可控，用户反馈样式难看。
 
     返回 channel 字符串，供 HTTP 接口如实反馈：
       "toast"     = Win32 自定义弹窗已显示
       "fallback"  = 回退到系统消息框
       "error"     = 弹窗与兜底都失败
     """
-    # 托盘气球作补充（Win10/11 可能静默路由到操作中心，不保证可见）
-    if _TRAY and getattr(_TRAY, "hwnd", None):
-        try:
-            _TRAY.balloon(title, text, level)
-        except Exception:
-            pass
     try:
         status = _TOAST.show(title, text, on_click=_open_inbox_window)
     except Exception:

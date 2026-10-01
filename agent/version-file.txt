@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 6, 11),
-    prodvers=(1, 0, 6, 11),
+    filevers=(1, 0, 6, 12),
+    prodvers=(1, 0, 6, 12),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -18,12 +18,12 @@ VSVersionInfo(
         '080404B0',
         [StringStruct('CompanyName', '贵州天晟科技'),
          StringStruct('FileDescription', 'NAS Safe 桌面助手'),
-         StringStruct('FileVersion', '1.0.6.11'),
+         StringStruct('FileVersion', '1.0.6.12'),
          StringStruct('InternalName', 'NASSafeAgent'),
          StringStruct('LegalCopyright', 'Copyright (C) 2026 贵州天晟科技'),
          StringStruct('OriginalFilename', '桌面助手.exe'),
          StringStruct('ProductName', 'NAS Safe'),
-         StringStruct('ProductVersion', '1.0.6.11')])
+         StringStruct('ProductVersion', '1.0.6.12')])
       ])
   ]
 )
