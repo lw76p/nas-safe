@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.15"
+AGENT_VER = "1.0.6.16"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -105,7 +105,7 @@ def notify(title, text, level="info"):
       "error"     = 弹窗与兜底都失败
     """
     try:
-        status = _TOAST.show(title, text, on_click=_open_inbox_window)
+        status = _TOAST.show(title, text, on_click=_open_inbox_window, level=level)
     except Exception:
         try:
             ToastManager._fallback(title, text)
@@ -129,6 +129,9 @@ _TOAST_BG = 0xFFFFFF       # 白色卡片底（BGR=RGB）
 _TOAST_TITLE = 0xC78402    # #0284c7 标题深蓝 -> BGR
 _TOAST_ACCENT = 0xF8BD38   # #38bdf8 -> BGR
 _TOAST_FG = 0x554133       # #334155 正文深灰 -> BGR
+_TOAST_HINT = 0xB8A394     # #94a3b8 灰色小字 CTA -> BGR
+_TOAST_BAR_WARN = 0x0B9EF5  # #f59e0b 橙色强调条 -> BGR
+_TOAST_BAR_ERR = 0x4444EF   # #ef4444 红色强调条 -> BGR
 
 
 class _RECT(ctypes.Structure):
@@ -188,6 +191,7 @@ class ToastManager:
         self._font = None
         self._font_title = None
         self._font_body = None
+        self._font_hint = None
         self._bg_brush = None
         self._bar_brush = None
         self._colors = {}
@@ -205,14 +209,17 @@ class ToastManager:
         return bool(self.host_hwnd)
 
     # ---- 公开：显示一条 toast；返回 "toast"（已显示）/ "fallback"（已回退系统弹窗）----
-    def show(self, title, body, on_click=None, timeout_ms=6000):
+    def show(self, title, body, on_click=None, timeout_ms=6000, level="info"):
         if not self.host_hwnd:
             self._fallback(title, body)
             return "fallback"
+        bar_cls_name = ("NASSafeToastBarWarn" if level == "warn"
+                        else "NASSafeToastBarErr" if level in ("error", "critical")
+                        else "NASSafeToastBar")
         with self._lock:
             self._pid += 1
             pid = self._pid
-            self._pending[pid] = (title, body, on_click, timeout_ms)
+            self._pending[pid] = (title, body, on_click, timeout_ms, bar_cls_name)
         try:
             ctypes.windll.user32.PostMessageW(self.host_hwnd, self.WM_TOAST_SHOW, pid, 0)
             return "toast"
@@ -305,6 +312,14 @@ class ToastManager:
             lf_body.lfFaceName = "Microsoft YaHei UI"
             self._font_body = g32.CreateFontIndirectW(ctypes.byref(lf_body))
 
+            lf_hint = _LOGFONTW()
+            lf_hint.lfHeight = -11
+            lf_hint.lfWeight = 400
+            lf_hint.lfCharSet = 134
+            lf_hint.lfQuality = 5             # CLEARTYPE_QUALITY
+            lf_hint.lfFaceName = "Microsoft YaHei UI"
+            self._font_hint = g32.CreateFontIndirectW(ctypes.byref(lf_hint))
+
             # 卡片底色 + 强调条底色：用窗口类背景刷，由系统自绘，
             # 完全绕开 FillRect/BeginPaint/DrawTextW 等受限 GDI 绘制函数。
             self._bg_brush = g32.CreateSolidBrush(_TOAST_BG)
@@ -372,6 +387,19 @@ class ToastManager:
             bar_cls.lpszClassName = "NASSafeToastBar"
             u32.RegisterClassW(ctypes.byref(bar_cls))
 
+            # warn/error 级别强调条窗口类（不同色，弹窗按级别选用）
+            for cls_name, brush in (("NASSafeToastBarWarn",
+                                     g32.CreateSolidBrush(_TOAST_BAR_WARN)),
+                                    ("NASSafeToastBarErr",
+                                     g32.CreateSolidBrush(_TOAST_BAR_ERR))):
+                wc = _WNDCLASSW()
+                wc.style = 0
+                wc.lpfnWndProc = ctypes.cast(self._wndproc, ctypes.c_void_p)
+                wc.hInstance = self._hinst
+                wc.hbrBackground = brush
+                wc.lpszClassName = cls_name
+                u32.RegisterClassW(ctypes.byref(wc))
+
             host = u32.CreateWindowExW(0, "NASSafeToast", "NASSafeToastHost",
                                        self.WS_POPUP, -10000, -10000, 0, 0,
                                        None, None, self._hinst, None)
@@ -393,8 +421,8 @@ class ToastManager:
 
     def _create_popup(self, item):
         u32 = ctypes.windll.user32
-        title, body, on_click, timeout_ms = item
-        w, h = 340, 104
+        title, body, on_click, timeout_ms, bar_cls_name = item
+        w, h = 380, 118
         try:
             sw = u32.GetSystemMetrics(0)   # SM_CXSCREEN
             sh = u32.GetSystemMetrics(1)   # SM_CYSCREEN
@@ -417,7 +445,7 @@ class ToastManager:
 
         # 左侧强调条（accent 色块，系统自绘）
         try:
-            bar = u32.CreateWindowExW(0, "NASSafeToastBar", "",
+            bar = u32.CreateWindowExW(0, bar_cls_name, "",
                                       0x40000000,        # WS_CHILD
                                       0, 0, 4, h, hwnd, None, self._hinst, None)
             if bar:
@@ -425,11 +453,33 @@ class ToastManager:
         except Exception:
             bar = None
 
-        # 标题（粗体 accent）；必须带 WS_VISIBLE，否则子控件永久隐藏（曾致气泡只有底板没文字）
+        # 产品图标（盾牌 ICO；加载失败则文字整体左移兜底）
+        tx, tw = 16, w - 32
+        try:
+            # onefile 的 _MEIPASS 不含 ICO，优先从 exe 同目录（安装目录）取
+            exe_dir = os.path.dirname(os.path.abspath(
+                sys.executable if getattr(sys, "frozen", False) else __file__))
+            ico_path = os.path.join(exe_dir, "nassafe_agent.ico")
+            if not os.path.isfile(ico_path):
+                ico_path = _res_path("nassafe_agent.ico")
+            if os.path.isfile(ico_path):
+                hicon = u32.LoadImageW(None, ico_path, 1, 32, 32, 0x00000010)  # IMAGE_ICON|LR_LOADFROMFILE
+                if hicon:
+                    tx, tw = 58, w - 58 - 16
+                    icon_w = u32.CreateWindowExW(
+                        0, "Static", "",
+                        0x40000000 | 0x10000000 | 0x00000003,   # WS_CHILD|WS_VISIBLE|SS_ICON
+                        16, 16, 32, 32, hwnd, None, self._hinst, None)
+                    if icon_w:
+                        u32.SendMessageW(icon_w, 0x0172, 1, hicon)   # STM_SETIMAGE
+        except Exception:
+            pass
+
+        # 标题；必须带 WS_VISIBLE，否则子控件永久隐藏（曾致气泡只有底板没文字）
         title_w = u32.CreateWindowExW(
             0, "Static", "",
             0x40000000 | 0x10000000,                    # WS_CHILD | WS_VISIBLE
-            16, 12, w - 32, 24, hwnd, None, self._hinst, None)
+            tx, 14, tw, 24, hwnd, None, self._hinst, None)
         if title_w:
             self._colors[int(title_w)] = _TOAST_TITLE
             u32.SendMessageW(title_w, 0x0030, self._font_title, 1)   # WM_SETFONT
@@ -439,11 +489,24 @@ class ToastManager:
         body_w = u32.CreateWindowExW(
             0, "Static", "",
             0x40000000 | 0x10000000 | 0x00000020 | 0x00000080,   # WS_CHILD|WS_VISIBLE|SS_WORDBREAK|SS_NOPREFIX
-            16, 40, w - 32, h - 52, hwnd, None, self._hinst, None)
+            tx, 42, tw, h - 42 - 30, hwnd, None, self._hinst, None)
         if body_w:
             self._colors[int(body_w)] = _TOAST_FG
             u32.SendMessageW(body_w, 0x0030, self._font_body, 1)
             u32.SetWindowTextW(body_w, str(body))
+
+        # 灰色小字 CTA（视觉降级，衬托正文）
+        try:
+            hint_w = u32.CreateWindowExW(
+                0, "Static", "",
+                0x40000000 | 0x10000000,
+                tx, h - 24, tw, 16, hwnd, None, self._hinst, None)
+            if hint_w:
+                self._colors[int(hint_w)] = _TOAST_HINT
+                u32.SendMessageW(hint_w, 0x0030, self._font_hint, 1)
+                u32.SetWindowTextW(hint_w, "点击查看详情 ›")
+        except Exception:
+            pass
 
         try:
             # Win11 圆角（DWMWA_WINDOW_CORNER_PREFERENCE=33, DWMWCP_ROUND=2）；Win10 忽略
@@ -579,9 +642,9 @@ class _CtrlHandler(BaseHTTPRequestHandler):
                 level = str(msg.get("level") or "info")
                 # 气泡只显示标题 + 简短预览 + 点击查看，完整内容落未读界面
                 preview = (detail or title)
-                if len(preview) > 30:
-                    preview = preview[:29] + "…"
-                bubble = preview + "  ·  点击查看详情 ›"
+                if len(preview) > 46:
+                    preview = preview[:45] + "…"
+                bubble = preview
                 channel = notify(title, bubble, level)
                 if _TRAY:
                     key = str(msg.get("key") or f"manual-{time.time()}")
@@ -2003,7 +2066,7 @@ def poll_loop(base, interval, ui, seen):
                 head = fresh[0].get("title", "NAS Safe 异常提醒")
                 if len(head) > 26:
                     head = head[:25] + "…"
-                cta = (head + f"  等 {n} 项" if n > 1 else head) + "  ·  点击查看详情 ›"
+                cta = head + (f"  等 {n} 项" if n > 1 else "")
                 notify("NAS Safe 异常提醒", cta)
                 # 每条异常作为一条未读落盘，点击气泡/托盘即可在未读界面看到全部内容
                 for f in fresh:
