@@ -95,6 +95,8 @@ async function boot() {
         if (sel) sel.value = v.mountpoint ?? String(v.id);
       }
     }
+    // 强刷后恢复上次所在视图的数据：时间轴选卷拉快照、重复文件/垃圾页恢复报告等
+    onEnterView(localStorage.getItem("nassafe_view") || "home");
   } catch (err) {
     setStatus("连接失败", "err");
     showBanner("error", "无法连接到 NAS Safe 服务", err.message);
@@ -936,14 +938,21 @@ function showView(name) {
   if (!VIEWS.includes(name)) name = "home";
   localStorage.setItem("nassafe_view", name);
   applyView();
-  // 直接点进时间轴页但还没选过卷：恢复上次选的卷，没记录就自动选第一个
-  if (name === "snapshots" && !state.activeVolume) autoSelectVolume();
-  // 回到主页时立即刷新仪表盘
-  if (name === "home") loadMetrics();
-  // 进入重复文件页：恢复扫描进度 + 上次报告与隔离区
-  if (name === "dups") { refreshDupStatus(); loadDupReport(); }
-  if (name === "junk") { refreshJunkStatus(); loadJunkReport(); }
+  onEnterView(name);
   window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+// 进入视图时恢复该页数据：showView 与启动恢复（强刷后 boot）共用，
+// 否则强刷后时间轴/重复文件/垃圾页只切了显示、不拉数据，页面一片空白。
+function onEnterView(name) {
+  if (name === "snapshots") {
+    if (!state.activeVolume) autoSelectVolume(); // 没选过卷：自动选第一个
+    else if (state.tlLoadedVol !== (state.activeVolume.mountpoint ?? String(state.activeVolume.id)))
+      loadSnapshots(); // 卷已恢复但时间轴还没拉过：补拉（幂等，重复调用不会双载）
+  } else if (name === "home") {
+    loadMetrics();
+  } else if (name === "dups") { refreshDupStatus(); loadDupReport(); }
+  else if (name === "junk") { refreshJunkStatus(); loadJunkReport(); }
 }
 
 async function autoSelectVolume() {
@@ -1111,6 +1120,7 @@ async function loadSnapshots() {
   try {
     const data = await api(`/api/snapshots?volume=${encodeURIComponent(vol.mountpoint)}`);
     state.snapshots = data.snapshots;
+    state.tlLoadedVol = vol.mountpoint ?? String(vol.id); // 记录已加载的卷，防止启动恢复与 selectVolume 双重加载
     $("tlSubtitle").textContent =
       `当前显示「${vol.name}」这一个存储卷的快照，共 ${state.snapshots.length} 张 · 🔒 = 受 NAS Safe 保护`;
 
