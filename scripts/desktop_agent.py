@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.14"
+AGENT_VER = "1.0.6.15"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -290,16 +290,18 @@ class ToastManager:
             self._hinst = k32.GetModuleHandleW(None)
 
             lf_title = _LOGFONTW()
-            lf_title.lfHeight = -16
-            lf_title.lfWeight = 600
+            lf_title.lfHeight = -15
+            lf_title.lfWeight = 500
             lf_title.lfCharSet = 134          # GB2312_CHARSET
+            lf_title.lfQuality = 5            # CLEARTYPE_QUALITY：ClearType 锐化
             lf_title.lfFaceName = "Microsoft YaHei UI"
             self._font_title = g32.CreateFontIndirectW(ctypes.byref(lf_title))
 
             lf_body = _LOGFONTW()
-            lf_body.lfHeight = -14
+            lf_body.lfHeight = -13
             lf_body.lfWeight = 400
             lf_body.lfCharSet = 134
+            lf_body.lfQuality = 5             # CLEARTYPE_QUALITY：ClearType 锐化
             lf_body.lfFaceName = "Microsoft YaHei UI"
             self._font_body = g32.CreateFontIndirectW(ctypes.byref(lf_body))
 
