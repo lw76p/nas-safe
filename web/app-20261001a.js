@@ -2233,7 +2233,9 @@ function showDesktopAgentGuide() {
 // 触发真实下载（a[download]，比 window.open 可靠，不会被当成弹窗拦掉）
 function triggerDownload(href, filename, okMsg) {
   const a = document.createElement("a");
-  a.href = href;
+  // 加时间戳/版本戳：强制浏览器不拿缓存里的旧版 zip/exe
+  const sep = href.includes("?") ? "&" : "?";
+  a.href = href + sep + "_v=1.0.6.12&t=" + Date.now();
   a.download = filename;
   a.style.display = "none";
   document.body.appendChild(a);
