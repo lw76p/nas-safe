@@ -211,12 +211,15 @@ function updateOverview() {
   }
 
   const mon = $("ovMonitor");
+  const monCard = mon.closest(".ov-card");
   if (state.autoMonitor) {
     mon.textContent = "运行中";
     mon.className = "ov-num is-ok";
+    if (monCard) monCard.classList.remove("is-off");
   } else {
     mon.textContent = "未开启";
     mon.className = "ov-num";
+    if (monCard) monCard.classList.add("is-off");
   }
 }
 
@@ -328,6 +331,7 @@ function renderMetrics(m) {
     let pool = m.net.ifaces.filter((i) => PHYS.test(i.iface) && !VIRT.test(i.iface));
     if (!pool.length) pool = m.net.ifaces.filter((i) => !VIRT.test(i.iface));
     if (!pool.length) pool = m.net.ifaces;
+    pool.sort((a, b) => a.iface.localeCompare(b.iface, undefined, { numeric: true, sensitivity: "base" }));
     const ifaceName = (n) => {
       if (/^eth\d+$/.test(n)) return `网卡 ${Number(n.slice(3)) + 1}`;
       if (/^en/.test(n)) return `网口 ${n}`;
