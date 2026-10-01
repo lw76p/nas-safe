@@ -819,7 +819,7 @@ async function routeAI(question, cloudEndpoint, context, history) {
     // 统一返回 {text} 对象——调用方（问AI/解读/异常文案）都按 data.text 取答案；
     // 本地路径此前返回纯字符串，曾致回答渲染为空（答案"丢失"）。
     try {
-      return { text: await callLocalAI(question, context || "", history) };
+      return await callLocalAI(question, context || "", history);
     } catch (directErr) {
       // 直连失败（最常见 = 未设系统级 OLLAMA_ORIGINS 被 CORS 拦），自动改走 NAS 中转
       try {
@@ -1054,7 +1054,14 @@ async function sendAiChat() {
   try {
     // history 不含本条（本条作为 question 单传）；最多带最近 20 条防爆
     const data = await routeAI(q, "/api/ai/ask", "", aiChatHistory.slice(0, -1).slice(-20));
-    const ans = (data && typeof data === "object" ? data.text : data) || "";
+    let ans = "";
+  if (data && typeof data === "object") {
+    ans = data.text;
+    if (typeof ans !== "string" && ans && typeof ans === "object") ans = ans.text || ans.content || JSON.stringify(ans);
+  } else if (typeof data === "string") {
+    ans = data;
+  }
+  ans = (typeof ans === "string" ? ans : String(ans || "")).trim();
     aiChatHistory.push({ role: "assistant", content: ans || "（AI 没有返回内容，请换个问法重试，或点「新话题」重开）" });
   } catch (e) {
     aiChatHistory.push({ role: "assistant", content: "❌ 回答失败：" + e.message + "\n若提示 AI 未配置，请到「设置 → AI 解读」先启用。" });

@@ -1,0 +1,29 @@
+# -*- coding: utf-8 -*-
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 6, 11),
+    prodvers=(1, 0, 6, 11),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    VarFileInfo([VarStruct('Translation', [0x0804, 0x04B0])]),
+    StringFileInfo(
+      [
+      StringTable(
+        '080404B0',
+        [StringStruct('CompanyName', '贵州天晟科技'),
+         StringStruct('FileDescription', 'NAS Safe 桌面助手'),
+         StringStruct('FileVersion', '1.0.6.11'),
+         StringStruct('InternalName', 'NASSafeAgent'),
+         StringStruct('LegalCopyright', 'Copyright (C) 2026 贵州天晟科技'),
+         StringStruct('OriginalFilename', '桌面助手.exe'),
+         StringStruct('ProductName', 'NAS Safe'),
+         StringStruct('ProductVersion', '1.0.6.11')])
+      ])
+  ]
+)

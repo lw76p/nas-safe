@@ -9,7 +9,7 @@
   · 桌面端与微信端**同步发**：小助手在线时，本机弹窗与微信/邮件同一时刻发出；
     不判断用户是否坐在电脑前（判断空闲既易误判、又要常驻检测，不划算）
   · 小助手被用户关闭：自动上报离线，改由 NAS 服务端看门狗继续发微信/邮件，提醒不丢
-  · 常驻形态：系统托盘图标（右下角通知区域）—— 产品蓝盾牌，悬停显示「NAS Safe 桌面助手 · 快照保护中」；
+  · 常驻形态：系统托盘图标（右下角通知区域）—— 绿色盾牌（正常）/ 红色盾牌+白色感叹号（有未读），悬停显示「NAS Safe 桌面助手 · 快照保护中」；
     有未读告警时蓝色盾牌中央出现红色感叹号，左键看未读、右键菜单可全部已读或退出
 
 阅读规则（按用户要求）：
@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.10"
+AGENT_VER = "1.0.6.11"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -1417,8 +1417,9 @@ class TrayIcon:
             cx = cy = (size - 1) / 2.0
             r_out = size / 2.0 - 0.8
             r_in = size * 0.30
-            blue = (37, 99, 235)      # 产品主色蓝（与 NAS Safe 界面一致）
-            red = (239, 68, 68)      # 告警红
+            green = (34, 197, 94)     # 正常：绿色盾牌
+            red = (239, 68, 68)       # 告警底色
+            white = (255, 255, 255)   # 感叹号
             for y in range(size):
                 for x in range(size):
                     dx, dy = x - cx, y - cy
@@ -1427,15 +1428,15 @@ class TrayIcon:
                     if a <= 0:
                         continue
                     a = 1.0 if a > 1 else a
-                    r, g, b = blue
-                    # 告警：盾牌正中间直接画一个红色感叹号（不叠红圆底，保持图标本色）
+                    r, g, b = (red if alert else green)
+                    # 告警：红色盾牌中间画一个白色感叹号
                     if alert:
                         bw = max(2.5, size * 0.13)
                         if abs(dx) <= bw / 2 and (cy - size * 0.19) <= y <= (cy + size * 0.09):
-                            r, g, b = red
+                            r, g, b = white
                             a = 1.0
                         if abs(dx) <= bw / 2 and (cy + size * 0.15) <= y <= (cy + size * 0.24):
-                            r, g, b = red
+                            r, g, b = white
                             a = 1.0
                     # 盾牌轮廓（下缘两侧轻微收窄，看起来像盾不是圆）
                     o = (y - cy) / (size / 2.0)
