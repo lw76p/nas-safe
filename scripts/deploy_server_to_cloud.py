@@ -19,6 +19,7 @@ REMOTE_DIR = "/opt/nas-safe/server"
 FILES = [
     "brands.py",
     "storage.py",
+    "metrics.py",
     "snapshot_vss.py",
     "snapshot_apfs.py",
     "snapshot_rsync.py",

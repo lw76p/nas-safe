@@ -29,32 +29,52 @@ _io_prev: dict | None = None       # {盘名: (读扇区, 写扇区)}
 
 # 趋势样本环形缓冲（卷用量%/内存%）与上限
 _hist: list = []
-_HIST_MAX = 120                    # 15s/次 × 120 ≈ 30 分钟窗口
+_HIST_MAX = 240                    # 15s/次 × 240 ≈ 1 小时窗口（窗口越长，趋势越可信）
 
 
 def _compute_trends() -> list:
     """从 _hist 线性外推每个卷的增长速度与"预计几天后存满"。
 
-    保守输出：样本 >=10 且窗口 >=5 分钟；增速为正且用量 >1% 才报；
-    days_to_full 仅在 90 天内有意义（更远的当作"缓慢增长"不报天数）。"""
+    防误报（2026-10-02 修）：原先「首尾两点求斜率 + 30 分钟窗口」，一次临时写入
+    （部署文件、建快照）就会被当成持续增速 —— 实测出现 40G 盘只用了 11%、剩余 34G
+    却告警「预计 6.9 天后存满」。现在四道闸：
+      1) 最小二乘线性回归求斜率（不再只取首尾两点，单点噪声影响大幅降低）
+      2) 样本 >=20 且窗口 >=30 分钟才外推
+      3) 增速门槛 0.05 %/小时（约 1.2 %/天），低于此视为缓慢增长不预测
+      4) 已用 < 60% 时不做"预计存满"预测：空间还宽敞不该吓唬人。
+         空间告警由 anomalies 的 75%/90% 绝对水位负责，
+         趋势只回答"已经偏紧了还要多久"。
+    """
     out: list = []
-    if len(_hist) < 10:
+    if len(_hist) < 20:
         return out
     span = _hist[-1]["ts"] - _hist[0]["ts"]
-    if span < 300:
+    if span < 1800:                       # 30 分钟
         return out
-    hours = span / 3600.0
     mounts: set = set()
     for h in _hist:
         mounts.update(h["vols"].keys())
     for mount in sorted(mounts):
         pts = [(h["ts"], h["vols"][mount]) for h in _hist
                if h["vols"].get(mount) is not None]
-        if len(pts) < 10:
+        if len(pts) < 20:
             continue
         pct = pts[-1][1]
-        slope = (pct - pts[0][1]) / hours  # % / 小时
-        if pct is None or pct <= 1.0 or slope <= 0.05:
+        if pct is None or pct <= 1.0:
+            continue
+        # 最小二乘：slope = Σ(t-t̄)(p-p̄) / Σ(t-t̄)²   单位 %/小时
+        t0 = pts[0][0]
+        xs = [(t - t0) / 3600.0 for t, _ in pts]
+        ys = [p for _, p in pts]
+        mx = sum(xs) / len(xs)
+        my = sum(ys) / len(ys)
+        den = sum((x - mx) ** 2 for x in xs)
+        if den <= 0:
+            continue
+        slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den
+        if slope <= 0.05:
+            continue
+        if pct < 60.0:                     # 还宽敞：不预测"几天后存满"
             continue
         days = (100.0 - pct) / slope / 24.0
         out.append({
