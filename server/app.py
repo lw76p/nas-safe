@@ -896,7 +896,8 @@ class Handler(BaseHTTPRequestHandler):
                 if auth.needs_setup():
                     raise StorageError("请先创建管理员账号")
                 username = (payload.get("username") or "").strip()
-                password = payload.get("password") or ""
+                # 密码去首尾空白：粘贴密码时常带行尾换行/空格，直接原样比对必失败
+                password = (payload.get("password") or "").strip()
                 try:
                     sess = auth.login(username, password)
                 except ValueError as exc:
