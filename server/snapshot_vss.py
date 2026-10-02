@@ -373,6 +373,7 @@ def delete_snapshot(snapshot) -> None:
 
     path = getattr(snapshot, "path", "")
     shadow_id = ""
+    found = False
     # 从元数据里找 shadow_id（path 是设备名，vssadmin 删除要 GUID）
     repo_root = os.path.abspath(_state_root())
     for root_dir, _d, files in os.walk(repo_root):
@@ -386,8 +387,9 @@ def delete_snapshot(snapshot) -> None:
                     os.remove(os.path.join(root_dir, f))
                 except OSError:
                     pass
+                found = True
                 break
-        if shadow_id or meta.get("device") == path:
+        if found:
             break
     if not shadow_id:
         # 允许直接传 shadow_id 或设备路径删除
