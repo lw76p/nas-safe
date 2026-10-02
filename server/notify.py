@@ -172,44 +172,79 @@ def get_wechat_access_token(appid: str, secret: str) -> (str, str):
     return token, ""
 
 
-def _send_wechat_sa(ch: dict, text: str, alerts: list, events: list) -> (bool, str):
-    appid = ch.get("appid", "").strip()
-    secret = ch.get("appsecret", "").strip()
-    template_id = ch.get("template_id", "").strip()
-    openid = ch.get("openid", "").strip()
-    # 厂商云端中继（推荐）：NAS 家庭动态 IP 不在微信 API 白名单，直连必 40164。
-    # 中继部署在固定 IP 云服务器上，统一持有 appid/secret 并代发模板消息。
-    relay_url = (ch.get("relay_url") or os.environ.get("NASSAFE_WECHAT_RELAY_URL", "")).strip()
-    relay_token = (ch.get("relay_token") or os.environ.get("NASSAFE_WECHAT_RELAY_TOKEN", "")).strip()
-    if relay_url:
-        if not (template_id and openid):
-            return False, "缺少 template_id/openid"
-        if not relay_token:
-            return False, "缺少 relay_token（云端中继共享密钥）"
-    else:
-        if not all([appid, secret, template_id, openid]):
-            return False, "缺少 appid/appsecret/template_id/openid（或配置 relay_url 走云端中继）"
-    # 把动态压进模板字段
+def _wechat_template_data(alerts: list, events: list, text: str) -> dict:
+    """经典模板消息字段（first/keyword1/keyword2/remark）。"""
     first = "NAS Safe 检测到新的安全动态" if (alerts or events) else "NAS Safe 心跳"
     keyword1 = "告警" if alerts else "信息"
     keyword2 = time.strftime("%Y-%m-%d %H:%M:%S")
     remark = text[:200]
-    payload = {
-        "touser": openid,
-        "template_id": template_id,
-        "data": {
-            "first": {"value": first},
-            "keyword1": {"value": keyword1},
-            "keyword2": {"value": keyword2},
-            "remark": {"value": remark},
-        },
+    return {
+        "first": {"value": first},
+        "keyword1": {"value": keyword1},
+        "keyword2": {"value": keyword2},
+        "remark": {"value": remark},
     }
+
+
+def _wechat_relay_endpoint(relay_url: str, mode: str) -> str:
+    """由中继 base URL 按模式推导端点：/send(经典模板) /subscribe(一次性订阅) /cs(客服消息)。"""
+    base = relay_url.rstrip("/")
+    if base.endswith(("/send", "/subscribe", "/cs")):
+        base = base.rsplit("/", 1)[0]
+    path = {"subscribe": "/subscribe", "custom": "/cs"}.get(mode, "/send")
+    return base + path
+
+
+def _send_wechat_sa(ch: dict, text: str, alerts: list, events: list) -> (bool, str):
+    """微信服务号通道，支持三种模式：
+      - template  : 经典模板消息（message/template/send，data 字典）—— 需账号开通模板消息权限
+      - subscribe : 一次性订阅消息（message/template/subscribe，content 纯文本）—— 免模板权限，但要求用户先订阅
+      - custom    : 客服消息（message/custom/send）—— 仅限用户 48h 内互动过
+    优先走厂商云端中继（relay_url）：家庭动态 IP 不在微信白名单，直连必 40164。
+    """
+    appid = ch.get("appid", "").strip()
+    secret = ch.get("appsecret", "").strip()
+    template_id = ch.get("template_id", "").strip()
+    openid = ch.get("openid", "").strip()
+    mode = (ch.get("mode") or "template").strip().lower()
+    relay_url = (ch.get("relay_url") or os.environ.get("NASSAFE_WECHAT_RELAY_URL", "")).strip()
+    relay_token = (ch.get("relay_token") or os.environ.get("NASSAFE_WECHAT_RELAY_TOKEN", "")).strip()
     if relay_url:
-        return _http_post_json(relay_url, payload, token=relay_token)
+        if not openid:
+            return False, "缺少 openid"
+        if mode == "subscribe" and not template_id:
+            return False, "订阅模式缺少 template_id"
+        if mode in ("template",) and not template_id:
+            return False, "模板模式缺少 template_id"
+        if not relay_token:
+            return False, "缺少 relay_token（云端中继共享密钥）"
+        endpoint = _wechat_relay_endpoint(relay_url, mode)
+        if mode == "subscribe":
+            payload = {"touser": openid, "template_id": template_id, "content": text}
+        elif mode == "custom":
+            payload = {"touser": openid, "content": text}
+        else:
+            payload = {
+                "touser": openid,
+                "template_id": template_id,
+                "data": _wechat_template_data(alerts, events, text),
+            }
+        return _http_post_json(endpoint, payload, token=relay_token)
+    # 直连（家庭固定 IP 已在微信白名单时）
+    if mode == "subscribe":
+        return False, "订阅消息必须走云端中继（relay_url）"
+    if not all([appid, secret, template_id, openid]):
+        return False, "缺少 appid/appsecret/template_id/openid（或配置 relay_url 走云端中继）"
     token, err = get_wechat_access_token(appid, secret)
     if err:
         return False, err
-    url = f"https://api.weixin.qq.com/cgi-bin/message/template/send?access_token={token}"
+    if mode == "custom":
+        url = f"https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token={token}"
+        payload = {"touser": openid, "msgtype": "text", "text": {"content": text}}
+    else:
+        url = f"https://api.weixin.qq.com/cgi-bin/message/template/send?access_token={token}"
+        payload = {"touser": openid, "template_id": template_id,
+                   "data": _wechat_template_data(alerts, events, text)}
     return _http_post_json(url, payload)
 
 

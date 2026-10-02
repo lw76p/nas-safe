@@ -7,6 +7,8 @@
   4. GET/POST /callback  微信服务器配置回调：GET 验签 echostr；POST 收关注/取关/消息/菜单点击事件，openid 落盘
   5. GET/POST /menu      菜单管理：GET 查询当前菜单；POST(带共享密钥) 创建菜单
   6. POST /cs            发送客服消息(带共享密钥) {touser, content}
+  7. GET  /templates     查询服务号已添加的模板消息（带共享密钥）
+  8. POST /subscribe     发送一次性订阅消息（带共享密钥）{touser, template_id, content}
 安全：仅监听 127.0.0.1:18841，外网经 nginx 反代（配共享 token 后再开放）。
 AppSecret 经环境变量 WECHAT_APPID / WECHAT_SECRET 注入，不落代码。
 菜单点击自动回复文案存 STATE_DIR/menu_texts.json（key → 文本），改文案无需改代码。
@@ -86,6 +88,14 @@ def send_template(payload):
     return code, body
 
 
+def send_subscribe(payload):
+    """公众号一次性订阅消息：content 为纯文本，按 \\n 分行映射到模板字段。"""
+    token = get_token()
+    url = f"https://api.weixin.qq.com/cgi-bin/message/template/subscribe?access_token={token}"
+    code, body = _http(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), method="POST")
+    return code, body
+
+
 def send_cs_text(openid, content):
     """客服消息文本（仅 48h 内互动过的粉丝可发）。"""
     token = get_token()
@@ -103,6 +113,13 @@ def create_menu(buttons):
 def get_menu():
     token = get_token()
     url = f"https://api.weixin.qq.com/cgi-bin/get_current_selfmenu_info?access_token={token}"
+    return _http(url)
+
+
+def get_templates():
+    """返回服务号已添加的所有模板消息（含 template_id 与字段结构）。"""
+    token = get_token()
+    url = f"https://api.weixin.qq.com/cgi-bin/template/get_all_private_template?access_token={token}"
     return _http(url)
 
 
@@ -130,6 +147,15 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/menu":
             code, body = get_menu()
             return self._reply(200, json.dumps({"wechat_status": code, "resp": body}))
+        if p == "/templates":
+            if not self._check_relay_token():
+                return self._reply(403, json.dumps({"ok": False, "error": "bad relay token"}))
+            code, body = get_templates()
+            try:
+                d = json.loads(body) if body.startswith("{") else {"raw": body}
+            except Exception:  # noqa: BLE001
+                d = {"raw": body}
+            return self._reply(200, json.dumps({"wechat_status": code, "resp": d}))
         if p == "/callback":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             echostr = q.get("echostr", [""])[0]
@@ -162,6 +188,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._reply(400, json.dumps({"ok": False, "error": "bad json"}))
             try:
                 code, body = send_template(payload)
+                return self._reply(200, json.dumps({"wechat_status": code, "resp": json.loads(body) if body.startswith("{") else body}))
+            except Exception as e:  # noqa: BLE001
+                return self._reply(502, json.dumps({"ok": False, "error": str(e)[:300]}))
+        if p == "/subscribe":
+            if RELAY_TOKEN:
+                supplied = (self.headers.get("X-Relay-Token", "")
+                            or self.headers.get("Authorization", "").replace("Bearer ", "").strip())
+                if supplied != RELAY_TOKEN:
+                    return self._reply(403, json.dumps({"ok": False, "error": "bad relay token"}))
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return self._reply(400, json.dumps({"ok": False, "error": "bad json"}))
+            if not payload.get("touser") or not payload.get("template_id") or "content" not in payload:
+                return self._reply(400, json.dumps({"ok": False, "error": "missing touser/template_id/content"}))
+            try:
+                code, body = send_subscribe(payload)
                 return self._reply(200, json.dumps({"wechat_status": code, "resp": json.loads(body) if body.startswith("{") else body}))
             except Exception as e:  # noqa: BLE001
                 return self._reply(502, json.dumps({"ok": False, "error": str(e)[:300]}))

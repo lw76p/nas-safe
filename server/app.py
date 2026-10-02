@@ -225,7 +225,7 @@ def dir_size(path: str, limit_seconds: float = 3.0) -> int:
 # 配置脱敏（GET 接口返回配置时隐藏密钥）
 # ---------------------------------------------------------------------------
 
-_SECRET_FIELDS = {"appsecret", "secret", "pass", "api_key"}
+_SECRET_FIELDS = {"appsecret", "secret", "pass", "api_key", "relay_token"}
 
 
 def _mask_notify_cfg(cfg: dict) -> dict:
