@@ -179,7 +179,9 @@ _PS_CREATE = (
     "-Arguments @{Volume='__VOL__';Context='ClientAccessible'};"
     "if($r.ReturnValue -ne 0){Write-Output ('ERR='+$r.ReturnValue);exit};"
     "$sc=Get-CimInstance Win32_ShadowCopy -Filter \"ID='$($r.ShadowID)'\";"
-    "Write-Output ('ID='+$sc.ID);Write-Output ('DEV='+$sc.DeviceName)"
+    "Write-Output ('ID='+$sc.ID);"
+    "Write-Output ('DEV='+$sc.DeviceName);"
+    "Write-Output ('DOBJ='+$sc.DeviceObject)"
 )
 
 
