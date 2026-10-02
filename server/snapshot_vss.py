@@ -5,19 +5,18 @@
 
 实现路线：
   - 枚举保护目标：固定磁盘（GetDriveTypeW == DRIVE_FIXED）作为可保护卷
-  - 创建快照：`vssadmin create shadow /for=<盘符>`，正则解析输出里的
-    Shadow Copy ID 与 GLOBALROOT 设备名（中英文系统输出均兼容）
+  - 创建快照：diskshadow 脚本（`set context create` 持久模式；注意 vssadmin
+    根本没有 create 子命令），正则解析 Shadow Copy ID 与 GLOBALROOT 设备名
   - 元数据：存 state/vssrepo/<盘符slug>/<时间戳>.json（块级快照零文件拷贝）
   - 浏览：直接用 Windows 文件 API 走 \\\\?\\GLOBALROOT\\Device\\...ShadowCopyN\\
   - 取回：shutil 复制（失败回退 robocopy）
   - 删除：`vssadmin delete shadows /shadow=<ID> /quiet`
 
 已知限制（如实告知用户）：
-  - 需要管理员权限运行；无权限时本模块安全降级（list_volumes 返回空）
-  - vssadmin 创建的是非持久快照：机器重启后消失（系统管理的还原点除外）。
-    防勒索价值在「实时可取回」，持久化保留是后续版本课题。
-  - VSS 存储区默认卷容量 10%，塞满后系统自动淘汰最老快照（与我们 meta
-    里记录的 ID 失配 → list 时自动清理孤儿元数据）。
+  - 创建/删除需要管理员权限；无权限时可看卷但创建时明确提示
+  - 影子副本生命周期：持久（重启保留），但受 VSS 存储区上限约束
+    （默认卷容量 10%），塞满后系统自动淘汰最老快照 → list 时自动
+    清理孤儿元数据。
 """
 from __future__ import annotations
 
@@ -174,15 +173,39 @@ _RE_DEVICE = re.compile(r"HarddiskVolumeShadowCopy\d+")
 
 
 def _create_shadow(drive_letter: str) -> dict:
-    r"""创建影子副本，返回 {"id": "{guid}", "device": r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN"}。"""
-    proc = _run_vssadmin(["create", "shadow", f"/for={drive_letter}:"])
+    r"""用 diskshadow 创建影子副本（vssadmin 没有 create 子命令）。
+
+    返回 {"id": "{guid}", "device": r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN"}。
+    `set context create` = 持久 + 等待完成：重启后影子仍保留，直到我们删除
+    或被 VSS 存储区上限淘汰。中英文系统的输出标签不同，但 GUID 与
+    GLOBALROOT 设备名不变，用正则跨语言解析。
+    """
+    import tempfile
+    script = f"set context create\ncreate shadow copy for={drive_letter}:\nexit\n"
+    fd, dsh = tempfile.mkstemp(suffix=".dsh", text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as fh:
+            fh.write(script)
+        try:
+            proc = subprocess.run(
+                ["diskshadow", "/s", dsh], capture_output=True, timeout=_TIMEOUT)
+        except FileNotFoundError:
+            raise StorageError("系统里没有 diskshadow 工具（Windows 精简版可能被移除）")
+        except subprocess.TimeoutExpired:
+            raise StorageError("diskshadow 创建卷影副本超时")
+    finally:
+        try:
+            os.remove(dsh)
+        except OSError:
+            pass
     out = _decode(proc)
     m_id = _RE_SHADOW_ID.search(out)
     m_dev = _RE_DEVICE.search(out)
     if not m_dev:
-        err = out.strip().splitlines()
-        detail = err[-1] if err else "未知错误"
-        raise StorageError(f"创建卷影副本失败：{detail[:120]}")
+        err = [l for l in out.strip().splitlines() if l.strip()]
+        # 过滤掉 diskshadow 的回显噪音，取最后几行有效信息
+        detail = " | ".join(err[-3:]) if err else "未知错误"
+        raise StorageError(f"创建卷影副本失败：{detail[:200]}")
     return {
         "id": m_id.group(0) if m_id else "",
         "device": f"\\\\?\\GLOBALROOT\\Device\\{m_dev.group(0)}",
