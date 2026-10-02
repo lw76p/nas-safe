@@ -340,6 +340,73 @@ def logout_cookie_header() -> str:
     return "%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax" % _COOKIE
 
 
+def _write_json_private(path: str, data) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=1)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------------- 一键登录票据
+#
+# 场景：用户环境发不出登录 POST（安全软件拦截/前端异常），改用纯 GET 链接登录：
+# 服务端生成一次性票据 → 用户点击 /api/auth/onelink?t=<票据> → 校验后直接种
+# session cookie 并 302 回首页。票据用后即焚、10 分钟有效。
+
+_ONELINK_TTL = 600
+
+
+def _onelink_path() -> str:
+    return os.path.join(_state_dir(), "onelink.json")
+
+
+def create_onelink_token(username: str) -> str:
+    """为指定账号生成一枚一次性登录票据（10 分钟有效）。"""
+    token = secrets.token_urlsafe(24)
+    path = _onelink_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        data = {}
+    now = time.time()
+    # 顺手清过期
+    data = {k: v for k, v in data.items() if isinstance(v, dict) and now - v.get("ts", 0) < _ONELINK_TTL}
+    data[token] = {"u": username, "ts": now}
+    _write_json_private(path, data)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return token
+
+
+def consume_onelink_token(token: str) -> dict:
+    """校验一次性票据并创建会话；票据用后即焚。无效/过期抛 ValueError。"""
+    path = _onelink_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        raise ValueError("无效的登录链接")
+    info = data.pop(token or "", None)
+    _write_json_private(path, data)
+    if not info or time.time() - info.get("ts", 0) > _ONELINK_TTL:
+        raise ValueError("登录链接已失效，请重新生成")
+    user = get_user(info.get("u", ""))
+    if not user:
+        raise ValueError("该账号已不存在")
+    return {
+        "username": user.get("username", ""),
+        "role": user.get("role", "viewer"),
+        "sid": _make_session(user.get("username", ""), user.get("role", "viewer")),
+        "max_age": _SESSION_HOURS * 3600,
+    }
+
+
 # --------------------------------------------------------------------------- 找回密码（邮箱验证码）
 #
 # 流程：登录页「忘记密码」→ 输入账号 + 注册时的邮箱 → 服务端核对后生成 6 位验证码

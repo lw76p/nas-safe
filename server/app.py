@@ -608,7 +608,7 @@ class Handler(BaseHTTPRequestHandler):
         # 公开接口：健康检查、认证相关、静态文件；其余都需要登录
         # /api/agent/install.sh 公开的原因：被控设备无法登录中控，靠一次性安装令牌鉴权
         public_api = ("/api/health", "/api/auth/setup", "/api/auth/check", "/api/auth/logout",
-                      "/api/agent/install.sh")
+                      "/api/agent/install.sh", "/api/auth/onelink")
         needs_auth = route.startswith("/api/") and route not in public_api
 
         try:
@@ -622,6 +622,24 @@ class Handler(BaseHTTPRequestHandler):
                                  "authenticated": bool(user),
                                  "user": user.get("username") if user else None,
                                  "role": user.get("role") if user else None})
+                return
+            if route == "/api/auth/onelink":
+                # 免输入登录：一次性票据换 session（纯 GET，帮无法发出登录 POST 的环境）
+                # 用后即焚 + 10 分钟有效；只种 cookie 后跳回首页
+                token = (query.get("t") or [""])[0].strip()
+                try:
+                    sess = auth.consume_onelink_token(token)
+                except ValueError:
+                    self.send_response(302)
+                    self.send_header("Location", "/?onelink_err=1")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.send_header("Set-Cookie", auth.cookie_header(sess["sid"], sess["max_age"]))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
                 return
             if route == "/api/auth/logout":
                 self.send_response(200)
