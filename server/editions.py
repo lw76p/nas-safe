@@ -3,11 +3,14 @@
 设计原则：
   1. 定价数字可以后调，但「版本 -> 能力」必须集中定义在一处。
      否则每加 / 改一个版本，都要到各处散落的 if 里改，必然漏。
-  2. **免费档必须保留「能救命」的核心能力**（防勒索检测 + 快照 + 取回还原）。
-     只砍「规模 / 自动化 / 便利 / 增值」，不砍安全性本身 ——
-     否则免费用户真中毒时救不回来，砸的是招牌，也永远体验不到价值。
-  3. 现阶段还没接授权模块，默认版本给完整能力（DEFAULT_EDITION="home"），
-     对现有运行零影响；接入授权后改为读 state/license.json。
+  2. **免费版必须保留「能救命」的核心能力**（防勒索检测 + 快照 + 取回还原），
+     且本机功能全部开放（自动快照/日报/清理/SMART 全不设卡）。
+     只砍「多设备 / 迁移 / 自定义接口」，不砍安全性本身。
+  3. 本项目开源：付费卖的是「省事 + 支持 + 服务」（一键部署、持续更新、
+     微信推送中继），不是功能锁。升级文案要坦诚说明这一点。
+
+档位（2026-10-02 与用户定稿）：免费版（0 元）/ 家庭版（8 元）/ 专业版（18 元）。
+价格在升级页实时显示（服务端 /api/license/prices，state/prices.json 可覆盖默认值）。
 
 用法：
     from editions import limits, can, check_devices
@@ -24,49 +27,66 @@ UNLIMITED = -1
 
 EDITIONS: dict = {
     # ------------------------------------------------------------------
-    # 免费档：1 台电脑 + 1 台 NAS，核心防勒索能力全给
-    # 砍的是「保留几份 / 多久自动存一次 / 能不能管多台 / 有没有推送告警」
+    # 免费版（0 元）：本机功能全开，可管 2 台设备（本机 + 1 台，尝到总控台甜头）
     # ------------------------------------------------------------------
     "free": {
         "label": "免费版",
-        "max_devices": 2,                       # 1 台电脑 + 1 台 NAS
-        "max_snapshots": 3,                     # 每卷只保留最近 3 份快照
-        "auto_snapshot_intervals": ["daily"],   # 只能每天自动存一次
-        "console": "basic",                     # 无跨设备总控台拓扑
-        "alerts": ["email"],                    # 仅邮件告警
+        "price": 0,
+        "max_devices": 2,                       # 本机 + 1 台，体验跨设备管理
+        "max_snapshots": UNLIMITED,             # 本机功能全开，快照不限量
+        "auto_snapshot_intervals": ["hourly", "daily", "weekly"],
+        "console": "basic",                     # 无完整跨设备控制台拓扑
+        "alerts": ["email", "wechat"],          # 邮件 + 微信服务号推送
+        "custom_alerts": False,                 # 无自定义通知接口
+        "ai_cloud_sources": 3,                  # 3 种常见云端 AI
+        "ai_local": False,                      # 不扫本地模型
+        "ai_custom_key": False,                 # 不能自定义 API 接入点
+        "remote_devices": False,                # 不支持异地组网设备
         "migrate": False,                       # 无一键换机迁移
-        "smart_history": False,                 # 无硬盘健康历史趋势
-        # 以下核心能力免费档同样具备（安全能力不设卡）
+        "smart_history": True,                  # 本机 SMART 历史属本机功能，全开
+        # 核心能力不设卡（安全能力免费档同样具备）
         "ransomware_detect": True,
         "snapshot": True,
         "restore": True,
     },
     # ------------------------------------------------------------------
-    # 家庭版：功能齐全，限制设备数
+    # 家庭版（8 元）：多设备 + 换机迁移 + 全部常见云端 AI + 本地模型
     # ------------------------------------------------------------------
     "home": {
         "label": "家庭版",
-        "max_devices": 3,
+        "price": 8,
+        "max_devices": 5,
         "max_snapshots": UNLIMITED,
         "auto_snapshot_intervals": ["hourly", "daily", "weekly"],
-        "console": "full",                      # 完整跨设备总控台
+        "console": "full",                      # 完整跨设备控制台
         "alerts": ["email", "wechat"],
-        "migrate": True,
+        "custom_alerts": False,
+        "ai_cloud_sources": UNLIMITED,          # 内置的常见云端 AI 全给
+        "ai_local": True,                       # 自动扫描本地 AI 模型并加入
+        "ai_custom_key": False,
+        "remote_devices": False,
+        "migrate": True,                        # 一键备份 / 换机迁移
         "smart_history": True,
         "ransomware_detect": True,
         "snapshot": True,
         "restore": True,
     },
     # ------------------------------------------------------------------
-    # 企业版：没有任何限制
+    # 专业版（18 元）：设备不限 + 异地组网 + 自定义通知/AI 接口
     # ------------------------------------------------------------------
     "business": {
-        "label": "企业版",
+        "label": "专业版",
+        "price": 18,
         "max_devices": UNLIMITED,
         "max_snapshots": UNLIMITED,
         "auto_snapshot_intervals": ["hourly", "daily", "weekly"],
         "console": "full",
-        "alerts": ["email", "wechat", "webhook"],
+        "alerts": ["email", "wechat", "webhook", "bark", "ntfy", "feishu", "custom"],
+        "custom_alerts": True,                  # 自行输入接口并推送
+        "ai_cloud_sources": UNLIMITED,
+        "ai_local": True,
+        "ai_custom_key": True,                  # 自定义 AI API 接入点随意接
+        "remote_devices": True,                 # 局域网 + 异地组网设备同时管
         "migrate": True,
         "smart_history": True,
         "ransomware_detect": True,
@@ -76,7 +96,7 @@ EDITIONS: dict = {
 }
 
 # 授权层（licensing.py）已接入：无授权文件时就是免费版。
-# 免费版保留全部「能救命」的核心能力，砍的是规模/自动化/便利（见上方矩阵）。
+# 免费版保留全部「能救命」的核心能力与本机功能，砍的是多设备/迁移/自定义接口。
 DEFAULT_EDITION = "free"
 
 _LICENSE_FILE = "license.json"
@@ -145,6 +165,7 @@ def summary() -> dict:
     return {
         "edition": ed,
         "label": lim.get("label", ""),
+        "price": lim.get("price", 0),
         "licensed": os.path.exists(os.path.join(_state_dir(), _LICENSE_FILE)),
         "max_devices": lim.get("max_devices", UNLIMITED),
         "can_migrate": bool(lim.get("migrate")),

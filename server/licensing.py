@@ -35,6 +35,24 @@ _SECRET_FILE = "license_secret.key"
 _KEY_PREFIX = "NS1"
 _B62 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
+# 升级价格（元）：默认 8/18，state/prices.json 可覆盖（发卡后台以后可同步写这份文件）
+_PRICES_FILE = "prices.json"
+_DEFAULT_PRICES = {"home": 8, "business": 18}
+
+
+def get_prices() -> dict:
+    """升级价格：默认 8/18，state/prices.json 可覆盖。"""
+    prices = dict(_DEFAULT_PRICES)
+    try:
+        with open(os.path.join(_state_dir(), _PRICES_FILE), encoding="utf-8") as fh:
+            data = json.load(fh)
+        for k in ("home", "business"):
+            if isinstance(data.get(k), (int, float)) and data[k] >= 0:
+                prices[k] = data[k]
+    except Exception:
+        pass
+    return prices
+
 
 def _state_dir() -> str:
     try:

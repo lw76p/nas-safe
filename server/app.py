@@ -79,6 +79,36 @@ import auth      # noqa: E402  账号/会话/权限分级
 import editions  # noqa: E402  版本能力矩阵（免费版/家庭版/企业版）
 import licensing  # noqa: E402  一机一码授权激活（与 editions 配套）
 
+# 通知通道类型 <- editions.alerts 能力键的映射（alerts 键见 editions.EDITIONS）
+_ALERT_CHANNEL_MAP = {
+    "email": ("relay", "email"),
+    "wechat": ("wechat_service_account",),
+    "webhook": ("webhook",),
+    "bark": ("bark",),
+    "ntfy": ("ntfy",),
+    "feishu": ("feishu",),
+    "custom": ("custom",),
+}
+
+
+def _edition_alert_types() -> set:
+    """当前版本允许的通知通道类型集合。"""
+    out = set()
+    for a in editions.limits().get("alerts", []):
+        out.update(_ALERT_CHANNEL_MAP.get(a, (a,)))
+    return out
+
+
+def _edition_providers() -> list:
+    """按版本裁剪 AI 供应商列表：免费版 3 种云端，家庭版/专业版全部 + 本地 Ollama。"""
+    n = editions.limits().get("ai_cloud_sources", editions.UNLIMITED)
+    cloud = [k for k in ai.PROVIDERS if k != "ollama"]
+    if n != editions.UNLIMITED:
+        cloud = cloud[:max(0, int(n))]
+    if editions.limits().get("ai_local"):
+        cloud.append("ollama")
+    return cloud
+
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
 WEB_DIR = os.environ.get("NASSAFE_WEB_DIR") or os.path.join(
@@ -740,7 +770,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "config": cfg,
                     "ready": ai.is_ready(),
-                    "providers": list(ai.PROVIDERS.keys()),
+                    "providers": _edition_providers(),
                 })
             elif route == "/api/autosnapshot":
                 cfg = autosnapshot.load_config()
@@ -777,6 +807,9 @@ class Handler(BaseHTTPRequestHandler):
             elif route == "/api/license":
                 # 授权信息：机器码 / 当前版本 / 是否已激活（设置页「版本与激活」用）
                 self._send_json({"ok": True, **licensing.info()})
+            elif route == "/api/license/prices":
+                # 升级价格：服务端实时读取（state/prices.json 可覆盖默认值，供发卡后台同步）
+                self._send_json({"ok": True, "prices": licensing.get_prices()})
             elif route == "/api/system":
                 _sys_info = build_system_info()
                 _sys_info["edition"] = editions.summary()
@@ -801,7 +834,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 换机迁移：导出本机可移植配置包（供前端下载）。免费版不含换机迁移
                 if not editions.can("migrate"):
                     self._send_json({"ok": False, "error":
-                        "换机迁移是家庭版/企业版功能，当前版本没有。升级后即可一键换机",
+                        "换机迁移是家庭版/专业版功能，当前版本没有。升级后即可一键换机",
                         "upgrade": True})
                     return
                 self._send_json({"ok": True, "bundle": migrate.build_bundle()})
@@ -1081,6 +1114,15 @@ class Handler(BaseHTTPRequestHandler):
                     raise StorageError("配置格式错误")
                 cfg.setdefault("enabled", False)
                 cfg.setdefault("channels", [])
+                _allowed = _edition_alert_types()
+                _bad = sorted({str(ch.get("type")) for ch in cfg.get("channels", [])
+                               if isinstance(ch, dict) and ch.get("type")
+                               and ch.get("type") not in _allowed})
+                if _bad:
+                    self._send_json({"ok": False, "upgrade": True,
+                                     "error": "通知通道（" + "、".join(_bad) +
+                                     "）是专业版功能，当前版本没有。升级后可用群机器人/Bark/飞书等自定义接口"})
+                    return
                 notify.save_config(cfg)
                 self._send_json({"ok": True, "config": _mask_notify_cfg(notify.load_config())})
 
@@ -1112,6 +1154,17 @@ class Handler(BaseHTTPRequestHandler):
                     old = ai.load_config()
                     if old.get("api_key"):
                         cfg["api_key"] = old["api_key"]
+                # 版本卡点：供应商必须在当前版本列表内；非专业版不能自定义接入点（地址/模型用内置默认）
+                _prov = str(cfg.get("provider") or "")
+                if _prov and _prov not in _edition_providers():
+                    self._send_json({"ok": False, "upgrade": True,
+                                     "error": "这个 AI 接口当前版本没有。升级后可用全部常见云端 AI 和本地模型"})
+                    return
+                if _prov and not editions.can("ai_custom_key") and _prov != "ollama":
+                    _pinfo = ai.PROVIDERS.get(_prov)
+                    if _pinfo:
+                        cfg["base_url"] = _pinfo["base_url"]
+                        cfg["model"] = _pinfo["model"]
                 ai.save_config(cfg)
                 self._send_json({"ok": True, "ready": ai.is_ready(), "config": ai.load_config()})
 
@@ -1363,7 +1416,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 导入预览（dry_run）：计算路径映射 + 能力降级结果，不落地
                 if not editions.can("migrate"):
                     self._send_json({"ok": False, "error":
-                        "换机迁移是家庭版/企业版功能，当前版本没有。升级后即可一键换机",
+                        "换机迁移是家庭版/专业版功能，当前版本没有。升级后即可一键换机",
                         "upgrade": True})
                     return
                 bundle = payload.get("bundle")
@@ -1381,7 +1434,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 正式导入：需 confirm=True；写入本机 state_dir
                 if not editions.can("migrate"):
                     self._send_json({"ok": False, "error":
-                        "换机迁移是家庭版/企业版功能，当前版本没有。升级后即可一键换机",
+                        "换机迁移是家庭版/专业版功能，当前版本没有。升级后即可一键换机",
                         "upgrade": True})
                     return
                 if payload.get("confirm") is not True:
