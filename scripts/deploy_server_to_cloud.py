@@ -31,6 +31,7 @@ FILES = [
     "auth.py",
     "notify.py",
     "reset_admin.py",
+    "snapshot_vss.py",
 ]
 
 
