@@ -602,16 +602,22 @@ function collectAnomalies(m) {
         push(`disk-${d.name}`, 1, `${cn} ${i + 1} 温度偏高（${d.temp_c}°C）`, "建议改善散热", `NAS 的${cn} ${i + 1} 温度 ${d.temp_c}°C 偏高，有什么改善建议？`);
     });
   }
-  // 卷空间
+  // 卷空间：与服务端 metrics.space_alerts 同一套双门槛（比例 + 绝对剩余），避免空盘误报
   (m.volumes || []).forEach((v) => {
     if (!v || v.total_kb <= 0) return;
-    if (v.percent >= 90)
-      push(`vol-${v.mount}`, 2, `「${volNameShort(v.mount)}」空间即将用尽（已用 ${v.percent}%）`, "空间满会影响快照与正常使用", `存储卷「${volNameShort(v.mount)}」已用 ${v.percent}%，请给出清理和扩容建议`);
-    else if (v.percent >= 75)
-      push(`vol-${v.mount}`, 1, `「${volNameShort(v.mount)}」空间偏紧（已用 ${v.percent}%）`, "建议关注增长", `存储卷「${volNameShort(v.mount)}」已用 ${v.percent}%，有哪些安全的清理建议？`);
+    if (v.total_kb < 16 * 1024 * 1024) return;                 // 系统内部小卷不参与
+    const mt = String(v.mount || "");
+    if (["/boot", "/dev", "/proc", "/sys", "/run", "/snap", "/mnt/snapshot"].some((p) => mt === p || mt.startsWith(p + "/"))) return;
+    const freeGb = (v.total_kb - v.used_kb) / 1024 / 1024;
+    const freeTxt = freeGb.toFixed(1) + "G";
+    if (v.percent >= 92 && freeGb < 3)
+      push(`vol-${mt}`, 2, `「${volNameShort(mt)}」空间即将用尽（已用 ${v.percent}%，剩 ${freeTxt}）`, "空间满会影响快照与正常使用", `存储卷「${volNameShort(mt)}」已用 ${v.percent}%，请给出清理和扩容建议`);
+    else if (v.percent >= 80 && freeGb < 10)
+      push(`vol-${mt}`, 1, `「${volNameShort(mt)}」空间偏紧（已用 ${v.percent}%，剩 ${freeTxt}）`, "建议关注增长", `存储卷「${volNameShort(mt)}」已用 ${v.percent}%，有哪些安全的清理建议？`);
   });
   (m.trends || []).forEach((t) => {
-    if (t.days_to_full)
+    // 只提示「30 天内且已用七成以上」，远的、宽的都不提
+    if (t.days_to_full && t.days_to_full <= 30 && t.percent >= 70)
       push(`trend-${t.mount}`, 1, `「${volNameShort(t.mount)}」预计 ${t.days_to_full} 天后存满`, "按最近增长速度推算", `存储卷「${volNameShort(t.mount)}」按当前速度约 ${t.days_to_full} 天后存满，如何处理？`);
   });
   return list;

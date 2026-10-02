@@ -161,9 +161,12 @@ def _freeable_summary() -> dict:
 def _disk_summary() -> dict:
     m = metrics.collect(force=True)
     vols = m.get("volumes") or []
-    tight = [{"mount": v.get("mount"), "percent": v.get("percent")}
-             for v in vols if (v.get("percent") or 0) >= 75]
-    trends = [t for t in (m.get("trends") or []) if t.get("days_to_full")]
+    # 与网页/看门狗同一套容量判据，日报不再自己按 75% 拍脑袋
+    alerts = metrics.space_alerts(vols, m.get("trends") or [])
+    tight = [{"mount": a.get("mount"), "percent": a.get("percent"), "free_gb": a.get("free_gb")}
+             for a in alerts if a.get("kind") == "vol"]
+    trends = [{"mount": a.get("mount"), "days_to_full": a.get("days"), "percent": a.get("percent")}
+              for a in alerts if a.get("kind") == "trend"]
     disks = m.get("disks") or []
     hot = [{"name": d.get("name"), "temp_c": d.get("temp_c")}
            for d in disks if d.get("temp_c") is not None and d["temp_c"] >= 50]

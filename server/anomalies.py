@@ -85,25 +85,22 @@ def collect_anomalies(m: dict | None = None) -> list:
                             "title": f"{cn} {i + 1} 温度偏高（{t}°C）",
                             "detail": "温度高于舒适区间，留意后续变化。", "view": "dashboard"})
 
-    for v in m.get("volumes") or []:
-        if not v or (v.get("total_kb") or 0) <= 0:
-            continue
-        p = v.get("percent", 0)
-        name = str(v.get("mount", "")).split("/")[-1] or v.get("mount")
-        if p >= 90:
-            out.append({"key": f"vol-{v.get('mount')}", "sev": 2,
-                        "title": f"「{name}」空间即将用尽（已用 {p}%）",
-                        "detail": "空间不足会导致写入失败，建议清理或扩容。", "view": "dashboard"})
-        elif p >= 75:
-            out.append({"key": f"vol-{v.get('mount')}", "sev": 1,
-                        "title": f"「{name}」空间偏紧（已用 {p}%）",
-                        "detail": "留意增长趋势，提前规划清理。", "view": "dashboard"})
-
-    for t in m.get("trends") or []:
-        if t.get("days_to_full"):
-            name = str(t.get("mount", "")).split("/")[-1] or t.get("mount")
-            out.append({"key": f"trend-{t.get('mount')}", "sev": 1,
-                        "title": f"「{name}」预计 {t['days_to_full']} 天后存满",
+    # 容量告警：统一走 metrics.space_alerts 的双门槛判据（比例 + 绝对剩余）
+    for a in metrics.space_alerts(m.get("volumes") or [], m.get("trends") or []):
+        mount = str(a.get("mount") or "")
+        name = mount.split("/")[-1] or mount
+        if a["kind"] == "vol":
+            if a["sev"] == 2:
+                out.append({"key": f"vol-{mount}", "sev": 2,
+                            "title": f"「{name}」空间即将用尽（已用 {a['percent']}%，剩 {a['free_gb']}G）",
+                            "detail": "空间不足会导致写入失败，建议清理或扩容。", "view": "dashboard"})
+            else:
+                out.append({"key": f"vol-{mount}", "sev": 1,
+                            "title": f"「{name}」空间偏紧（已用 {a['percent']}%，剩 {a['free_gb']}G）",
+                            "detail": "留意增长趋势，提前规划清理。", "view": "dashboard"})
+        else:
+            out.append({"key": f"trend-{mount}", "sev": 1,
+                        "title": f"「{name}」预计 {a['days']} 天后存满",
                         "detail": "按近期增长速度推算，建议提前清理。", "view": "dashboard"})
 
     # 防勒索告警（快照被删/基线被改等）：优先级最高
