@@ -870,7 +870,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise StorageError("已经初始化过，请直接登录")
                 username = (payload.get("username") or "").strip()
                 password = (payload.get("password") or "").strip()
-                auth.create_user(username, password, "admin")
+                try:
+                    auth.create_user(username, password, "admin", (payload.get("email") or "").strip())
+                except ValueError as exc:
+                    raise StorageError(str(exc))
                 sess = auth.login(username, password)
                 self.send_response(200)
                 self._set_session_cookie(sess["sid"], sess["max_age"])
@@ -900,6 +903,36 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+                return
+
+            # 找回密码：登录页可用（未登录），靠「账号 + 注册邮箱」身份核验，验证码邮件送达后才允许改密
+            if route == "/api/auth/forgot":
+                payload = self._read_json()
+                if auth.needs_setup():
+                    raise StorageError("还没有注册账号，请先注册")
+                username = (payload.get("username") or "").strip()
+                email = (payload.get("email") or "").strip()
+                try:
+                    code = auth.make_reset_code(username, email)
+                except ValueError as exc:
+                    raise StorageError(str(exc))
+                ok, msg = notify.send_system_mail(
+                    email, "NAS Safe 找回密码验证码",
+                    "你的找回密码验证码是：%s\n\n10 分钟内有效，请勿透露给他人。\n如果这不是你本人的操作，请忽略这封邮件。" % code)
+                if not ok:
+                    raise StorageError("验证码已生成，但邮件发送失败：" + msg)
+                self._send_json({"ok": True, "sent_to": email})
+                return
+            if route == "/api/auth/reset":
+                payload = self._read_json()
+                try:
+                    auth.verify_reset_code(
+                        (payload.get("username") or "").strip(),
+                        (payload.get("code") or "").strip(),
+                        payload.get("new_password") or "")
+                except ValueError as exc:
+                    raise StorageError(str(exc))
+                self._send_json({"ok": True})
                 return
 
             # 轻量代理回连接口：被控设备无法登录中控，改用安装令牌鉴权（不走会话）

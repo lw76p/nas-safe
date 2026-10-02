@@ -292,7 +292,7 @@ def _send_email(ch: dict, text: str, *_) -> (bool, str):
     if not all([host, user, to]):
         return False, "缺少 SMTP host/user/to"
     msg = MIMEText(text, "plain", "utf-8")
-    msg["Subject"] = "NAS Safe 安全动态"
+    msg["Subject"] = ch.get("subject") or "NAS Safe 安全动态"
     msg["From"] = user
     msg["To"] = to
     try:
@@ -344,7 +344,7 @@ def _send_relay(ch: dict, text: str, *_) -> (bool, str):
     provider = os.environ.get("NASSAFE_RELAY_PROVIDER", "resend").strip().lower()
     sender = os.environ.get("NASSAFE_RELAY_FROM", "alerts@tsetch.com").strip()
     sender_name = os.environ.get("NASSAFE_RELAY_FROM_NAME", "NAS Safe").strip()
-    subject = "NAS Safe 安全动态"
+    subject = ch.get("subject") or "NAS Safe 安全动态"
     if provider == "brevo":
         payload = {
             "sender": {"name": sender_name, "email": sender},
@@ -362,6 +362,26 @@ def _send_relay(ch: dict, text: str, *_) -> (bool, str):
         }
         url = "https://api.resend.com/emails"
     return _http_post_json(url, payload, token=api_key)
+
+
+def send_system_mail(recipient: str, subject: str, text: str) -> (bool, str):
+    """系统邮件（找回密码验证码等）：优先厂商中继（用户零配置），退回已配置的 SMTP 通道。"""
+    recipient = (recipient or "").strip()
+    if not recipient:
+        return False, "缺少收件邮箱"
+    ok, msg = _send_relay({"recipients": [recipient], "subject": subject}, text)
+    if ok:
+        return True, msg
+    try:
+        for ch in (load_config().get("channels") or []):
+            if ch.get("type") == "email" and ch.get("enabled", True) and ch.get("host"):
+                ch2 = dict(ch)
+                ch2["to"] = recipient
+                ch2["subject"] = subject
+                return _send_email(ch2, text)
+    except Exception:  # noqa: BLE001
+        pass
+    return ok, msg
 
 
 _CHANNEL_DISPATCH = {

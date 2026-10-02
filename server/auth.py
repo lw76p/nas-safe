@@ -154,13 +154,16 @@ def _valid_username(name: str) -> bool:
 
 # --------------------------------------------------------------------------- 账号管理
 
-def create_user(username: str, password: str, role: str = "viewer") -> dict:
+def create_user(username: str, password: str, role: str = "viewer", email: str = "") -> dict:
     if not _valid_username(username):
         raise ValueError("账号名只能是 2~32 位字母、数字、下划线、点或短横线")
     if len(password or "") < 6:
         raise ValueError("密码至少 6 位")
     if role not in ("admin", "viewer"):
         raise ValueError("角色只能是 admin 或 viewer")
+    email = (email or "").strip()
+    if email and ("@" not in email or "." not in email.split("@")[-1]):
+        raise ValueError("邮箱格式看起来不对")
     with _LOCK:
         if get_user(username):
             raise ValueError("这个账号名已经存在了")
@@ -168,6 +171,7 @@ def create_user(username: str, password: str, role: str = "viewer") -> dict:
         user = {
             "username": username,
             "role": role,
+            "email": email,
             "password": _hash_password(password),
             "created_at": time.time(),
             "last_login": None,
@@ -324,3 +328,109 @@ def cookie_header(sid: str, max_age: int) -> str:
 
 def logout_cookie_header() -> str:
     return "%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax" % _COOKIE
+
+
+# --------------------------------------------------------------------------- 找回密码（邮箱验证码）
+#
+# 流程：登录页「忘记密码」→ 输入账号 + 注册时的邮箱 → 服务端核对后生成 6 位验证码
+# → 通过通知通道邮件发给用户 → 用户在 10 分钟内凭验证码 + 新密码完成重置。
+# 验证码落盘（0600），中控重启也不丢；试错限速复用登录失败计数。
+
+_RESET_TTL = 600        # 验证码 10 分钟有效
+_RESET_MAX_TRIES = 5    # 每个验证码最多试错 5 次
+_reset_lock = threading.Lock()
+
+
+def _reset_path() -> str:
+    return os.path.join(_state_dir(), "reset_codes.json")
+
+
+def _load_reset_codes() -> dict:
+    try:
+        with open(_reset_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_reset_codes(d: dict) -> None:
+    try:
+        os.makedirs(_state_dir(), exist_ok=True)
+        with open(_reset_path(), "w", encoding="utf-8") as fh:
+            json.dump(d, fh, ensure_ascii=False)
+        try:
+            os.chmod(_reset_path(), 0o600)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def get_email(username: str) -> str:
+    u = get_user(username)
+    return (u or {}).get("email", "")
+
+
+def set_email(username: str, email: str) -> None:
+    email = (email or "").strip()
+    if email and ("@" not in email or "." not in email.split("@")[-1]):
+        raise ValueError("邮箱格式看起来不对")
+    with _LOCK:
+        users = _read_users()
+        hit = None
+        for u in users:
+            if u.get("username", "").lower() == (username or "").lower():
+                hit = u
+        if not hit:
+            raise ValueError("没找到这个账号")
+        hit["email"] = email
+        _write_users(users)
+
+
+def make_reset_code(username: str, email: str) -> str:
+    """核对账号+邮箱后生成 6 位验证码，返回验证码明文（由调用方负责发邮件）。"""
+    username = (username or "").strip()
+    u = get_user(username)
+    if not u:
+        raise ValueError("没找到这个账号")
+    stored = (u.get("email") or "").strip()
+    if not stored:
+        raise ValueError("这个账号注册时没有留邮箱，无法在线找回")
+    if (email or "").strip().lower() != stored.lower():
+        raise ValueError("邮箱和注册时不一致")
+    code = "%06d" % secrets.randbelow(1_000_000)
+    with _reset_lock:
+        d = _load_reset_codes()
+        d[username.lower()] = {"code": code, "exp": time.time() + _RESET_TTL, "tries": 0}
+        _save_reset_codes(d)
+    return code
+
+
+def verify_reset_code(username: str, code: str, new_pw: str) -> None:
+    username = (username or "").strip()
+    if _too_many_fails("reset:" + username):
+        raise ValueError("试错太多次了，请 5 分钟后再试")
+    with _reset_lock:
+        d = _load_reset_codes()
+        rec = d.get(username.lower())
+        if not rec or rec.get("exp", 0) < time.time():
+            d.pop(username.lower(), None)
+            _save_reset_codes(d)
+            raise ValueError("验证码已过期，请重新获取")
+        if rec.get("tries", 0) >= _RESET_MAX_TRIES:
+            d.pop(username.lower(), None)
+            _save_reset_codes(d)
+            raise ValueError("验证码试错次数用完，请重新获取")
+        if str(rec.get("code")) != (code or "").strip():
+            rec["tries"] = rec.get("tries", 0) + 1
+            d[username.lower()] = rec
+            _save_reset_codes(d)
+            _note_fail("reset:" + username)
+            raise ValueError("验证码不对")
+    reset_password(username, new_pw)
+    with _reset_lock:
+        d = _load_reset_codes()
+        d.pop(username.lower(), None)
+        _save_reset_codes(d)
+    _fail_log.pop("reset:" + username, None)
