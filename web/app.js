@@ -3583,6 +3583,8 @@ $("behaviorBtn").onclick = runBehaviorScan;
 $("aiInterpretBtn").onclick = aiInterpret;
 $("aiDiagnoseBtn").onclick = aiDiagnose;
 $("aiAskBtn").onclick = aiAsk;
+// 仪表盘「AI 管家」按钮：直接以管家模式（工具调用）打开弹窗
+if ($("aiButlerBtn")) $("aiButlerBtn").onclick = () => aiAsk("butler");
 // AI 全页悬浮窗：任意页面点击即可提问（复用 aiAsk 弹窗）
 if ($("aiFabBtn")) $("aiFabBtn").onclick = aiAsk;
 $("notifyType").onchange = () => renderNotifyFields($("notifyType").value);
