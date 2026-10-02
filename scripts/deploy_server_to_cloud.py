@@ -20,12 +20,15 @@ FILES = [
     "brands.py",
     "storage.py",
     "metrics.py",
+    "anomalies.py",
+    "daily_report.py",
     "snapshot_vss.py",
     "snapshot_apfs.py",
     "snapshot_rsync.py",
     "app.py",
     "devices.py",
     "netscan.py",
+    "auth.py",
 ]
 
 
