@@ -69,6 +69,15 @@ def _which(cmd: str) -> bool:
     return which(cmd) is not None
 
 
+def _self_state_dir() -> str:
+    """NAS Safe 自身 state 目录绝对路径（快照源必须排除，防自我套娃）。"""
+    try:
+        from storage import state_dir
+        return os.path.abspath(state_dir())
+    except Exception:
+        return os.path.abspath(os.path.join(os.getcwd(), "state"))
+
+
 def _state_root() -> str:
     """快照仓库的父目录（跟随 storage 的 state 目录）。"""
     try:
@@ -273,6 +282,7 @@ def _hardlink_copy(src: str, prev: str, dst: str) -> dict:
             d for d in dirs
             if os.path.abspath(os.path.join(root, d)) != os.path.abspath(dst)
             and not (prev_abs and os.path.abspath(os.path.join(root, d)) == prev_abs)
+            and os.path.abspath(os.path.join(root, d)) != _self_state_dir()
         ]
         rel = os.path.relpath(root, src)
         target_root = dst if rel == "." else os.path.join(dst, rel)
@@ -350,6 +360,15 @@ def create_snapshot(volume, name: str, vital: bool = True):
         cmd = ["rsync", "-a", "--delete"]
         if prev:
             cmd.append(f"--link-dest={prev}")
+        # 关键护栏：把自身 state（含快照仓库）从快照源剔除，
+        # 否则拷 /opt 时会把上一轮快照也拷进去，滚雪球撑爆磁盘。
+        _st = _self_state_dir()
+        try:
+            _rel = os.path.relpath(_st, os.path.abspath(src))
+        except ValueError:
+            _rel = ".."
+        if not _rel.startswith(".."):
+            cmd.append(f"--exclude=/{_rel}")
         cmd += [src.rstrip("/") + "/", dst.rstrip("/") + "/"]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
