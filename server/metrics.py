@@ -85,6 +85,61 @@ def _compute_trends() -> list:
         })
     return out
 
+# ---------------------------------------------------------------------------
+# 容量告警判据（网页 / 日报 / 看门狗三端共用一套，避免各写一套阈值导致误报）
+# ---------------------------------------------------------------------------
+# 这些挂载不参与容量告警：系统内部挂载或虚拟文件系统，满了也不影响用户数据
+_VOL_SKIP_PREFIX = ("/boot", "/dev", "/proc", "/sys", "/run", "/snap", "/mnt/snapshot")
+
+
+def space_alerts(vols: list, trends: list | None = None) -> list:
+    """返回 [{mount, percent, free_gb, sev, kind, days}]，sev: 2=严重 1=注意。
+
+    两条硬门槛（缺一不报），杜绝「盘还很空却说要满了」：
+      · 比例门槛：已用 >= 80%
+      · 绝对门槛：剩余 < 10GB（严重档：已用 >= 92% 且剩余 < 3GB）
+    """
+    out: list = []
+    for v in vols or []:
+        try:
+            total = int(v.get("total_kb") or 0)
+            used = int(v.get("used_kb") or 0)
+        except (TypeError, ValueError):
+            continue
+        if total <= 0:
+            continue
+        mount = str(v.get("mount") or "")
+        if any(mount == p or mount.startswith(p + "/") for p in _VOL_SKIP_PREFIX):
+            continue
+        if total < 16 * 1024 * 1024:      # <16GB 视作系统内部卷
+            continue
+        pct = round(used / total * 100.0, 1)
+        free_gb = round((total - used) / 1024 / 1024, 1)
+        sev = 0
+        if pct >= 92 and free_gb < 3:
+            sev = 2
+        elif pct >= 80 and free_gb < 10:
+            sev = 1
+        if not sev:
+            continue
+        out.append({"mount": mount, "percent": pct, "free_gb": free_gb, "sev": sev, "kind": "vol"})
+    for t in trends or []:
+        days = t.get("days_to_full")
+        if not days:
+            continue
+        try:
+            days = float(days)
+        except (TypeError, ValueError):
+            continue
+        pct = float(t.get("percent") or 0)
+        # 预测只提示「30 天内且已经用了七成以上」的情况，远的、宽的都不提
+        if days > 30 or pct < 70:
+            continue
+        out.append({"mount": t.get("mount"), "percent": pct, "free_gb": None,
+                    "sev": 1, "kind": "trend", "days": round(days, 1)})
+    return out
+
+
 _BATCH = r"""
 echo "#STAT"
 head -1 /proc/stat 2>/dev/null
