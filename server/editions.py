@@ -41,6 +41,7 @@ EDITIONS: dict = {
         "ai_cloud_sources": 3,                  # 3 种常见云端 AI
         "ai_local": False,                      # 不扫本地模型
         "ai_custom_key": False,                 # 不能自定义 API 接入点
+        "ai_quota": 20,                         # 每月 AI 调用 20 次（问答+管家共用）
         "remote_devices": False,                # 不支持异地组网设备
         "migrate": False,                       # 无一键换机迁移
         "smart_history": True,                  # 本机 SMART 历史属本机功能，全开
@@ -64,6 +65,7 @@ EDITIONS: dict = {
         "ai_cloud_sources": UNLIMITED,          # 内置的常见云端 AI 全给
         "ai_local": True,                       # 自动扫描本地 AI 模型并加入
         "ai_custom_key": False,
+        "ai_quota": UNLIMITED,                  # 家庭版 AI 不限量
         "remote_devices": False,
         "migrate": True,                        # 一键备份 / 换机迁移
         "smart_history": True,
@@ -86,6 +88,7 @@ EDITIONS: dict = {
         "ai_cloud_sources": UNLIMITED,
         "ai_local": True,
         "ai_custom_key": True,                  # 自定义 AI API 接入点随意接
+        "ai_quota": UNLIMITED,                  # 专业版 AI 不限量
         "remote_devices": True,                 # 局域网 + 异地组网设备同时管
         "migrate": True,
         "smart_history": True,

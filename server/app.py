@@ -20,6 +20,7 @@ NAS Safe — 后端 API 服务
   GET  /api/ai/config             AI 配置（含供应商列表与 ready 状态）
   POST /api/ai/config             保存 AI 配置
   POST /api/ai/interpret          把报告文本交给 AI 解读
+  POST /api/ai/butler            AI 管家：对话式工具调用（建快照/列卷/查改动/搜文件/看健康）
   GET  /api/duplicates/status     重复文件扫描进度（v4）
   GET  /api/duplicates/report     重复文件报告（内容哈希判定，零误报）
   POST /api/duplicates/scan       启动重复文件扫描（后台线程，只读）
@@ -65,6 +66,7 @@ import integrity  # noqa: E402  v2 内容完整性校验
 import behavior   # noqa: E402  v3 勒索行为检测
 import notify     # noqa: E402  多渠道告警通知（微信服务号/Webhook/Bark/ntfy/邮件）
 import ai         # noqa: E402  AI 解读（多云供应商 + 本地 Ollama）
+import ai_butler  # noqa: E402  AI 管家（对话式工具调用 + 免费版额度）
 import autosnapshot  # noqa: E402  自动快照调度器（每小时 vital 锁快照 + 保留清理）
 import metrics  # noqa: E402  系统指标采集（仪表盘：CPU/RAM/温度/网速/磁盘/卷容量）
 import anomalies  # noqa: E402  异常判定 + 主动推送看门狗（小助手关闭时接管微信提醒）
@@ -1273,6 +1275,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise StorageError("请先输入问题")
                 if not ai.is_ready():
                     raise StorageError("AI 未配置，请先到「设置」启用 AI 解读")
+                ok, rem = ai_butler.quota_check()
+                if not ok:
+                    self._send_json({"ok": False, "quota": True, "remaining": 0,
+                                     "upgrade": True,
+                                     "error": "本月 AI 次数已用完（免费版 20 次/月）。"
+                                              "升级家庭版不限量，或下月自动恢复。"}, 400)
+                    return
                 ctx_parts: list = []
                 try:
                     m = metrics.collect()
@@ -1299,7 +1308,34 @@ class Handler(BaseHTTPRequestHandler):
                 elif result is None:
                     self._send_json({"ok": False, "error": "AI 未启用或未配置密钥", "ready": False}, 400)
                 else:
-                    self._send_json({"ok": True, "text": result})
+                    ai_butler.quota_incr()
+                    self._send_json({"ok": True, "text": result,
+                                     "remaining": ai_butler.quota_remaining()})
+
+            elif route == "/api/ai/butler":
+                # AI 管家：对话式工具调用（建快照/列卷/查改动/搜文件/看健康）
+                question = (payload.get("question") or "").strip()
+                if not question:
+                    raise StorageError("请先输入问题")
+                if not ai.is_ready():
+                    raise StorageError("AI 未配置，请先到「设置」启用 AI 解读")
+                ok, rem = ai_butler.quota_check()
+                if not ok:
+                    self._send_json({"ok": False, "quota": True, "remaining": 0,
+                                     "upgrade": True,
+                                     "error": "本月 AI 次数已用完（免费版 20 次/月）。"
+                                              "升级家庭版不限量，或下月自动恢复。"}, 400)
+                    return
+                history = payload.get("history") if isinstance(payload.get("history"), list) else None
+                result, err = ai_butler.run(question, history=history)
+                if err:
+                    self._send_json({"ok": False, "error": err}, 400)
+                elif result is None:
+                    self._send_json({"ok": False, "error": "AI 未启用或未配置密钥", "ready": False}, 400)
+                else:
+                    ai_butler.quota_incr()
+                    self._send_json({"ok": True, "text": result,
+                                     "remaining": ai_butler.quota_remaining()})
 
             elif route == "/api/ai/local":
                 # 本地 AI 中转：浏览器直连用户电脑 Ollama 被 CORS 拦时的兜底通道。

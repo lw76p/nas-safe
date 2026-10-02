@@ -9,13 +9,13 @@ LABEL org.opencontainers.image.title="NAS Safe"
 LABEL org.opencontainers.image.description="NAS 防勒索快照管理 —— 锁住快照，时间轴一键回滚"
 LABEL org.opencontainers.image.version="1.0.0"
 
-# 时区 + 基础工具
+# 时区 + 基础工具（zfsutils 在部分 slim 源缺失，按可选装：容器实际调用的是宿主机命令）
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       tzdata \
       btrfs-progs \
-      zfsutils-linux \
       ca-certificates \
+ && (apt-get install -y --no-install-recommends zfsutils-linux || echo "zfsutils-linux skipped") \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

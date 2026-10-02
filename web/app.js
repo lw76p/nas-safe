@@ -2505,8 +2505,9 @@ async function aiDiagnose() {
   btn.textContent = "🤖 AI 体检";
 }
 
-// 问 AI：多轮对话——可连续追问 / 随时补充信息，AI 记住本次会话上下文
+// 问 AI / AI 管家：多轮对话——可连续追问 / 随时补充信息，AI 记住本次会话上下文
 let aiChatHistory = []; // [{role:"user"|"assistant", content}]
+let aiChatMode = "ask"; // "ask"=纯问答 / "butler"=工具调用（建快照/列卷/查改动/搜文件/看健康）
 
 function renderAiChat() {
   const log = $("aiChatLog");
@@ -2527,13 +2528,42 @@ function renderAiChat() {
   log.scrollTop = log.scrollHeight;
 }
 
-function aiAsk() {
+function setAiChatMode(mode) {
+  aiChatMode = mode === "butler" ? "butler" : "ask";
+  const askBtn = $("aiModeAsk");
+  const butlerBtn = $("aiModeButler");
+  const inp = $("aiChatInput");
+  const hint = $("aiModeHint");
+  if (askBtn) askBtn.classList.toggle("primary", aiChatMode === "ask");
+  if (askBtn) askBtn.classList.toggle("ghost", aiChatMode !== "ask");
+  if (butlerBtn) butlerBtn.classList.toggle("primary", aiChatMode === "butler");
+  if (butlerBtn) butlerBtn.classList.toggle("ghost", aiChatMode !== "butler");
+  if (inp) {
+    inp.placeholder = aiChatMode === "butler"
+      ? "直接下指令或提问，例如：帮我建一张快照 / 看看有没有异常改动 / 搜一下简历 / 硬盘健康吗？"
+      : "输入问题，回车发送（Shift+回车换行）。AI 答完可继续追问或补充信息。";
+  }
+  if (hint) {
+    hint.textContent = aiChatMode === "butler"
+      ? "管家模式：AI 可调用本地工具执行建快照、列存储单元、查异常改动、搜文件、看健康。"
+      : "问答模式：AI 根据当前系统状态和告警进行回答。";
+  }
+}
+
+function aiAsk(mode = "ask") {
   aiChatHistory = []; // 每次打开开新会话；会话内多轮共享上下文
+  aiChatMode = mode === "butler" ? "butler" : "ask";
+  const title = aiChatMode === "butler" ? "🤖 AI 管家" : "🤖 问 AI";
   openModal(
-    "🤖 问 AI",
-    `<div id="aiChatLog" style="flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 2px 10px;margin-bottom:10px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;justify-content:flex-start"></div>
+    title,
+    `<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
+       <button id="aiModeAsk" class="btn ${aiChatMode === "ask" ? "primary" : "ghost"}" onclick="setAiChatMode('ask')">问答模式</button>
+       <button id="aiModeButler" class="btn ${aiChatMode === "butler" ? "primary" : "ghost"}" onclick="setAiChatMode('butler')">管家模式</button>
+       <span id="aiModeHint" class="muted" style="font-size:12px;flex:1">${aiChatMode === "butler" ? "管家模式：AI 可调用本地工具执行建快照、列存储单元、查异常改动、搜文件、看健康。" : "问答模式：AI 根据当前系统状态和告警进行回答。"}</span>
+     </div>
+     <div id="aiChatLog" style="flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 2px 10px;margin-bottom:10px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;justify-content:flex-start"></div>
      <textarea id="aiChatInput" class="text-input" rows="3" style="display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:86px;line-height:1.6;flex:none"
-       placeholder="输入问题，回车发送（Shift+回车换行）。AI 答完可继续追问或补充信息。"></textarea>
+       placeholder="${aiChatMode === "butler" ? "直接下指令或提问，例如：帮我建一张快照 / 看看有没有异常改动 / 搜一下简历 / 硬盘健康吗？" : "输入问题，回车发送（Shift+回车换行）。AI 答完可继续追问或补充信息。"}"></textarea>
      <p class="muted" style="margin:8px 0 0">回答基于当前系统状态与告警，仅供参考；关键操作请以人工判断为准。</p>`,
     `<button class="btn ghost" data-act="newchat">新话题</button>
      <button class="btn ghost" data-act="close">关闭</button>
@@ -2573,24 +2603,31 @@ async function sendAiChat() {
   const log = $("aiChatLog");
   if (log) {
     const think = document.createElement("div");
-    think.innerHTML = `<div style="display:flex;justify-content:flex-start;margin:6px 0"><div class="muted" style="padding:8px 12px"><span class="spinner"></span> 思考中…</div></div>`;
+    think.innerHTML = `<div style="display:flex;justify-content:flex-start;margin:6px 0"><div class="muted" style="padding:8px 12px"><span class="spinner"></span> ${aiChatMode === "butler" ? "调用工具中…" : "思考中…"}</div></div>`;
     log.appendChild(think);
     log.scrollTop = log.scrollHeight;
   }
   try {
+    const endpoint = aiChatMode === "butler" ? "/api/ai/butler" : "/api/ai/ask";
     // history 不含本条（本条作为 question 单传）；最多带最近 20 条防爆
-    const data = await routeAI(q, "/api/ai/ask", "", aiChatHistory.slice(0, -1).slice(-20));
+    const data = await routeAI(q, endpoint, "", aiChatHistory.slice(0, -1).slice(-20));
     let ans = "";
-  if (data && typeof data === "object") {
-    ans = data.text;
-    if (typeof ans !== "string" && ans && typeof ans === "object") ans = ans.text || ans.content || JSON.stringify(ans);
-  } else if (typeof data === "string") {
-    ans = data;
-  }
-  ans = (typeof ans === "string" ? ans : String(ans || "")).trim();
+    if (data && typeof data === "object") {
+      ans = data.text;
+      if (typeof ans !== "string" && ans && typeof ans === "object") ans = ans.text || ans.content || JSON.stringify(ans);
+    } else if (typeof data === "string") {
+      ans = data;
+    }
+    ans = (typeof ans === "string" ? ans : String(ans || "")).trim();
     aiChatHistory.push({ role: "assistant", content: ans || "（AI 没有返回内容，请换个问法重试，或点「新话题」重开）" });
   } catch (e) {
-    aiChatHistory.push({ role: "assistant", content: "❌ 回答失败：" + e.message + "\n若提示 AI 未配置，请到「设置 → AI 配置」先启用。" });
+    let msg = "❌ 回答失败：" + e.message;
+    if (/次数已用完|升级家庭版/.test(e.message)) {
+      msg += `\n<button class="btn primary" style="margin-top:8px" onclick="openUpgradeModal();document.querySelector('#modalFoot button[data-act=\\'close\\']')?.click();">升级家庭版，AI 不限量</button>`;
+    } else {
+      msg += "\n若提示 AI 未配置，请到「设置 → AI 配置」先启用。";
+    }
+    aiChatHistory.push({ role: "assistant", content: msg });
   } finally {
     renderAiChat();
     if (btn) btn.disabled = false;
