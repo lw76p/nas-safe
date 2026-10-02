@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/style-20261002f.css">
+<link rel="stylesheet" href="/style-20261002g.css">
 </head>
 <body>
 
@@ -83,6 +83,12 @@
       <div class="cov-card"><span class="cov-num" id="covSnaps">—</span><span class="cov-label">受保护快照</span></div>
       <div class="cov-card cov-risk"><span class="cov-num" id="covUnprot">—</span><span class="cov-label">未保护卷</span></div>
     </div>
+
+    <!-- 设备拓扑思维导图（中心总控台 + 环绕设备节点） -->
+    <div id="consoleTopology" class="console-topology"></div>
+
+    <!-- 设备详情（点击节点下钻） -->
+    <div id="deviceDetail" class="device-detail" style="display:none"></div>
 
     <!-- 设备分组树 -->
     <div id="consoleGroups" class="console-groups">
@@ -494,6 +500,6 @@
 
 <div class="toast-root" id="toastRoot"></div>
 
-<script src="/app-20261002f.js"></script>
+<script src="/app-20261002g.js"></script>
 </body>
 </html>
