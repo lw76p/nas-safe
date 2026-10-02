@@ -1644,9 +1644,8 @@ function renderDeviceDetail(dev) {
     </div>`;
 
   let actions = "";
-  if (dev.type === "local") {
-    actions = `<button class="btn primary sm" id="ddEnterBtn">进入本机</button>`;
-  } else if (dev.host) {
+  // 「进入本机」放在标题行右侧（dd-side），底部操作行不重复
+  if (dev.type !== "local" && dev.host) {
     actions = `<button class="btn primary sm" id="ddOpenBtn">打开控制台</button>`;
   }
   if (!dev.__demo) {
