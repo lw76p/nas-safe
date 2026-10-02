@@ -195,6 +195,35 @@ def _wechat_relay_endpoint(relay_url: str, mode: str) -> str:
     return base + path
 
 
+def _interpret_wechat(body: str) -> (bool, str):
+    """解析微信/中继返回，按 errcode 判真成功。
+
+    中继返回 {"wechat_status": <http>, "resp": <微信原始 json 或 raw>}；
+    直连则 body 即微信原始 json。errcode != 0 视为发送失败。
+    """
+    try:
+        d = json.loads(body) if isinstance(body, str) else body
+    except Exception:  # noqa: BLE001
+        return True, body[:160]  # 非 JSON（如客服消息文本回执）视为已提交
+    # 中继包装层
+    if isinstance(d, dict) and "resp" in d and "wechat_status" in d:
+        inner = d["resp"]
+        if isinstance(inner, str):
+            try:
+                inner = json.loads(inner)
+            except Exception:  # noqa: BLE001
+                return True, body[:160]
+        d = inner
+    if isinstance(d, dict):
+        ec = d.get("errcode")
+        if ec is None:
+            return True, body[:160]
+        if ec == 0:
+            return True, "微信发送成功"
+        return False, f"微信返回 errcode={ec}: {d.get('errmsg', '')}"
+    return True, body[:160]
+
+
 def _send_wechat_sa(ch: dict, text: str, alerts: list, events: list) -> (bool, str):
     """微信服务号通道，支持三种模式：
       - template  : 经典模板消息（message/template/send，data 字典）—— 需账号开通模板消息权限
@@ -229,7 +258,10 @@ def _send_wechat_sa(ch: dict, text: str, alerts: list, events: list) -> (bool, s
                 "template_id": template_id,
                 "data": _wechat_template_data(alerts, events, text),
             }
-        return _http_post_json(endpoint, payload, token=relay_token)
+        ok, body = _http_post_json(endpoint, payload, token=relay_token)
+        if not ok:
+            return False, body
+        return _interpret_wechat(body)
     # 直连（家庭固定 IP 已在微信白名单时）
     if mode == "subscribe":
         return False, "订阅消息必须走云端中继（relay_url）"
@@ -245,7 +277,10 @@ def _send_wechat_sa(ch: dict, text: str, alerts: list, events: list) -> (bool, s
         url = f"https://api.weixin.qq.com/cgi-bin/message/template/send?access_token={token}"
         payload = {"touser": openid, "template_id": template_id,
                    "data": _wechat_template_data(alerts, events, text)}
-    return _http_post_json(url, payload)
+    ok, body = _http_post_json(url, payload)
+    if not ok:
+        return False, body
+    return _interpret_wechat(body)
 
 
 def _send_email(ch: dict, text: str, *_) -> (bool, str):
