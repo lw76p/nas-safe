@@ -1819,6 +1819,7 @@ function openAddDeviceModal() {
       <div class="scan-opts">
         <label><input type="checkbox" id="scanLan" checked> 本机局域网</label>
         <label><input type="checkbox" id="scanVpn" checked> 异地组网（Tailscale / WireGuard / VPN 等）</label>
+        <label title="认不出是什么设备时，交给 AI 看端口和网页标题判断"><input type="checkbox" id="scanAi" checked> 🤖 AI 辅助识别</label>
       </div>
     </div>
     <div class="scan-result" id="scanResult"></div>`,
@@ -1841,6 +1842,8 @@ async function runNetScan() {
     user: g("scanUser").value || "",
     pwd: g("scanPwd").value || "",
     cidrs: g("scanCidrs").value || "",
+    ai: !!g("scanAi").checked,
+    discover: true,
   };
   try {
     const data = await api("/api/devices/scan", { method: "POST", body: JSON.stringify(body) }, 180000);
@@ -1878,6 +1881,23 @@ function renderScanResult(data) {
     </div>`;
   }
   if (data.truncated) html += `<p class="muted scan-note">网段太大，只扫了一部分；可以在「额外网段」里填更小的网段（如 192.168.8.0/24）缩小范围。</p>`;
+  const others = data.others || [];
+  if (others.length) {
+    html += `<div class="scan-others"><div class="scan-sum">网络里还发现 ${others.length} 台设备（还没装 NAS Safe，装了就能纳管）：</div>`;
+    for (const o of others) {
+      const portTxt = (o.open_ports || []).slice(0, 6).join(",") || "无开放端口";
+      const byAi = o.by === "ai";
+      html += `<div class="scan-item static">
+        <div class="si-ico">${topoDeviceGlyph(o.device_type === "pc" ? (o.brand_label || "").includes("Mac") ? "laptop" : "pc" : o.device_type === "camera" ? "camera" : o.device_type === "router" ? "router" : o.device_type === "server" ? "server" : o.device_type === "nas" || o.device_type === "nas_safe" ? "nas" : "chip")}</div>
+        <div class="si-main">
+          <div class="si-name2">${escapeHtml(o.suggest_name || o.brand_label || o.ip)} ${byAi ? `<span class="ai-tag">AI 判断</span>` : `<span class="ai-tag rule">规则判断</span>`}</div>
+          <div class="si-meta">${escapeHtml(o.ip)} · ${escapeHtml(o.brand_label || "未知设备")} · 端口 ${escapeHtml(portTxt)}${o.hostname ? " · " + escapeHtml(o.hostname) : ""}</div>
+        </div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  if (data.ai_note) html += `<p class="muted scan-note">${escapeHtml(data.ai_note)}</p>`;
   box.innerHTML = html;
   const foot = $("modalFoot");
   if (foot) {

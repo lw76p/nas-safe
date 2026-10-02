@@ -1521,3 +1521,11 @@ body.light .topo-stage {
 .nm-edit:hover { opacity: 1; color: var(--text); }
 .net-tile .nm-edit { margin-left: 4px; }
 @media (max-width: 560px) { .scan-grid { grid-template-columns: 1fr; } }
+
+.scan-item.static { opacity: .9; }
+.scan-item.self { opacity: .62; }
+.si-name2 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.ai-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; font-size: 10px; font-weight: 500;
+  border-radius: 6px; color: #0ea5e9; border: 1px solid rgba(14,165,233,.45); background: rgba(14,165,233,.10); }
+.ai-tag.rule { color: var(--muted, #8b97a8); border-color: var(--border); background: transparent; }
+.scan-others { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }

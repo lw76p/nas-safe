@@ -196,7 +196,7 @@ def collect_remote_summary(dev: dict) -> dict:
         "id": dev.get("id"), "name": dev.get("name", "远程设备"),
         "custom_name": bool(dev.get("custom_name")),
         "group": dev.get("group", "远程设备"), "brand": brand,
-        "brand_label": brandmod.BRAND_LABELS.get(brand, brand),
+        "brand_label": dev.get("brand_label") or brandmod.BRAND_LABELS.get(brand, brand),
         "type": "remote", "enabled": dev.get("enabled", True),
         "status": "offline", "host": dev.get("host", ""), "port": dev.get("port", 0),
         "last_seen": dev.get("last_seen", 0), "note": dev.get("note", ""),
@@ -316,6 +316,7 @@ def add_device(payload: dict) -> dict:
             d["https"] = bool(payload.get("https"))
             d["enabled"] = True
             d["net_kind"] = (payload.get("net_kind") or d.get("net_kind") or "").strip()
+            d["brand_label"] = (payload.get("brand_label") or d.get("brand_label") or "").strip()
             save_devices(devs)
             return {"ok": True, "id": d.get("id"), "updated": True}
 
@@ -333,6 +334,7 @@ def add_device(payload: dict) -> dict:
         "enabled": True,
         "note": "",
         "net_kind": (payload.get("net_kind") or "").strip(),
+        "brand_label": (payload.get("brand_label") or "").strip(),
     })
     save_devices(devs)
     return {"ok": True, "id": dev_id}

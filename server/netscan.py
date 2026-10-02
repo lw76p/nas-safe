@@ -297,6 +297,147 @@ def _expand(cidr: str, cap: int, self_ip: str = "") -> tuple[list[str], bool]:
             pass
     return addrs, truncated
 
+# ---------------------------------------------------------------------------
+# 设备指纹 + AI 辅助识别
+# ---------------------------------------------------------------------------
+
+FINGER_PORTS = [22, 80, 139, 443, 445, 548, 554, 631, 3389, 5000, 5001, 5900, 8080, 8848]
+BANNER_PORTS = [80, 443, 5000, 5001, 8080, 8848]
+MAX_FINGER = 192          # 最多给多少台主机采指纹
+MAX_AI = 12               # 最多让 AI 判断多少台（省时间、省 token）
+
+
+def _grab_banner(ip: str, port: int, timeout: float = 1.6) -> str:
+    """抓 HTTP 的 Server 头与网页标题，够用来猜品牌了。"""
+    import ssl
+    import urllib.request
+    scheme = "https" if port in (443,) else "http"
+    ctx = ssl._create_unverified_context() if scheme == "https" else None
+    try:
+        req = urllib.request.Request(f"{scheme}://{ip}:{port}/",
+                                     headers={"User-Agent": "nassafe-scan"}, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            server = (r.headers.get("Server") or "").strip()
+            body = r.read(20000).decode("utf-8", "ignore")
+        title = ""
+        m = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
+        if m:
+            title = re.sub(r"\s+", " ", m.group(1)).strip()[:80]
+        return " / ".join([x for x in (server, title) if x])[:120]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def fingerprint(ip: str, ports: list | None = None, timeout: float = CONNECT_TIMEOUT) -> dict:
+    """采一台主机的指纹：开放端口 + HTTP 标题 + 主机名。只读探测。"""
+    ports = ports or FINGER_PORTS
+    open_ports: list[int] = []
+    with ThreadPoolExecutor(max_workers=min(16, len(ports))) as ex:
+        for port, ok in zip(ports, ex.map(lambda p: _tcp_open(ip, p, timeout), ports)):
+            if ok:
+                open_ports.append(port)
+    banners = {}
+    for p in BANNER_PORTS:
+        if p in open_ports:
+            b = _grab_banner(ip, p)
+            if b:
+                banners[str(p)] = b
+    hostname = ""
+    try:
+        hostname = socket.getnameinfo((ip, 0), 0)[0] or ""
+    except Exception:  # noqa: BLE001
+        hostname = ""
+    return {"ip": ip, "open_ports": open_ports, "banners": banners, "hostname": hostname}
+
+
+def _rule_identify(fp: dict) -> dict:
+    """本地规则兜底：端口组合 + 网页标题猜设备类型与品牌。"""
+    ports = set(fp.get("open_ports") or [])
+    blob = " ".join((fp.get("banners") or {}).values()) + " " + (fp.get("hostname") or "")
+    low = blob.lower()
+    out = {"device_type": "unknown", "brand_label": "", "suggest_name": "",
+           "suggest_group": "", "confidence": 0.3, "by": "rule"}
+    if 8848 in ports:
+        out.update({"device_type": "nas_safe", "brand_label": "NAS Safe", "confidence": 0.9})
+    elif 5000 in ports or 5001 in ports or "synology" in low or "dsm" in low:
+        out.update({"device_type": "nas", "brand_label": "群晖 NAS", "confidence": 0.75})
+    elif "qnap" in low or (8080 in ports and 443 in ports):
+        out.update({"device_type": "nas", "brand_label": "威联通 NAS", "confidence": 0.6})
+    elif 3389 in ports or (445 in ports and 139 in ports):
+        out.update({"device_type": "pc", "brand_label": "Windows 电脑", "confidence": 0.6})
+    elif 5900 in ports or 548 in ports or 88 in ports:
+        out.update({"device_type": "pc", "brand_label": "macOS 电脑", "confidence": 0.5})
+    elif 554 in ports or "camera" in low or "hikvision" in low or "dahua" in low:
+        out.update({"device_type": "camera", "brand_label": "摄像头", "confidence": 0.55})
+    elif 22 in ports:
+        out.update({"device_type": "server", "brand_label": "Linux 服务器", "confidence": 0.45})
+    elif 80 in ports or 443 in ports:
+        out.update({"device_type": "unknown", "brand_label": "网络设备", "confidence": 0.3})
+    if not out["brand_label"] and not ports:
+        return out
+    tail = (fp.get("ip") or "").split(".")[-1]
+    out["suggest_name"] = f"{out['brand_label'] or '设备'} {tail}"
+    return out
+
+
+_AI_PROMPT = """你是网络设备识别助手。下面是内网/异地组网里扫到的主机指纹（开放端口、HTTP 标题、主机名）。
+请逐台判断：是什么设备（nas / pc / server / camera / router / nas_safe / unknown）、品牌中文名、
+一个好认的中文名字建议（不超过 8 个字，可带位置线索）、分组建议（家里 / 公司 / 机房 / 其它）、把握多大（0-1）。
+只输出 JSON 数组，不要解释，格式：
+[{"ip":"1.2.3.4","device_type":"nas","brand_label":"群晖","suggest_name":"办公室群晖","suggest_group":"公司","confidence":0.8}]
+指纹：
+"""
+
+
+def _ai_identify(fps: list[dict], timeout_s: float = 25.0) -> dict:
+    """把指纹交给 AI 批量判断；AI 没配/超时/返回不合法 → 返回 {}（由调用方退回规则）。"""
+    try:
+        import ai  # noqa: PLC0415
+        if not ai.is_ready():
+            return {}
+    except Exception:  # noqa: BLE001
+        return {}
+    fps = fps[:MAX_AI]
+    lines = []
+    for f in fps:
+        lines.append(
+            f"- {f.get('ip')} 开放端口={','.join(str(p) for p in (f.get('open_ports') or [])) or '无'}"
+            f" 标题={' | '.join((f.get('banners') or {}).values()) or '无'}"
+            f" 主机名={f.get('hostname') or '无'}"
+        )
+    q = _AI_PROMPT + "\n".join(lines)
+    try:
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        with _TPE(max_workers=1) as ex:
+            fut = ex.submit(lambda: ai.answer(q))
+            text, _provider = fut.result(timeout=timeout_s)
+    except Exception:  # noqa: BLE001
+        return {}
+    text = (text or "").strip()
+    m = re.search(r"\[.*\]", text, re.S)
+    if not m:
+        return {}
+    try:
+        arr = json.loads(m.group(0))
+    except Exception:  # noqa: BLE001
+        return {}
+    out = {}
+    if isinstance(arr, list):
+        for it in arr:
+            if not isinstance(it, dict):
+                continue
+            ip = str(it.get("ip") or "").strip()
+            if not ip:
+                continue
+            out[ip] = {
+                "device_type": str(it.get("device_type") or "unknown"),
+                "brand_label": str(it.get("brand_label") or ""),
+                "suggest_name": str(it.get("suggest_name") or ""),
+                "suggest_group": str(it.get("suggest_group") or ""),
+                "confidence": float(it.get("confidence") or 0.5),
+                "by": "ai",
+            }
+    return out
 
 # ---------------------------------------------------------------------------
 # 扫描入口
@@ -309,6 +450,9 @@ def scan(payload: dict | None = None) -> dict:
         ports = list(DEFAULT_PORTS)
     include_vpn = bool(p.get("include_vpn", True))
     include_lan = bool(p.get("include_lan", True))
+    # discover：没装 NAS Safe 的主机也采集指纹列出来；use_ai：用 AI 判断这些是什么设备
+    discover = bool(p.get("discover", True))
+    use_ai = bool(p.get("ai", True))
     timeout = float(p.get("timeout") or CONNECT_TIMEOUT)
     timeout = min(max(timeout, 0.15), 3.0)
     user = str(p.get("user") or "").strip()
@@ -342,6 +486,7 @@ def scan(payload: dict | None = None) -> dict:
 
     started = time.time()
     found: list[dict] = []
+    hit_ips = set()
     if targets:
         def work(t):
             ip, port, net = t
@@ -356,6 +501,7 @@ def scan(payload: dict | None = None) -> dict:
             for r in ex.map(work, targets):
                 if r:
                     found.append(r)
+                    hit_ips.add(r["ip"])
     # 去重（同 IP 多端口命中保留第一个）
     seen, uniq = set(), []
     for f in found:
@@ -364,11 +510,45 @@ def scan(payload: dict | None = None) -> dict:
             continue
         seen.add(k)
         uniq.append(f)
+
+    # 其余主机：采指纹 + AI 识别，告诉用户「网络里还有谁，装了 NAS Safe 就能纳管」
+    others: list[dict] = []
+    ai_used = False
+    ai_note = ""
+    if discover:
+        cand_ips = []
+        for ip, _port, _net in targets:
+            if ip in hit_ips or ip in cand_ips:
+                continue
+            cand_ips.append(ip)
+            if len(cand_ips) >= MAX_FINGER:
+                break
+        fps: list[dict] = []
+        if cand_ips:
+            with ThreadPoolExecutor(max_workers=min(48, len(cand_ips))) as ex:
+                for fp in ex.map(lambda ip: fingerprint(ip, timeout=timeout), cand_ips):
+                    if fp.get("open_ports") or fp.get("hostname"):
+                        fps.append(fp)
+        ai_map = {}
+        if fps and use_ai:
+            ai_map = _ai_identify(fps)
+            ai_used = bool(ai_map)
+            if not ai_map:
+                ai_note = "AI 未启用或没返回结果，已用内置规则判断"
+        for fp in fps:
+            info = ai_map.get(fp["ip"]) or _rule_identify(fp)
+            if not info.get("brand_label") and not fp.get("open_ports"):
+                continue
+            others.append({**fp, **info})
+
     return {
         "ok": True,
         "scanned": len(targets),
         "nets": meta,
         "found": uniq,
+        "others": others,
+        "ai_used": ai_used,
+        "ai_note": ai_note,
         "truncated": truncated,
         "seconds": round(time.time() - started, 2),
         "host_os": platform.system(),
