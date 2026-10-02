@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/style-20261002o.css">
+<link rel="stylesheet" href="/style-20261002p.css">
 </head>
 <body>
 
@@ -44,6 +44,7 @@
   <button class="tab" data-view="monitor"><span id="monitorDot" class="monitor-dot monitor-dot-off">◉</span> 实时监控</button>
   <button class="tab" data-view="dups">⧉ 重复文件</button>
   <button class="tab" data-view="junk">🧹 磁盘清理</button>
+  <button class="tab" data-view="migrate">⇄ 换机迁移</button>
   <button class="tab" data-view="settings">⚙ 设置</button>
 </nav>
 
@@ -95,48 +96,79 @@
       <p class="muted">正在汇总各设备状态…</p>
     </div>
 
-    <!-- 换机迁移 -->
-    <div class="migrate-card">
-      <div class="migrate-head">
+  </section>
+
+  <!-- 换机迁移（独立菜单页） -->
+  <section class="panel zone zone-monitor" id="migratePanel" data-view="migrate">
+    <div class="panel-head">
+      <div class="zone-head">
         <span class="zone-ico">⇄</span>
         <div>
-          <h3>换机迁移 · 一键搬家用新设备</h3>
-          <p class="sub">把本机的通知、自动快照、日报、AI、受保护路径等设置打包，导入到另一台 NAS（可跨品牌）。换盘符时填好路径映射即可自动改写。</p>
+          <h2>换机迁移</h2>
+          <p class="sub">把这台设备的设置打包搬到新设备 · 可跨品牌，换过盘符就填路径映射自动改写</p>
         </div>
       </div>
-      <div class="migrate-actions">
-        <button class="btn ghost" id="exportMigBtn">⬇ 导出本机配置</button>
-        <label class="btn primary" for="importMigFile">⬆ 选择迁移包导入</label>
-        <input type="file" id="importMigFile" accept=".json,application/json" hidden>
+    </div>
+
+    <div class="migrate-card">
+      <div class="mig-step">
+        <span class="mig-step-no">1</span>
+        <div class="mig-step-body">
+          <b>导出这台设备的配置</b>
+          <p>把通知、自动快照、日报、AI、受保护路径这些设置打包成一个文件。</p>
+          <button class="btn ghost" id="exportMigBtn">⬇ 导出配置包</button>
+        </div>
+      </div>
+      <div class="mig-step">
+        <span class="mig-step-no">2</span>
+        <div class="mig-step-body">
+          <b>选择迁移包</b>
+          <p>在要搬过去的设备上打开这一页，选中刚才导出的文件。</p>
+          <label class="btn primary" for="importMigFile">⬆ 选择迁移包</label>
+          <input type="file" id="importMigFile" accept=".json,application/json" hidden>
+        </div>
       </div>
       <div id="migPathMap" class="mig-pathmap" hidden>
-        <div class="set-row">
-          <span class="set-label">旧共享根</span>
-          <input id="migOldRoot" class="text-input" placeholder="如 /share/CACHEDEV2_DATA">
+        <div class="mig-step">
+          <span class="mig-step-no">3</span>
+          <div class="mig-step-body">
+            <b>迁移到哪台设备</b>
+            <p>选好目标设备，品牌会自动带出来；换过盘符就填路径映射。</p>
+            <div class="set-row">
+              <span class="set-label">目标设备</span>
+              <select id="migTargetDevice" class="sel-input">
+                <option value="">— 请选择目标设备 —</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <span class="set-label">旧共享根</span>
+              <input id="migOldRoot" class="text-input" placeholder="如 /share/CACHEDEV2_DATA">
+            </div>
+            <div class="set-row">
+              <span class="set-label">新共享根</span>
+              <input id="migNewRoot" class="text-input" placeholder="如 /volume1">
+            </div>
+            <div class="set-row">
+              <span class="set-label">目标品牌</span>
+              <select id="migTargetBrand" class="sel-input">
+                <option value="">自动识别本机</option>
+                <option value="qnap">威联通 QNAP</option>
+                <option value="synology">群晖 Synology</option>
+                <option value="ugreen">绿联 UGOS</option>
+                <option value="feiniu">飞牛 fnOS</option>
+                <option value="truenas">TrueNAS</option>
+                <option value="omv">OpenMediaVault</option>
+                <option value="unraid">Unraid</option>
+                <option value="generic_linux">通用 Linux / 自建设备</option>
+              </select>
+            </div>
+            <div class="set-actions">
+              <button class="btn ghost" id="migPreviewBtn">预览变更</button>
+              <button class="btn primary" id="migApplyBtn">应用导入</button>
+            </div>
+            <div id="migPreview" class="mig-preview notice" hidden></div>
+          </div>
         </div>
-        <div class="set-row">
-          <span class="set-label">新共享根</span>
-          <input id="migNewRoot" class="text-input" placeholder="如 /volume1">
-        </div>
-        <div class="set-row">
-          <span class="set-label">新品牌</span>
-          <select id="migTargetBrand" class="sel-input">
-            <option value="">自动识别本机</option>
-            <option value="qnap">威联通 QNAP</option>
-            <option value="synology">群晖 Synology</option>
-            <option value="ugreen">绿联 UGOS</option>
-            <option value="feiniu">飞牛 fnOS</option>
-            <option value="truenas">TrueNAS</option>
-            <option value="omv">OpenMediaVault</option>
-            <option value="unraid">Unraid</option>
-            <option value="generic_linux">通用 Linux / 自建设备</option>
-          </select>
-        </div>
-        <div class="set-actions">
-          <button class="btn ghost" id="migPreviewBtn">预览变更</button>
-          <button class="btn primary" id="migApplyBtn">应用导入</button>
-        </div>
-        <div id="migPreview" class="mig-preview notice" hidden></div>
       </div>
     </div>
   </section>
@@ -482,6 +514,43 @@
 </main>
 
 <!-- AI 全页悬浮入口：吸附右缘、默认缩进半隐，悬停滑出；任意页面点击即可问 AI -->
+<!-- 页脚：版权 / 备案 / 说明 -->
+<footer class="site-footer">
+  <div class="sf-top">
+    <div class="sf-brand">
+      <span class="sf-logo">🛡</span>
+      <div>
+        <b>NAS Safe</b>
+        <span>快照防勒索 · 数据保险箱</span>
+      </div>
+    </div>
+    <div class="sf-col">
+      <b>功能</b>
+      <span>设备控制台</span>
+      <span>快照防勒索</span>
+      <span>硬盘健康</span>
+      <span>换机迁移</span>
+    </div>
+    <div class="sf-col">
+      <b>日常守护</b>
+      <span>每日状态日报</span>
+      <span>微信 / 邮件提醒</span>
+      <span>重复文件清理</span>
+      <span>磁盘垃圾清理</span>
+    </div>
+    <div class="sf-col">
+      <b>关于</b>
+      <span>贵州天晟科技</span>
+      <span>中国 · 贵州</span>
+    </div>
+  </div>
+  <div class="sf-bottom">
+    <span>© 2026 贵州天晟科技 · 保留所有权利</span>
+    <span>黔ICP备 <b id="icpNo">备案中</b> 号</span>
+    <span>本软件用于自有数据保护，请遵守所在地区法律法规</span>
+  </div>
+</footer>
+
 <div id="aiFab">
   <button id="aiFabBtn" type="button" title="随时问 AI"><span class="ai-fab-badge">AI</span><span class="ai-fab-txt">问 AI</span></button>
 </div>
@@ -500,6 +569,6 @@
 
 <div class="toast-root" id="toastRoot"></div>
 
-<script src="/app-20261002o.js"></script>
+<script src="/app-20261002p.js"></script>
 </body>
 </html>

@@ -64,7 +64,7 @@ def save_devices(devs: list) -> None:
 def _local_template() -> dict:
     return {
         "id": LOCAL_ID,
-        "name": "本机 NAS",
+        "name": "本机",
         "group": "本地设备",
         "brand": brandmod.detect_brand(),
         "type": "local",
