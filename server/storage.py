@@ -540,6 +540,17 @@ def list_all_volumes() -> list[Volume]:
             volumes.extend(list_qnap_volumes())
     except StorageError:
         pass
+    # 阿里云 ECS 云盘快照后端（雏形）：仅在真实 ECS 环境纳入管理。
+    # 非 ECS / 缺凭证 / 网络不可达都会安全降级（抛 StorageError 被吞掉）。
+    try:
+        from aliyun_ecs import is_ecs, list_volumes as _alv
+        if is_ecs():
+            try:
+                volumes.extend(_alv())
+            except StorageError:
+                pass
+    except Exception:
+        pass
     return volumes
 
 
@@ -551,6 +562,9 @@ def list_all_snapshots(volume: Volume) -> list[Snapshot]:
         return list_zfs_snapshots(volume.name)
     if volume.fs_type == "qnap":
         return list_qnap_snapshots(volume.volume_id or volume.mountpoint)
+    if volume.fs_type == "aliyun":
+        from aliyun_ecs import list_snapshots as _als
+        return _als(volume)
     raise StorageError(f"不支持的文件系统: {volume.fs_type}")
 
 
@@ -626,6 +640,11 @@ def create_snapshot(volume: Volume, name: str, vital: bool = True) -> Snapshot:
         )
         register_protected(snap)
         return snap
+    if volume.fs_type == "aliyun":
+        from aliyun_ecs import create_snapshot as _ac
+        s = _ac(volume, name, vital=vital)
+        register_protected(s)
+        return s
     raise StorageError(f"不支持的文件系统: {volume.fs_type}")
 
 
@@ -634,6 +653,11 @@ def delete_snapshot(snapshot: Snapshot) -> None:
     if snapshot.fs_type == "qnap" and snapshot.snapshot_id:
         from qnap import delete_snapshot as _qd
         _qd(snapshot.snapshot_id)
+        unregister_protected(snapshot_key(snapshot))
+        return
+    if snapshot.fs_type == "aliyun" and snapshot.snapshot_id:
+        from aliyun_ecs import delete_snapshot as _ad
+        _ad(snapshot)                      # 双凭证防删：无管理凭证会直接拒绝
         unregister_protected(snapshot_key(snapshot))
         return
     if snapshot.fs_type == "btrfs":
@@ -709,10 +733,15 @@ def _browse_local_dir(path: str) -> list[dict]:
 def browse_snapshot(snapshot: Snapshot, subpath: str = "") -> dict:
     """统一浏览快照内文件。按 backend 分派。
 
+    - aliyun：块级云盘快照，无法直接浏览，返回可读说明 + 恢复通道提示
     - qnap + 本地模式（server 跑在 QTS 宿主且能直接访问挂载点）：直接列目录
     - qnap + SSH 模式（远程管理）：经 qcli/list 解析
     - fs（btrfs/zfs）：直接列快照目录
     """
+    if snapshot.fs_type == "aliyun":
+        from aliyun_ecs import browse_snapshot as _ab
+        return _ab(snapshot, subpath)
+
     if getattr(snapshot, "backend", "fs") == "qnap" or snapshot.fs_type == "qnap":
         from qnap import default_client, SNAP_MOUNT_ROOT
         client = default_client()
@@ -769,6 +798,10 @@ def restore_from_snapshot(snapshot: Snapshot, rel_path: str, dest: str) -> dict:
     """
     if ".." in rel_path.split("/"):
         raise StorageError("相对路径非法")
+
+    if snapshot.fs_type == "aliyun":
+        from aliyun_ecs import restore_from_snapshot as _ar
+        return _ar(snapshot, rel_path, dest)   # 块级快照：抛可读说明
 
     if getattr(snapshot, "backend", "fs") == "qnap" or snapshot.fs_type == "qnap":
         from qnap import default_client

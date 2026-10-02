@@ -22,3 +22,7 @@ server/style*.css
 
 # 含密码的本地环境文件（绝不入库）
 .env
+
+# 阿里云双凭证密钥文件（绝不入库；保护凭证/管理凭证分开存放）
+.aliyun_ecs.json
+.aliyun_manager.json

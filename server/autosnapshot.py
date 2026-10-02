@@ -101,6 +101,7 @@ def run_once() -> dict:
     whitelist = set(str(v) for v in (cfg.get("volumes") or []))
 
     created, cleaned, errors = [], [], []
+    protected_uncleaned = []
     try:
         volumes = list_all_volumes()
     except Exception as exc:  # noqa: BLE001
@@ -123,6 +124,17 @@ def run_once() -> dict:
         # 超额清理：删除最旧的自动快照（delete_snapshot 会同步 unregister_protected）
         while len(auto) >= keep:
             old = auto.pop(0)
+            # 阿里云受保护快照：无管理凭证时不可删（双凭证防删模型），
+            # 跳过清理并记一笔，避免每轮都报「清理失败」。
+            if getattr(old, "fs_type", None) == "aliyun":
+                try:
+                    from aliyun_ecs import manager_available
+                    if not manager_available():
+                        protected_uncleaned.append(old.name)
+                        continue
+                except Exception:  # noqa: BLE001
+                    protected_uncleaned.append(old.name)
+                    continue
             try:
                 delete_snapshot(old)
                 cleaned.append(old.name)
@@ -138,7 +150,8 @@ def run_once() -> dict:
         except Exception as exc:  # noqa: BLE001
             errors.append({"volume": vkey, "error": f"创建失败: {exc}"})
 
-    return {"ok": True, "created": created, "cleaned": cleaned, "errors": errors}
+    return {"ok": True, "created": created, "cleaned": cleaned,
+            "protected_uncleaned": protected_uncleaned, "errors": errors}
 
 
 def _latest_auto_snapshot_time() -> "datetime.datetime | None":

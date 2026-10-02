@@ -36,6 +36,7 @@ BRAND_LABELS = {
     "truenas": "TrueNAS",
     "omv": "OpenMediaVault",
     "unraid": "Unraid",
+    "aliyun": "阿里云 ECS",
     "generic_linux": "通用 Linux",
     "unknown": "未知设备",
 }
@@ -133,6 +134,14 @@ def detect_brand() -> str:
     if os.path.exists("/etc/ugreen") or os.path.exists("/usr/bin/ugos"):
         return "ugreen"
 
+    # 3.5) 阿里云 ECS（元数据探测；非 ECS 环境读不到，快速降级为通用 Linux）
+    try:
+        from aliyun_ecs import is_ecs
+        if is_ecs():
+            return "aliyun"
+    except Exception:
+        pass
+
     # 4) 容器或通用 Linux
     return "generic_linux"
 
@@ -196,6 +205,26 @@ def detect_capabilities(brand: str | None = None) -> dict:
         caps["snapshot_backend"] = "auto"
         caps["filesystem"] = "unknown"
         caps["notes"].append("OMV 取决于存储配置（LVM/btrfs/ZFS），安装后自动探测")
+    elif brand == "aliyun":
+        caps["snapshot_backend"] = "aliyun_ecs"
+        caps["filesystem"] = "cloud_disk"
+        try:
+            from aliyun_ecs import load_credentials
+            creds = load_credentials()
+            if creds["protector"]:
+                msg = ("阿里云 ECS 云盘快照：已配置保护凭证，自动快照走「创建专用」"
+                       "密钥、无删除权限（不可删防勒索）。")
+                msg += ("已配置管理凭证，可受控清理。" if creds["manager"]
+                        else "未配置管理凭证：历史快照默认不可删，清理需单独授权。")
+                caps["notes"].append(msg)
+            else:
+                caps["notes"].append(
+                    "阿里云 ECS 云盘快照：未配置 AccessKey。请在环境变量或 "
+                    ".aliyun_ecs.json 配置保护凭证（PROTECTOR）后开启。"
+                )
+        except Exception:
+            caps["notes"].append("阿里云 ECS 云盘快照：凭证检测失败")
+        caps["notes"].append("云盘快照为块级，单文件取回需从快照创建云盘后挂载。")
     else:
         caps["snapshot_backend"] = "auto"
         caps["filesystem"] = "unknown"

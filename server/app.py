@@ -247,6 +247,17 @@ def _mask_notify_cfg(cfg: dict) -> dict:
 
 def build_system_info() -> dict:
     profile = storage.probe_system()
+    # 合并跨品牌能力画像（品牌标签 + 快照后端 + 白话说明），让前端统一展示
+    try:
+        from brands import detect_brand, detect_capabilities
+        caps = detect_capabilities()
+        profile.os_id = caps.get("brand") or profile.os_id
+        profile.os_name = caps.get("brand_label") or profile.os_name
+        for note in caps.get("notes", []):
+            if note and note not in profile.warnings:
+                profile.warnings.append(note)
+    except Exception:  # noqa: BLE001
+        pass
     return {
         "ok": True,
         "system": profile.to_dict(),
