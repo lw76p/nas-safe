@@ -563,11 +563,13 @@ def list_all_volumes() -> list[Volume]:
         elif _b == "macos":
             from snapshot_apfs import list_volumes as _lv
             volumes.extend(_lv())
-        elif _b == "generic_linux":
-            # 仅当 btrfs/zfs/qnap/aliyun 都未提供保护目标时，才用 rsync 兜底后端
-            if not any(v.fs_type in ("btrfs", "zfs", "qnap", "aliyun") for v in volumes):
-                from snapshot_rsync import list_volumes as _lv
-                volumes.extend(_lv())
+        # Linux 家族（裸机 / 云服务器 / ECS）：当块级后端都没给出保护目标时，
+        # 用 rsync 硬链接后端兜底（TimeMachine 式增量快照）。
+        # 注意不能只判 generic_linux —— 阿里云 ECS 会被识别成 aliyun 品牌，
+        # 而它没配 AK 时 list_volumes 返回空，此时同样应由 rsync 兜底。
+        if not any(v.fs_type in ("btrfs", "zfs", "qnap", "aliyun") for v in volumes):
+            from snapshot_rsync import list_volumes as _lv
+            volumes.extend(_lv())
     except StorageError:
         pass
     except Exception:
@@ -780,7 +782,8 @@ def _browse_local_dir(path: str) -> list[dict]:
             "is_dir": is_dir,
             "size": None if is_dir else st.st_size,
             "size_human": "" if is_dir else human_size(st.st_size),
-            "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+            # 注意 storage 顶层是 `import datetime`（模块），必须走 datetime.datetime
+            "mtime": datetime.datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
         })
     return entries
 
