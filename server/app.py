@@ -1052,6 +1052,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             payload = self._read_json()
 
+            # 清除告警：把受保护基线对齐当前快照状态（确认消失/确认状态变化），横幅即消失
+            if route == "/api/alerts/clear":
+                self._send_json(storage.sync_protected_baseline())
+                return
+
             if route == "/api/snapshot/create":
                 volume = (payload.get("volume") or "").strip()
                 if not volume:

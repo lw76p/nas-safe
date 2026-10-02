@@ -1015,6 +1015,51 @@ def is_protected(key: str) -> bool:
     return any(e.get("key") == key for e in load_protected().get("entries", []))
 
 
+def sync_protected_baseline() -> dict:
+    """用户确认告警后调用：把受保护基线对齐到当前实际快照状态。
+
+    - 基线里有、当前消失的条目 → 移除（用户确认快照确实没了，不再告警）
+    - 解锁/变可写的条目 → 以当前状态为准更新标志（用户确认现状，不再告警）
+    这是「清除警告」按钮的服务端落地：只改基线，不动任何真实快照。
+    返回 {"ok": True, "removed": 移除数, "updated": 状态更新数}。
+    """
+    try:
+        volumes = list_all_volumes()
+    except Exception as exc:
+        raise StorageError(f"无法枚举存储卷，暂不能确认告警：{exc}")
+
+    current: dict = {}
+    for vol in volumes:
+        try:
+            for s in list_all_snapshots(vol):
+                current[snapshot_key(s)] = s
+        except Exception:
+            continue
+
+    data = load_protected()
+    removed = updated = 0
+    kept: list = []
+    for entry in data.get("entries", []):
+        snap = current.get(entry.get("key"))
+        if snap is None:
+            removed += 1  # 确认消失：从基线摘除，不再告「快照消失」
+            continue
+        changed = False
+        if bool(entry.get("vital")) and not snap.vital:
+            entry["vital"] = False
+            changed = True
+        if bool(entry.get("readonly")) and not snap.readonly:
+            entry["readonly"] = False
+            changed = True
+        if changed:
+            entry["acknowledged_at"] = _iso_now()
+            updated += 1
+        kept.append(entry)
+    data["entries"] = kept
+    save_protected(data)
+    return {"ok": True, "removed": removed, "updated": updated}
+
+
 def scan_tamper(include_integrity: bool | None = None) -> list:
     """巡检所有卷的快照，对比受保护基线，产出篡改告警列表。
 
