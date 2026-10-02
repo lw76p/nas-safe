@@ -1,6 +1,7 @@
-"""跨品牌 NAS 能力探测（只读、容错）。
+"""跨品牌 / 跨操作系统能力探测（只读、容错）。
 
-NAS Safe 要装到所有品牌 / 系统，从安装到彻底能用，第一步是知道自己跑在什么上面、能做什么。
+NAS Safe 要装到所有品牌 / 系统（NAS、Windows 电脑、macOS 电脑、Linux 服务器、云主机），
+从安装到彻底能用，第一步是知道自己跑在什么上面、能做什么。
 本模块只做「探测 + 画像」，绝不修改任何系统状态。任何探测失败都安全降级为 unknown / none，
 绝不抛异常中断主流程。
 
@@ -12,12 +13,15 @@ NAS Safe 要装到所有品牌 / 系统，从安装到彻底能用，第一步�
     truenas   TrueNAS (SCALE/CORE)
     omv       OpenMediaVault
     unraid    Unraid
+    windows   Windows 电脑 / 服务器
+    macos     macOS 电脑
+    aliyun    阿里云 ECS
     generic_linux  通用 Linux / 其它 / 容器内无法识别
 
 能力画像（capabilities）:
     smart_backend     SMART 后端: qts_native | smartctl | synology | none
-    snapshot_backend  快照后端: qnap_volume | btrfs | zfs | none | auto
-    filesystem        文件系统: ext4 | btrfs | zfs | xfs | unknown
+    snapshot_backend  快照后端: qnap_volume | btrfs | zfs | vss | apfs | rsync | none | auto
+    filesystem        文件系统: ext4 | btrfs | zfs | xfs | ntfs | apfs | cloud_disk | unknown
     docker            是否支持 Docker（决定部署方式）
     share_hints       该品牌典型共享根路径（迁移路径映射默认提示）
     notes             白话说明（前端可直接展示）
@@ -26,6 +30,7 @@ NAS Safe 要装到所有品牌 / 系统，从安装到彻底能用，第一步�
 from __future__ import annotations
 
 import os
+import platform
 
 # 品牌中文标签（界面展示用，全部白话）
 BRAND_LABELS = {
@@ -36,6 +41,8 @@ BRAND_LABELS = {
     "truenas": "TrueNAS",
     "omv": "OpenMediaVault",
     "unraid": "Unraid",
+    "windows": "Windows 电脑",
+    "macos": "macOS 电脑",
     "aliyun": "阿里云 ECS",
     "generic_linux": "通用 Linux",
     "unknown": "未知设备",
@@ -50,6 +57,8 @@ BRAND_SHARE_HINTS = {
     "truenas": ["/mnt"],
     "omv": ["/srv/dev-disk-by-uuid-"],
     "unraid": ["/mnt/user", "/mnt/disk1"],
+    "windows": ["C:\\Users", "D:\\"],
+    "macos": ["/Users", "/Volumes"],
     "generic_linux": ["/mnt", "/data", "/srv"],
     "unknown": ["/"],
 }
@@ -87,7 +96,7 @@ def _which(name: str):
 
 
 def detect_brand() -> str:
-    """识别当前运行环境的 NAS 品牌。
+    """识别当前运行环境的品牌 / 操作系统。
 
     优先级：环境变量 NASSAFE_BRAND（部署时可显式指定）> /etc/os-release >
     已知文件标记 > 容器/通用 Linux。任何一步失败都安全返回 generic_linux。
@@ -142,6 +151,18 @@ def detect_brand() -> str:
     except Exception:
         pass
 
+    # 3.7) 操作系统内核识别（Windows / macOS / 其它）
+    #      注意：在 Linux 容器里 platform.system() 仍是 "Linux"，会落到下方
+    #      通用 Linux 兜底，不会误伤 NAS 容器场景。
+    try:
+        sys_name = platform.system()
+        if sys_name == "Windows":
+            return "windows"
+        if sys_name == "Darwin":
+            return "macos"
+    except Exception:
+        pass
+
     # 4) 容器或通用 Linux
     return "generic_linux"
 
@@ -173,12 +194,17 @@ def detect_capabilities(brand: str | None = None) -> dict:
         caps["smart_backend"] = "synology"
         caps["notes"].append("群晖自带 smartctl，开箱即用")
     else:
-        # 其它品牌默认尝试通用 smartctl（缺失时前端提示安装 smartmontools）
+        # 其它品牌（含 windows/macos/generic_linux）默认尝试通用 smartctl
+        # （缺失时前端提示安装 smartmontools）
         caps["smart_backend"] = "smartctl"
         if _which("smartctl"):
             caps["notes"].append("已检测到 smartctl，硬盘健康开箱即用")
+        elif brand == "windows":
+            caps["notes"].append("Windows 未检测到 smartctl；安装 Smartmontools 后即开启硬盘健康")
+        elif brand == "macos":
+            caps["notes"].append("macOS 需通过 Homebrew 安装 smartmontools 后开启硬盘健康")
         else:
-            caps["notes"].append("未检测到 smartctl，安装 smartmontools 后即开启硬盘健康（Debian/Ubuntu: apt install smartmontools）")
+            caps["notes"].append("未检测到 smartctl，安装 smartmontools 后即开启硬盘健康")
 
     # ---- 快照后端 + 文件系统 ----
     if brand == "qnap":
@@ -225,10 +251,30 @@ def detect_capabilities(brand: str | None = None) -> dict:
         except Exception:
             caps["notes"].append("阿里云 ECS 云盘快照：凭证检测失败")
         caps["notes"].append("云盘快照为块级，单文件取回需从快照创建云盘后挂载。")
+    elif brand == "windows":
+        # Windows 电脑 / 服务器：卷影复制(VSS) 后端，当前为待接入骨架
+        caps["snapshot_backend"] = "vss"
+        caps["filesystem"] = "ntfs"
+        caps["notes"].append("Windows 卷影复制(VSS) 快照后端待接入：将用 vssadmin/diskshadow 实现，可防勒索文件级还原")
+    elif brand == "macos":
+        # macOS 电脑：APFS 快照后端，当前为待接入骨架
+        caps["snapshot_backend"] = "apfs"
+        caps["filesystem"] = "apfs"
+        caps["notes"].append("macOS APFS 快照后端待接入：将用 tmutil / apfs 快照实现")
+    elif brand == "generic_linux":
+        # 通用 Linux（裸机 / 云服务器 ext4 等）：优先 btrfs/ZFS，否则 rsync 兜底
+        if _which("btrfs") or _which("zfs"):
+            caps["snapshot_backend"] = "auto"
+            caps["filesystem"] = "unknown"
+            caps["notes"].append("通用 Linux：已检测到 btrfs/ZFS，可用原生快照")
+        else:
+            caps["snapshot_backend"] = "rsync"
+            caps["filesystem"] = "unknown"
+            caps["notes"].append("通用 Linux（无 btrfs/ZFS）：快照后端用 rsync 硬链接兜底（TimeMachine 式），待接入")
     else:
         caps["snapshot_backend"] = "auto"
         caps["filesystem"] = "unknown"
-        caps["notes"].append("通用 Linux：若文件系统为 btrfs/ZFS 则可用原生快照，否则用 rsync 兜底")
+        caps["notes"].append("未识别系统：若文件系统为 btrfs/ZFS 则可用原生快照，否则用 rsync 兜底")
 
     # ---- Docker 支持（决定部署方式）----
     caps["docker"] = (_which("docker") is not None) or os.path.exists("/.dockerenv")

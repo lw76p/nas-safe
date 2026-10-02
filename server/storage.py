@@ -551,6 +551,27 @@ def list_all_volumes() -> list[Volume]:
                 pass
     except Exception:
         pass
+
+    # 跨平台后端（电脑 / 服务器）：按品牌枚举保护目标；后端未实现时由
+    # 骨架模块安全抛 StorageError（被吞掉），不影响其它卷的展示。
+    try:
+        from brands import detect_brand
+        _b = detect_brand()
+        if _b == "windows":
+            from snapshot_vss import list_volumes as _lv
+            volumes.extend(_lv())
+        elif _b == "macos":
+            from snapshot_apfs import list_volumes as _lv
+            volumes.extend(_lv())
+        elif _b == "generic_linux":
+            # 仅当 btrfs/zfs/qnap/aliyun 都未提供保护目标时，才用 rsync 兜底后端
+            if not any(v.fs_type in ("btrfs", "zfs", "qnap", "aliyun") for v in volumes):
+                from snapshot_rsync import list_volumes as _lv
+                volumes.extend(_lv())
+    except StorageError:
+        pass
+    except Exception:
+        pass
     return volumes
 
 
@@ -565,6 +586,15 @@ def list_all_snapshots(volume: Volume) -> list[Snapshot]:
     if volume.fs_type == "aliyun":
         from aliyun_ecs import list_snapshots as _als
         return _als(volume)
+    if volume.fs_type == "vss":
+        from snapshot_vss import list_snapshots as _ls
+        return _ls(volume)
+    if volume.fs_type == "apfs":
+        from snapshot_apfs import list_snapshots as _ls
+        return _ls(volume)
+    if volume.fs_type == "rsync":
+        from snapshot_rsync import list_snapshots as _ls
+        return _ls(volume)
     raise StorageError(f"不支持的文件系统: {volume.fs_type}")
 
 
@@ -645,6 +675,21 @@ def create_snapshot(volume: Volume, name: str, vital: bool = True) -> Snapshot:
         s = _ac(volume, name, vital=vital)
         register_protected(s)
         return s
+    if volume.fs_type == "vss":
+        from snapshot_vss import create_snapshot as _sv
+        s = _sv(volume, name, vital=vital)
+        register_protected(s)
+        return s
+    if volume.fs_type == "apfs":
+        from snapshot_apfs import create_snapshot as _sv
+        s = _sv(volume, name, vital=vital)
+        register_protected(s)
+        return s
+    if volume.fs_type == "rsync":
+        from snapshot_rsync import create_snapshot as _rs
+        s = _rs(volume, name, vital=vital)
+        register_protected(s)
+        return s
     raise StorageError(f"不支持的文件系统: {volume.fs_type}")
 
 
@@ -666,6 +711,16 @@ def delete_snapshot(snapshot: Snapshot) -> None:
         return
     if snapshot.fs_type == "zfs":
         run(["zfs", "destroy", snapshot.path], timeout=120)
+        unregister_protected(snapshot_key(snapshot))
+        return
+    if snapshot.fs_type in ("vss", "apfs", "rsync"):
+        if snapshot.fs_type == "vss":
+            from snapshot_vss import delete_snapshot as _sd
+        elif snapshot.fs_type == "apfs":
+            from snapshot_apfs import delete_snapshot as _sd
+        else:
+            from snapshot_rsync import delete_snapshot as _sd
+        _sd(snapshot)
         unregister_protected(snapshot_key(snapshot))
         return
     raise StorageError(f"无法删除该类型快照: {snapshot.fs_type}")
@@ -742,6 +797,16 @@ def browse_snapshot(snapshot: Snapshot, subpath: str = "") -> dict:
         from aliyun_ecs import browse_snapshot as _ab
         return _ab(snapshot, subpath)
 
+    if snapshot.fs_type in ("vss", "apfs", "rsync"):
+        # 后端待接入：骨架模块抛清晰的「待接入」错误，不破坏主流程
+        if snapshot.fs_type == "vss":
+            from snapshot_vss import browse_snapshot as _sb
+        elif snapshot.fs_type == "apfs":
+            from snapshot_apfs import browse_snapshot as _sb
+        else:
+            from snapshot_rsync import browse_snapshot as _sb
+        return _sb(snapshot, subpath)
+
     if getattr(snapshot, "backend", "fs") == "qnap" or snapshot.fs_type == "qnap":
         from qnap import default_client, SNAP_MOUNT_ROOT
         client = default_client()
@@ -802,6 +867,16 @@ def restore_from_snapshot(snapshot: Snapshot, rel_path: str, dest: str) -> dict:
     if snapshot.fs_type == "aliyun":
         from aliyun_ecs import restore_from_snapshot as _ar
         return _ar(snapshot, rel_path, dest)   # 块级快照：抛可读说明
+
+    if snapshot.fs_type in ("vss", "apfs", "rsync"):
+        # 后端待接入：骨架模块抛清晰的「待接入」错误，不破坏主流程
+        if snapshot.fs_type == "vss":
+            from snapshot_vss import restore_from_snapshot as _sr
+        elif snapshot.fs_type == "apfs":
+            from snapshot_apfs import restore_from_snapshot as _sr
+        else:
+            from snapshot_rsync import restore_from_snapshot as _sr
+        return _sr(snapshot, rel_path, dest)
 
     if getattr(snapshot, "backend", "fs") == "qnap" or snapshot.fs_type == "qnap":
         from qnap import default_client
