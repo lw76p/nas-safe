@@ -404,13 +404,17 @@ def delete_snapshot(snapshot) -> None:
 # ---------------------------------------------------------------------------
 
 def _safe_join(root: str, subpath: str) -> str:
-    """拼影子副本内的路径并防越权（挡 .. 与盘符切换）。"""
-    base = root.rstrip("\\/") 
+    """拼影子副本内的路径并防越权（挡 .. 与盘符切换）。
+
+    注意：`\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopyN` 这种设备路径
+    必须以反斜杠结尾才能被文件 API 识别（不带尾部 \\ 时 isdir 返回 False）。
+    """
+    base = root.rstrip("\\/")
     sub = (subpath or "").replace("/", "\\").strip("\\")
     if any(p in ("..",) for p in sub.split("\\")):
         raise StorageError("路径越权：不能包含 ..")
-    full = f"{base}\\{sub}" if sub else base
-    if not full.lower().startswith(base.lower()):
+    full = f"{base}\\{sub}" if sub else base + "\\"
+    if not full.rstrip("\\/").lower().startswith(base.lower()):
         raise StorageError("路径越权")
     return full
 
