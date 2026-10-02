@@ -45,11 +45,18 @@ SKIP_IFACE_RE = re.compile(r"^lo|^docker|^br-|^veth|^virbr|^vmnet|^cni|^flannel|
 # ---------------------------------------------------------------------------
 
 def _run(cmd: list[str]) -> str:
+    """跑命令取输出。中文 Windows 的 ipconfig 是 GBK，直接按 utf-8 解码会炸，这里逐级兜底。"""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
-        return p.stdout or ""
+        p = subprocess.run(cmd, capture_output=True, timeout=8)
+        out = p.stdout or b""
     except Exception:  # noqa: BLE001
         return ""
+    for enc in ("utf-8", "gbk", "cp936", "latin-1"):
+        try:
+            return out.decode(enc)
+        except Exception:  # noqa: BLE001
+            continue
+    return ""
 
 
 def _ip_to_int(s: str) -> int:
@@ -131,7 +138,9 @@ def _parse_ipconfig() -> list[tuple[str, str, str]]:
         elif re.search(r"(子网掩码|Subnet Mask)", line) and ":" in line and cur_ip:
             m = re.search(r"(\d+\.\d+\.\d+\.\d+)", line.split(":")[-1])
             if m:
-                res.append((iface, cur_ip, m.group(1)))
+                # 中文 Windows 输出形如「以太网适配器 以太网」，去掉冗余词只留接口名
+                nice = re.sub(r"适配器\s*", "", iface).strip() or iface
+                res.append((nice, cur_ip, m.group(1)))
                 cur_ip = None
     return res
 
@@ -357,20 +366,21 @@ def _rule_identify(fp: dict) -> dict:
     low = blob.lower()
     out = {"device_type": "unknown", "brand_label": "", "suggest_name": "",
            "suggest_group": "", "confidence": 0.3, "by": "rule"}
+    host = (fp.get("hostname") or "").lower()
     if 8848 in ports:
         out.update({"device_type": "nas_safe", "brand_label": "NAS Safe", "confidence": 0.9})
     elif 5000 in ports or 5001 in ports or "synology" in low or "dsm" in low:
         out.update({"device_type": "nas", "brand_label": "群晖 NAS", "confidence": 0.75})
     elif "qnap" in low or (8080 in ports and 443 in ports):
         out.update({"device_type": "nas", "brand_label": "威联通 NAS", "confidence": 0.6})
-    elif 3389 in ports or (445 in ports and 139 in ports):
+    elif 3389 in ports or 445 in ports or "win" in host:
         out.update({"device_type": "pc", "brand_label": "Windows 电脑", "confidence": 0.6})
-    elif 5900 in ports or 548 in ports or 88 in ports:
+    elif 5900 in ports or 548 in ports or 88 in ports or "macbook" in host or "mac-" in host:
         out.update({"device_type": "pc", "brand_label": "macOS 电脑", "confidence": 0.5})
+    elif 22 in ports or "ubuntu" in low or "debian" in low:
+        out.update({"device_type": "server", "brand_label": "Linux 服务器", "confidence": 0.45})
     elif 554 in ports or "camera" in low or "hikvision" in low or "dahua" in low:
         out.update({"device_type": "camera", "brand_label": "摄像头", "confidence": 0.55})
-    elif 22 in ports:
-        out.update({"device_type": "server", "brand_label": "Linux 服务器", "confidence": 0.45})
     elif 80 in ports or 443 in ports:
         out.update({"device_type": "unknown", "brand_label": "网络设备", "confidence": 0.3})
     if not out["brand_label"] and not ports:
