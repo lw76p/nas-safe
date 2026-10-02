@@ -397,6 +397,19 @@ def agent_register(token: str, info: dict | None = None) -> dict:
     ag["installed_at"] = time.time()
     if info:
         ag["info"] = info
+        # 代理上报的 OS 就是设备真实身份：品牌未知时按 OS 修正，跨平台识别更准。
+        # 只在未知（generic_linux 等）时覆盖，不碰扫描时已认出的 NAS 品牌。
+        if (hit.get("brand") or "generic_linux") in ("", "generic_linux"):
+            _os = str(info.get("os") or "").lower()
+            if "windows" in _os:
+                hit["brand"] = "windows"
+                hit["brand_label"] = "Windows 电脑"
+            elif "darwin" in _os or "mac os" in _os or "macos" in _os:
+                hit["brand"] = "macos"
+                hit["brand_label"] = "Mac 电脑"
+            elif "linux" in _os or "nas" in _os:
+                hit["brand"] = "linux"
+                hit["brand_label"] = "Linux 电脑"
     hit["agent"] = ag
     hit["last_seen"] = time.time()
     save_devices(devs)
@@ -445,6 +458,50 @@ def agent_install_script(token: str, center: str) -> str:
         raise storage.StorageError("安装令牌无效，请先在中控「安装轻量代理」里重新生成")
     center = (center or "").rstrip("/")
     return AGENT_INSTALL_TEMPLATE.replace("__CENTER__", center).replace("__TOKEN__", token)
+
+
+# Windows 版轻量代理：PowerShell 注册 + schtasks 每分钟心跳计划任务（重启也在）
+AGENT_INSTALL_PS_TEMPLATE = r'''# NAS Safe Windows agent: register + per-minute heartbeat scheduled task (read-only)
+$ErrorActionPreference = "SilentlyContinue"
+$Center = "__CENTER__"
+$Token  = "__TOKEN__"
+$Dir = Join-Path $env:ProgramData "NassafeAgent"
+New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+
+# 1) Heartbeat payload + script
+('{""token"":""__TOKEN__""}') | Set-Content -Encoding ASCII -Path (Join-Path $Dir "hb.json")
+$hb = @'
+$body = Get-Content -Raw -Path (Join-Path $env:ProgramData "NassafeAgent\hb.json")
+try {
+  Invoke-RestMethod -Method Post -Uri "__CENTER__/api/agent/heartbeat" -ContentType "application/json" -Body $body -TimeoutSec 8 | Out-Null
+} catch {}
+'@
+$hb | Set-Content -Encoding ASCII -Path (Join-Path $Dir "heartbeat.ps1")
+
+# 2) Register with hostname + OS info
+$os = "Windows"
+try { $os = "Windows " + (Get-CimInstance Win32_OperatingSystem).Caption } catch {}
+$reg = @{ token = $Token; hostname = $env:COMPUTERNAME; os = $os } | ConvertTo-Json
+try {
+  Invoke-RestMethod -Method Post -Uri "$Center/api/agent/register" -ContentType "application/json" -Body $reg -TimeoutSec 8 | Out-Null
+} catch {}
+
+# 3) Scheduled task: heartbeat every minute (survives reboot)
+$act = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Dir\heartbeat.ps1`""
+schtasks /Create /F /SC MINUTE /MO 1 /TN "NassafeAgent" /TR $act | Out-Null
+# Run once right now so the console flips to 已装 immediately
+& (Join-Path $Dir "heartbeat.ps1")
+Write-Host "[NAS Safe] Windows agent installed OK. Heartbeat task: NassafeAgent (every minute)."
+'''
+
+
+def agent_install_script_ps(token: str, center: str) -> str:
+    devs = load_devices()
+    hit = _find_by_agent_token(devs, token)
+    if hit is None:
+        raise storage.StorageError("安装令牌无效，请先在中控「安装轻量代理」里重新生成")
+    center = (center or "").rstrip("/")
+    return AGENT_INSTALL_PS_TEMPLATE.replace("__CENTER__", center).replace("__TOKEN__", token)
 
 
 def _default_local_name(dev: dict | None = None) -> str:

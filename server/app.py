@@ -640,7 +640,7 @@ class Handler(BaseHTTPRequestHandler):
         # 公开接口：健康检查、认证相关、静态文件；其余都需要登录
         # /api/agent/install.sh 公开的原因：被控设备无法登录中控，靠一次性安装令牌鉴权
         public_api = ("/api/health", "/api/auth/setup", "/api/auth/check", "/api/auth/logout",
-                      "/api/agent/install.sh", "/api/auth/onelink")
+                      "/api/agent/install.sh", "/api/agent/install.ps1", "/api/auth/onelink")
         needs_auth = route.startswith("/api/") and route not in public_api
 
         try:
@@ -827,6 +827,18 @@ class Handler(BaseHTTPRequestHandler):
                 body = script.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/x-shellscript; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            elif route == "/api/agent/install.ps1":
+                # Windows 版轻量代理（PowerShell 注册 + schtasks 每分钟心跳），令牌鉴权同 install.sh
+                token = (query.get("t") or [""])[0].strip()
+                host = self.headers.get("Host") or ""
+                scheme = (self.headers.get("X-Forwarded-Proto") or "http").strip()
+                script = devices.agent_install_script_ps(token, f"{scheme}://{host}")
+                body = script.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(body)
