@@ -3,14 +3,13 @@
 原理：VSS 是块级写时复制（COW），创建快照零拷贝、瞬间完成；源文件被
 勒索软件原地加密时，影子副本里的旧内容不受影响（真防勒索）。
 
-实现路线：
+实现路线（全 WMI，零外部工具依赖——实测本机无 diskshadow、vssadmin 无 create）：
   - 枚举保护目标：固定磁盘（GetDriveTypeW == DRIVE_FIXED）作为可保护卷
-  - 创建快照：diskshadow 脚本（`set context create` 持久模式；注意 vssadmin
-    根本没有 create 子命令），正则解析 Shadow Copy ID 与 GLOBALROOT 设备名
+  - 创建快照：PowerShell 调 Win32_ShadowCopy.Create（ClientAccessible 持久快照）
   - 元数据：存 state/vssrepo/<盘符slug>/<时间戳>.json（块级快照零文件拷贝）
   - 浏览：直接用 Windows 文件 API 走 \\\\?\\GLOBALROOT\\Device\\...ShadowCopyN\\
   - 取回：shutil 复制（失败回退 robocopy）
-  - 删除：`vssadmin delete shadows /shadow=<ID> /quiet`
+  - 删除：Win32_ShadowCopy 实例 Remove-CimInstance
 
 已知限制（如实告知用户）：
   - 创建/删除需要管理员权限；无权限时可看卷但创建时明确提示
@@ -77,19 +76,8 @@ def _need_admin() -> None:
         )
 
 
-def _run_vssadmin(args: list[str]) -> subprocess.CompletedProcess:
-    try:
-        return subprocess.run(
-            ["vssadmin", *args], capture_output=True, timeout=_TIMEOUT,
-        )
-    except FileNotFoundError:
-        raise StorageError("系统里没有 vssadmin 工具（Windows 精简版可能被移除）")
-    except subprocess.TimeoutExpired:
-        raise StorageError("vssadmin 命令超时")
-
-
 def _decode(proc: subprocess.CompletedProcess) -> str:
-    """vssadmin 输出编码：中文系统 GBK、英文系统可能 cp437/utf-8，逐级尝试。"""
+    """子进程输出编码：中文系统 GBK、英文系统可能 cp437/utf-8，逐级尝试。"""
     raw = (proc.stdout or b"") + b"\n" + (proc.stderr or b"")
     for enc in ("utf-8", "gbk", "cp936", "cp437", "latin-1"):
         try:
@@ -172,39 +160,61 @@ _RE_SHADOW_ID = re.compile(r"\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9
 _RE_DEVICE = re.compile(r"HarddiskVolumeShadowCopy\d+")
 
 
+# WMI 错误码（Win32_ShadowCopy.Create 的 ReturnValue）
+_WMI_ERR = {
+    1: "拒绝访问（需要管理员权限）",
+    2: "无效的卷",
+    3: "不支持的卷类型（系统/光驱卷不能做影子副本）",
+    4: "不支持的影子上下文",
+    5: "卷影存储区不足：请在磁盘管理里给该卷留出至少 10% 可用空间",
+    7: "卷影复制服务（VSS）未运行",
+    8: "存储提供程序错误",
+    9: "卷空间不足",
+    10: "该卷的影子副本数量已达上限",
+}
+
+_PS_CREATE = (
+    "$ErrorActionPreference='Stop';"
+    "$r=Invoke-CimMethod -ClassName Win32_ShadowCopy -MethodName Create "
+    "-Arguments @{Volume='{vol}';Context='ClientAccessible'};"
+    "if($r.ReturnValue -ne 0){{Write-Output ('ERR='+$r.ReturnValue);exit}};"
+    "$sc=Get-CimInstance Win32_ShadowCopy -Filter \"ID='$($r.ShadowID)'\";"
+    "Write-Output ('ID='+$sc.ID);Write-Output ('DEV='+$sc.DeviceName)"
+)
+
+
+def _run_powershell(script: str) -> str:
+    """跑一段 PowerShell 并返回 stdout（中文系统 GBK 也能安全解析 ASCII 输出）。"""
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, timeout=_TIMEOUT)
+    except FileNotFoundError:
+        raise StorageError("系统里没有 powershell（异常的系统精简）")
+    except subprocess.TimeoutExpired:
+        raise StorageError("创建卷影副本超时")
+    return _decode(proc)
+
+
 def _create_shadow(drive_letter: str) -> dict:
-    r"""用 diskshadow 创建影子副本（vssadmin 没有 create 子命令）。
+    r"""用 WMI Win32_ShadowCopy 创建影子副本（零外部依赖：不需要 diskshadow/
+    vssadmin create——前者精简系统没有，后者根本没有 create 子命令）。
 
     返回 {"id": "{guid}", "device": r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN"}。
-    `set context create` = 持久 + 等待完成：重启后影子仍保留，直到我们删除
-    或被 VSS 存储区上限淘汰。中英文系统的输出标签不同，但 GUID 与
-    GLOBALROOT 设备名不变，用正则跨语言解析。
+    ClientAccessible 快照持久保留（重启不丢），直到删除或被 VSS 存储区上限淘汰。
     """
-    import tempfile
-    script = f"set context create\ncreate shadow copy for={drive_letter}:\nexit\n"
-    fd, dsh = tempfile.mkstemp(suffix=".dsh", text=True)
-    try:
-        with os.fdopen(fd, "w", encoding="ascii") as fh:
-            fh.write(script)
-        try:
-            proc = subprocess.run(
-                ["diskshadow", "/s", dsh], capture_output=True, timeout=_TIMEOUT)
-        except FileNotFoundError:
-            raise StorageError("系统里没有 diskshadow 工具（Windows 精简版可能被移除）")
-        except subprocess.TimeoutExpired:
-            raise StorageError("diskshadow 创建卷影副本超时")
-    finally:
-        try:
-            os.remove(dsh)
-        except OSError:
-            pass
-    out = _decode(proc)
+    vol = f"{drive_letter}:\\"
+    out = _run_powershell(_PS_CREATE.format(vol=vol))
     m_id = _RE_SHADOW_ID.search(out)
     m_dev = _RE_DEVICE.search(out)
     if not m_dev:
-        err = [l for l in out.strip().splitlines() if l.strip()]
-        # 过滤掉 diskshadow 的回显噪音，取最后几行有效信息
-        detail = " | ".join(err[-3:]) if err else "未知错误"
+        m_err = re.search(r"ERR=(\d+)", out)
+        if m_err:
+            code = int(m_err.group(1))
+            detail = _WMI_ERR.get(code, f"WMI 错误码 {code}")
+            raise StorageError(f"创建卷影副本失败：{detail}")
+        lines = [l for l in out.strip().splitlines() if l.strip()]
+        detail = " | ".join(lines[-3:]) if lines else "未知错误"
         raise StorageError(f"创建卷影副本失败：{detail[:200]}")
     return {
         "id": m_id.group(0) if m_id else "",
@@ -213,17 +223,23 @@ def _create_shadow(drive_letter: str) -> dict:
 
 
 def _shadow_alive(device: str) -> bool:
-    """影子副本是否仍存在（非持久快照重启后会消失）。"""
+    """影子副本是否仍存在（被系统淘汰后会消失）。"""
     if not device:
         return False
     return os.path.isdir(device.rstrip("\\/") + "\\")
 
 
 def _delete_shadow(shadow_id: str) -> bool:
+    """用 WMI 删除影子副本（ClientAccessible 快照 vssadmin 也能删，但 WMI 更稳）。"""
     if not shadow_id:
         return False
-    proc = _run_vssadmin(["delete", "shadows", f"/shadow={shadow_id}", "/quiet"])
-    return proc.returncode == 0
+    ps = (
+        "$sc=Get-CimInstance Win32_ShadowCopy -Filter \"ID='%s'\";"
+        "if(-not $sc){Write-Output 'GONE';exit};"
+        "Remove-CimInstance -InputObject $sc;if($?){Write-Output 'OK'}else{Write-Output 'FAIL'}"
+    ) % shadow_id.replace("'", "")
+    out = _run_powershell(ps)
+    return "OK" in out or "GONE" in out
 
 
 # ---------------------------------------------------------------------------
