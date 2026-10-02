@@ -898,10 +898,12 @@ class Handler(BaseHTTPRequestHandler):
                 username = (payload.get("username") or "").strip()
                 # 密码去首尾空白：粘贴密码时常带行尾换行/空格，直接原样比对必失败
                 password = (payload.get("password") or "").strip()
+                print("[login] attempt user=%r from=%s" % (username, self.client_address[0]), flush=True)
                 try:
                     sess = auth.login(username, password)
                 except ValueError as exc:
                     # 密码错误/限速是预期内的客户端错误，回 401 而不是 500
+                    print("[login] DENIED user=%r reason=%s" % (username, exc), flush=True)
                     self.send_response(401)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Cache-Control", "no-store")
