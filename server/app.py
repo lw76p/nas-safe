@@ -41,6 +41,7 @@ NAS Safe — 后端 API 服务
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -518,8 +519,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 decoded = base64.b64decode(hdr[6:]).decode("utf-8", "replace")
                 u, _, pw = decoded.partition(":")
-                if u == self.WEB_USER and pw == self.WEB_PASS:
-                    return {"username": u, "role": "admin"}
+                # 第一优先：登录用户表（与网页注册的账号同一套凭证）
+                hit = auth.verify_credentials(u, pw)
+                # 第二优先：环境变量兜底（旧部署兼容，未初始化用户表时可用）
+                if not hit and u == self.WEB_USER and pw == self.WEB_PASS:
+                    hit = {"username": u, "role": "admin"}
+                if hit:
+                    return hit
             except Exception:  # noqa: BLE001
                 pass
         return None
@@ -544,7 +550,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(401)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("WWW-Authenticate", 'Basic realm="NAS Safe"')
+        # 只有客户端主动带 Basic 凭证（脚本/代理）且失败时才 challenge；
+        # 浏览器正常访问裸 401，不弹原生认证框（由前端登录弹窗接管）
+        if (self.headers.get("Authorization") or "").startswith("Basic "):
+            self.send_header("WWW-Authenticate", 'Basic realm="NAS Safe"')
         self.end_headers()
         self.wfile.write(json.dumps({"ok": False, "error": "请先登录"}).encode("utf-8"))
 

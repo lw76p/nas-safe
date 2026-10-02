@@ -257,6 +257,16 @@ def _note_fail(username: str) -> None:
     arr.append(time.time())
 
 
+def verify_credentials(username: str, password: str) -> dict | None:
+    """校验用户名+密码（供 Basic Auth 兜底使用），成功返回 {username, role}。"""
+    u = get_user(username or "")
+    if not u:
+        return None
+    if _verify_password(password or "", u.get("password", "")):
+        return {"username": u["username"], "role": u.get("role", "viewer")}
+    return None
+
+
 def login(username: str, password: str) -> dict:
     """校验账号密码，成功返回 {"username","role","sid","max_age"}。"""
     if _too_many_fails(username or ""):
