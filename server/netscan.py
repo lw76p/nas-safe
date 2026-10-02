@@ -356,7 +356,34 @@ def fingerprint(ip: str, ports: list | None = None, timeout: float = CONNECT_TIM
         hostname = socket.getnameinfo((ip, 0), 0)[0] or ""
     except Exception:  # noqa: BLE001
         hostname = ""
-    return {"ip": ip, "open_ports": open_ports, "banners": banners, "hostname": hostname}
+    out = {"ip": ip, "open_ports": open_ports, "banners": banners, "hostname": hostname,
+           "nas_kind": ""}
+    # NAS 品牌内容探针：5000/5001 两家都常用，光看端口分不出 QNAP/群晖。
+    # QNAP 的 /cgi-bin/ 标题是 "QNAP Turbo NAS"；群晖 DSM 页面含 synology/dsm 字样。
+    if 5000 in open_ports or 5001 in open_ports:
+        import ssl as _ssl
+        import urllib.request as _urlreq
+        ctx = _ssl._create_unverified_context()
+        for _p in (5000, 5001):
+            for _path in ("/cgi-bin/", "/"):
+                try:
+                    _req = _urlreq.Request(
+                        f"http://{ip}:{_p}{_path}", headers={"User-Agent": "nassafe-scan"})
+                    with _urlreq.urlopen(_req, timeout=2.5, context=ctx) as _r:
+                        _body = _r.read(6000).decode("utf-8", "ignore").lower()
+                except Exception:  # noqa: BLE001
+                    continue
+                if "qnap" in _body or "turbo nas" in _body or ">qts" in _body:
+                    out["nas_kind"] = "qnap"
+                    break
+                if "synology" in _body or "dsm" in _body:
+                    out["nas_kind"] = "synology"
+                    break
+            if out["nas_kind"]:
+                break
+        if out["nas_kind"]:
+            out["banners"]["nas_kind"] = out["nas_kind"]
+    return out
 
 
 def _rule_identify(fp: dict) -> dict:
@@ -370,7 +397,14 @@ def _rule_identify(fp: dict) -> dict:
     if 8848 in ports:
         out.update({"device_type": "nas_safe", "brand_label": "NAS Safe", "confidence": 0.9})
     elif 5000 in ports or 5001 in ports or "synology" in low or "dsm" in low:
-        out.update({"device_type": "nas", "brand_label": "群晖 NAS", "confidence": 0.75})
+        # 光看端口分不出品牌：探针结果优先（qnap -> 威联通），探不明降置信度
+        _kind = str(fp.get("nas_kind") or "")
+        if _kind == "qnap" or "qnap" in low or "qts" in low or "turbo nas" in low:
+            out.update({"device_type": "nas", "brand_label": "威联通 NAS", "confidence": 0.85})
+        elif _kind == "synology":
+            out.update({"device_type": "nas", "brand_label": "群晖 NAS", "confidence": 0.85})
+        else:
+            out.update({"device_type": "nas", "brand_label": "群晖 NAS", "confidence": 0.45})
     elif "qnap" in low or (8080 in ports and 443 in ports):
         out.update({"device_type": "nas", "brand_label": "威联通 NAS", "confidence": 0.6})
     elif 3389 in ports or 445 in ports or "win" in host:
@@ -381,6 +415,10 @@ def _rule_identify(fp: dict) -> dict:
         out.update({"device_type": "server", "brand_label": "Linux 服务器", "confidence": 0.45})
     elif 554 in ports or "camera" in low or "hikvision" in low or "dahua" in low:
         out.update({"device_type": "camera", "brand_label": "摄像头", "confidence": 0.55})
+    elif "espressif" in low:
+        out.update({"device_type": "iot", "brand_label": "IoT 设备", "confidence": 0.7})
+    elif "rt-" in host or "gt-" in host or "asus" in low:
+        out.update({"device_type": "router", "brand_label": "华硕路由器", "confidence": 0.7})
     elif 80 in ports or 443 in ports:
         out.update({"device_type": "unknown", "brand_label": "网络设备", "confidence": 0.3})
     if not out["brand_label"] and not ports:
