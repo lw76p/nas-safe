@@ -176,8 +176,8 @@ _WMI_ERR = {
 _PS_CREATE = (
     "$ErrorActionPreference='Stop';"
     "$r=Invoke-CimMethod -ClassName Win32_ShadowCopy -MethodName Create "
-    "-Arguments @{Volume='{vol}';Context='ClientAccessible'};"
-    "if($r.ReturnValue -ne 0){{Write-Output ('ERR='+$r.ReturnValue);exit}};"
+    "-Arguments @{Volume='__VOL__';Context='ClientAccessible'};"
+    "if($r.ReturnValue -ne 0){Write-Output ('ERR='+$r.ReturnValue);exit};"
     "$sc=Get-CimInstance Win32_ShadowCopy -Filter \"ID='$($r.ShadowID)'\";"
     "Write-Output ('ID='+$sc.ID);Write-Output ('DEV='+$sc.DeviceName)"
 )
@@ -204,7 +204,9 @@ def _create_shadow(drive_letter: str) -> dict:
     ClientAccessible 快照持久保留（重启不丢），直到删除或被 VSS 存储区上限淘汰。
     """
     vol = f"{drive_letter}:\\"
-    out = _run_powershell(_PS_CREATE.format(vol=vol))
+    # PowerShell 脚本含大量 {}（WMI 哈希表/语句块），不能用 str.format()，
+    # 用占位符替换避免把脚本花括号误当占位符解析
+    out = _run_powershell(_PS_CREATE.replace("__VOL__", vol))
     m_id = _RE_SHADOW_ID.search(out)
     m_dev = _RE_DEVICE.search(out)
     if not m_dev:
