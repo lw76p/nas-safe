@@ -1286,6 +1286,8 @@ function startTopoDrift(stage, items, geo) {
   // 角向漂浮幅度按设备数自适应：设备越多扇区越窄，幅度越小，避免节点互相撞在一起
   const AA = Math.min(0.52, (2 * Math.PI / Math.max(1, geo.n || 1)) * 0.42);
   const AR = 0.22;             // 径向漂浮幅度（占基准半径的比例）
+  // 漂移总半径限幅：任何方向都不允许把节点推出画面（留 46px 安全边）
+  const RMAX = Math.min((cx - 46) / RX, (W - 46 - cx) / RX, (cy - 46) / RY, (H - 46 - cy) / RY);
   let last = 0;
   function step(t) {
     _topoDrift.raf = requestAnimationFrame(step);
@@ -1355,9 +1357,9 @@ function startTopoDrift(stage, items, geo) {
       let pxv, pyv;
       if (it.mode === "polar") {
         // 景深带来的层次：远的略微内缩、近的略微外扩 —— 与背景粒子一样的三维纵深
-        const zrT = live ? 0 : (it.z - 0.5) * 0.12;
+        const zrT = live ? 0 : (it.z - 0.5) * 0.10;
         it.zr += (zrT - it.zr) * 0.05 * k;
-        const ang = it.a0 + it.aOff, rr = 1 + it.rOff + it.zr;
+        const ang = it.a0 + it.aOff, rr = Math.min(1 + it.rOff + it.zr, RMAX);
         pxv = cx + RX * rr * Math.cos(ang);
         pyv = cy + RY * rr * Math.sin(ang);
       } else {
