@@ -125,7 +125,8 @@ def collect_local_summary(dev: dict) -> dict:
     """本机健康汇总：直接调用本地模块（最快、最全）。"""
     summary = {
         "id": dev.get("id", LOCAL_ID),
-        "name": dev.get("name", "本机 NAS"),
+        "name": dev.get("name") or _default_local_name(dev),
+        "custom_name": bool(dev.get("custom_name")),
         "group": dev.get("group", "本地设备"),
         "brand": brandmod.detect_brand(),
         "brand_label": "",
@@ -193,6 +194,7 @@ def collect_remote_summary(dev: dict) -> dict:
     brand = dev.get("brand") or "generic_linux"
     out = {
         "id": dev.get("id"), "name": dev.get("name", "远程设备"),
+        "custom_name": bool(dev.get("custom_name")),
         "group": dev.get("group", "远程设备"), "brand": brand,
         "brand_label": brandmod.BRAND_LABELS.get(brand, brand),
         "type": "remote", "enabled": dev.get("enabled", True),
@@ -300,6 +302,23 @@ def add_device(payload: dict) -> dict:
     if not host or not port:
         raise storage.StorageError("远程设备需要填写访问地址（host 和 port）")
     devs = load_devices()
+    # 同一台设备（同地址同端口）重复添加时，改为更新，避免控制台出现两台一样的
+    for d in devs:
+        if (d.get("host") or "").strip() == host and int(d.get("port") or 0) == port:
+            d["name"] = (payload.get("name") or d.get("name") or f"{host}:{port}").strip()
+            d["custom_name"] = bool(payload.get("name"))
+            if payload.get("group"):
+                d["group"] = str(payload.get("group")).strip()
+            if payload.get("brand"):
+                d["brand"] = str(payload.get("brand")).strip()
+            if payload.get("token"):
+                d["token"] = str(payload.get("token")).strip()
+            d["https"] = bool(payload.get("https"))
+            d["enabled"] = True
+            d["net_kind"] = (payload.get("net_kind") or d.get("net_kind") or "").strip()
+            save_devices(devs)
+            return {"ok": True, "id": d.get("id"), "updated": True}
+
     dev_id = f"dev-{int(time.time())}"
     devs.append({
         "id": dev_id,
@@ -313,9 +332,40 @@ def add_device(payload: dict) -> dict:
         "token": (payload.get("token") or "").strip(),
         "enabled": True,
         "note": "",
+        "net_kind": (payload.get("net_kind") or "").strip(),
     })
     save_devices(devs)
     return {"ok": True, "id": dev_id}
+
+
+def _default_local_name(dev: dict | None = None) -> str:
+    """本机默认显示名：品牌 + 本机（用户改过名就不走这里）。"""
+    try:
+        label = brandmod.detect_capabilities(brandmod.detect_brand()).get("brand_label", "")
+    except Exception:  # noqa: BLE001
+        label = ""
+    return (label or "本机").strip()
+
+
+def rename_device(dev_id: str, name: str) -> dict:
+    """给任意设备（含本机）改名，方便在控制台和总控动画里一眼认出来。"""
+    name = (name or "").strip()
+    if not name:
+        raise storage.StorageError("名字不能为空")
+    if len(name) > 24:
+        raise storage.StorageError("名字最多 24 个字")
+    devs = load_devices()
+    hit = None
+    for d in devs:
+        if d.get("id") == dev_id:
+            hit = d
+            break
+    if hit is None:
+        raise storage.StorageError("设备不存在")
+    hit["name"] = name
+    hit["custom_name"] = True
+    save_devices(devs)
+    return {"ok": True, "id": dev_id, "name": name}
 
 
 def remove_device(dev_id: str) -> dict:

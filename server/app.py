@@ -71,7 +71,8 @@ import duplicates  # noqa: E402  重复文件清理（只读报告 + 隔离式�
 import junk  # noqa: E402  磁盘垃圾清理（回收站/缩略图/Docker缓存/旧日志，只读报告+按类清理）
 import daily_report  # noqa: E402  每日健康日报（定时聚合快照/告警/空间/硬盘，复用通知链路推送）
 import smartd  # noqa: E402  硬盘 SMART 健康采集（跨品牌，smartctl 多路径探测 + QTS 包兜底）
-import devices  # noqa: E402  跨品牌多设备总控制台（注册 + 分层聚合 + 健康汇总）
+import devices  # noqa: E402
+import netscan  # noqa: E402  联网设备自动扫描  跨品牌多设备总控制台（注册 + 分层聚合 + 健康汇总）
 import migrate  # noqa: E402  换机迁移（配置包导出 / 导入 / 路径映射 / 能力降级）
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
@@ -1135,6 +1136,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not dev_id:
                     raise StorageError("缺少 id 参数")
                 self._send_json({"ok": True, **devices.remove_device(dev_id)})
+            elif route == "/api/devices/scan":
+                # 自动扫描：局域网 + 异地组网（Tailscale/WireGuard/VPN 等）里的 NAS Safe
+                self._send_json({"ok": True, **netscan.scan(payload)})
+            elif route == "/api/devices/rename":
+                dev_id = (payload.get("id") or "").strip()
+                name = (payload.get("name") or "").strip()
+                if not dev_id:
+                    raise StorageError("缺少 id 参数")
+                self._send_json({"ok": True, **devices.rename_device(dev_id, name)})
             elif route == "/api/devices/refresh":
                 # 强制刷新聚合（忽略远程缓存，立即重拉）
                 self._send_json({"ok": True, **devices.collect_all(force=True)})
