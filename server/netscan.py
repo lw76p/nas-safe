@@ -310,7 +310,7 @@ def _expand(cidr: str, cap: int, self_ip: str = "") -> tuple[list[str], bool]:
 # 设备指纹 + AI 辅助识别
 # ---------------------------------------------------------------------------
 
-FINGER_PORTS = [22, 80, 139, 443, 445, 548, 554, 631, 3389, 5000, 5001, 5900, 8080, 8848]
+FINGER_PORTS = [22, 80, 139, 443, 445, 548, 554, 631, 3389, 5000, 5001, 5900, 7000, 8080, 8848]
 BANNER_PORTS = [80, 443, 5000, 5001, 8080, 8848]
 MAX_FINGER = 192          # 最多给多少台主机采指纹
 MAX_AI = 12               # 最多让 AI 判断多少台（省时间、省 token）
@@ -396,6 +396,9 @@ def _rule_identify(fp: dict) -> dict:
     host = (fp.get("hostname") or "").lower()
     if 8848 in ports:
         out.update({"device_type": "nas_safe", "brand_label": "NAS Safe", "confidence": 0.9})
+    elif 7000 in ports:
+        # AirPlay 接收器（Apple TV / HomePod / 带隔空播放的电视）：AirTunes 服务在 7000
+        out.update({"device_type": "media", "brand_label": "苹果投屏设备", "confidence": 0.75})
     elif 5000 in ports or 5001 in ports or "synology" in low or "dsm" in low:
         # 光看端口分不出品牌：探针结果优先（qnap -> 威联通），探不明降置信度
         _kind = str(fp.get("nas_kind") or "")
@@ -404,7 +407,8 @@ def _rule_identify(fp: dict) -> dict:
         elif _kind == "synology":
             out.update({"device_type": "nas", "brand_label": "群晖 NAS", "confidence": 0.85})
         else:
-            out.update({"device_type": "nas", "brand_label": "群晖 NAS", "confidence": 0.45})
+            # 探不明品牌不猜了（真实案例：AirPlay 设备开着 5000 被误判群晖）
+            out.update({"device_type": "unknown", "brand_label": "", "confidence": 0.3})
     elif "qnap" in low or (8080 in ports and 443 in ports):
         out.update({"device_type": "nas", "brand_label": "威联通 NAS", "confidence": 0.6})
     elif 3389 in ports or 445 in ports or "win" in host:
