@@ -23,6 +23,9 @@ FILES = [
     "snapshot_vss.py",
     "snapshot_apfs.py",
     "snapshot_rsync.py",
+    "app.py",
+    "devices.py",
+    "netscan.py",
 ]
 
 

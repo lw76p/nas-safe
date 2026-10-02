@@ -76,14 +76,18 @@ def _parse_ip_cmd() -> list[tuple[str, str, int]]:
     res = []
     if not out:
         return res
+    # 形如：2: eth0    inet 172.19.52.23/18 brd ... scope global dynamic eth0
+    # 接口名取行首的 "序号: 名称"，别从行尾抓（行尾是 valid_lft xxxsec 这种）
     for line in out.splitlines():
-        m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+).*?(?:dev\s+)?(\S+)\s*$", line)
-        if m:
-            res.append((m.group(3), m.group(1), int(m.group(2))))
-        else:
-            m2 = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+).*?dev\s+(\S+)", line)
-            if m2:
-                res.append((m2.group(3), m2.group(1), int(m2.group(2))))
+        m_if = re.match(r"^\d+:\s+([^:\s]+)", line)
+        m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)", line)
+        if not m:
+            continue
+        iface = m_if.group(1).split("@")[0].strip() if m_if else ""
+        if not iface:
+            m_dev = re.search(r"dev\s+(\S+)", line)
+            iface = m_dev.group(1) if m_dev else "eth0"
+        res.append((iface, m.group(1), int(m.group(2))))
     return res
 
 
@@ -266,8 +270,11 @@ def probe_host(ip: str, port: int, timeout: float = CONNECT_TIMEOUT,
     return info
 
 
-def _expand(cidr: str, cap: int) -> tuple[list[str], bool]:
-    """展开网段为地址列表（跳过网络号与广播），返回 (addrs, truncated)。"""
+def _expand(cidr: str, cap: int, self_ip: str = "") -> tuple[list[str], bool]:
+    """展开网段为地址列表（跳过网络号与广播），返回 (addrs, truncated)。
+
+    本机地址排在最前面：网段很大被截断时，至少先把自己和附近的地址扫到。
+    """
     try:
         net, prefix = cidr.split("/")
         prefix = int(prefix)
@@ -280,8 +287,15 @@ def _expand(cidr: str, cap: int) -> tuple[list[str], bool]:
     hosts = total - 2
     truncated = hosts > cap
     n = min(hosts, cap)
-    # 从网络号后第一个地址开始取，避免总是从 .1 开始（对等覆盖）
-    return [_int_to_ip(base + 1 + i) for i in range(n)], truncated
+    addrs = [_int_to_ip(base + 1 + i) for i in range(n)]
+    if self_ip:
+        try:
+            si = _ip_to_int(self_ip)
+            if base < si < base + total - 1:
+                addrs = [self_ip] + [a for a in addrs if a != self_ip][: n - 1]
+        except Exception:  # noqa: BLE001
+            pass
+    return addrs, truncated
 
 
 # ---------------------------------------------------------------------------
@@ -310,11 +324,12 @@ def scan(payload: dict | None = None) -> dict:
     for c in (extra or []):
         nets.append({"cidr": c, "iface": "手动填写", "kind": "manual", "self_ip": ""})
 
+    self_ips = {n.get("self_ip", "") for n in nets if n.get("self_ip")}
     targets: list[tuple[str, int, dict]] = []
     truncated = False
     meta = []
     for n in nets:
-        addrs, tr = _expand(n["cidr"], cap)
+        addrs, tr = _expand(n["cidr"], cap, n.get("self_ip", ""))
         truncated = truncated or tr
         meta.append({**n, "count": len(addrs), "truncated": tr})
         for a in addrs:
@@ -335,6 +350,7 @@ def scan(payload: dict | None = None) -> dict:
                 r["kind"] = net.get("kind", "lan")
                 r["iface"] = net.get("iface", "")
                 r["cidr"] = net.get("cidr", "")
+                r["is_self"] = ip in self_ips
             return r
         with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, max(8, len(targets)))) as ex:
             for r in ex.map(work, targets):

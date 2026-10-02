@@ -1866,13 +1866,14 @@ function renderScanResult(data) {
     const brandTxt = f.brand_label || f.brand || "NAS Safe";
     const defName = `${brandTxt} ${f.ip}`;
     const kind = (f.kind === "vpn") ? "chip" : topoKindFromBrand(f.brand);
-    html += `<div class="scan-item">
-      <label class="si-pick"><input type="checkbox" checked
+    const isSelf = !!f.is_self;
+    html += `<div class="scan-item${isSelf ? " self" : ""}">
+      <label class="si-pick"><input type="checkbox"${isSelf ? "" : " checked"}
         data-ip="${escapeHtml(f.ip)}" data-port="${f.port}" data-brand="${escapeHtml(f.brand || "generic_linux")}" data-kind="${escapeHtml(f.kind || "")}"></label>
       <div class="si-ico">${topoDeviceGlyph(kind)}</div>
       <div class="si-main">
         <input class="text-input si-name" value="${escapeHtml(defName)}" maxlength="24">
-        <div class="si-meta">${escapeHtml(f.ip)}:${f.port} · ${escapeHtml(brandTxt)} · ${escapeHtml(netTxt)}${f.need_auth ? " · 需要账号" : ""}</div>
+        <div class="si-meta">${escapeHtml(f.ip)}:${f.port} · ${escapeHtml(brandTxt)} · ${escapeHtml(netTxt)}${f.need_auth ? " · 需要账号" : ""}${isSelf ? " · 就是这台（已在控制台里，不用再加）" : ""}</div>
       </div>
     </div>`;
   }
