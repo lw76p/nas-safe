@@ -19,3 +19,6 @@ server/app.js
 server/app-*.js
 server/index.html
 server/style*.css
+
+# 含密码的本地环境文件（绝不入库）
+.env

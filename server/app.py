@@ -483,6 +483,37 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # 静默，避免污染日志
         pass
 
+    # -- Web 访问控制（Basic Auth）----------------------------------------
+    WEB_USER = os.environ.get("NASSAFE_WEB_USER", "nassafe")
+    WEB_PASS = os.environ.get("NASSAFE_WEB_PASS", "nassafe-dev-8848")
+
+    def _require_auth(self) -> bool:
+        expect = self.WEB_PASS
+        if not expect:
+            return True  # 未配置密码视为关闭（默认已有开发密码，不应走到这）
+        hdr = self.headers.get("Authorization", "")
+        if not hdr.startswith("Basic "):
+            self._send_401()
+            return False
+        try:
+            import base64
+            decoded = base64.b64decode(hdr[6:]).decode("utf-8", "replace")
+            user, _, pw = decoded.partition(":")
+        except Exception:  # noqa: BLE001
+            self._send_401()
+            return False
+        if user == self.WEB_USER and pw == expect:
+            return True
+        self._send_401()
+        return False
+
+    def _send_401(self) -> None:
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="NAS Safe"')
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     # -- 响应helpers ------------------------------------------------------
 
     def _send_json(self, payload: dict, status: int = 200) -> None:
@@ -527,6 +558,8 @@ class Handler(BaseHTTPRequestHandler):
     # -- 路由 -------------------------------------------------------------
 
     def do_GET(self):
+        if not self._require_auth():
+            return
         parsed = urlparse(self.path)
         route = parsed.path
         query = parse_qs(parsed.query)
@@ -756,6 +789,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": f"服务内部错误: {exc}"}, 500)
 
     def do_POST(self):
+        if not self._require_auth():
+            return
         route = urlparse(self.path).path
 
         try:
