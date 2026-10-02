@@ -45,6 +45,11 @@ EDITIONS: dict = {
         "remote_devices": False,                # 不支持异地组网设备
         "migrate": False,                       # 无一键换机迁移
         "smart_history": True,                  # 本机 SMART 历史属本机功能，全开
+        # 二期/三期能力开关（商业化分档）
+        "knowledge": False,                     # RAG 知识库（家庭版起）
+        "kb_quota": 0,                          # 知识库月度调用额度（0=无）
+        "emergency": False,                     # 应急响应自动化（专业版）
+        "photo_search": False,                  # 照片语义搜索（专业版）
         # 核心能力不设卡（安全能力免费档同样具备）
         "ransomware_detect": True,
         "snapshot": True,
@@ -69,6 +74,10 @@ EDITIONS: dict = {
         "remote_devices": False,
         "migrate": True,                        # 一键备份 / 换机迁移
         "smart_history": True,
+        "knowledge": True,                      # 家庭版开放 RAG 知识库
+        "kb_quota": 500,                        # 知识库月度额度 500 次（与管家分开计）
+        "emergency": False,
+        "photo_search": False,
         "ransomware_detect": True,
         "snapshot": True,
         "restore": True,
@@ -92,6 +101,10 @@ EDITIONS: dict = {
         "remote_devices": True,                 # 局域网 + 异地组网设备同时管
         "migrate": True,
         "smart_history": True,
+        "knowledge": True,                      # 专业版知识库不限量
+        "kb_quota": UNLIMITED,
+        "emergency": True,                      # 专业版应急响应自动化
+        "photo_search": True,                   # 专业版照片语义搜索
         "ransomware_detect": True,
         "snapshot": True,
         "restore": True,
@@ -173,4 +186,8 @@ def summary() -> dict:
         "max_devices": lim.get("max_devices", UNLIMITED),
         "can_migrate": bool(lim.get("migrate")),
         "console": lim.get("console", "full"),
+        "knowledge": bool(lim.get("knowledge")),
+        "kb_quota": lim.get("kb_quota", 0),
+        "emergency": bool(lim.get("emergency")),
+        "photo_search": bool(lim.get("photo_search")),
     }

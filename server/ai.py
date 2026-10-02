@@ -28,12 +28,12 @@ import storage  # 复用 state_dir()
 
 # 各供应商默认 base_url 与模型（本地 Ollama 不需要 key）
 PROVIDERS = {
-    "deepseek": {"base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat", "needs_key": True},
-    "openai":   {"base_url": "https://api.openai.com/v1",   "model": "gpt-4o-mini",  "needs_key": True},
-    "qwen":     {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus", "needs_key": True},
-    "zhipu":    {"base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4-flash", "needs_key": True},
-    "qiniu":    {"base_url": "https://api.qnaigc.com/v1",  "model": "deepseek-v3", "needs_key": True},
-    "ollama":   {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:7b", "needs_key": False},
+    "deepseek": {"base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat", "needs_key": True, "embed_model": ""},
+    "openai":   {"base_url": "https://api.openai.com/v1",   "model": "gpt-4o-mini",  "needs_key": True, "embed_model": "text-embedding-3-small"},
+    "qwen":     {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus", "needs_key": True, "embed_model": "text-embedding-v2"},
+    "zhipu":    {"base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4-flash", "needs_key": True, "embed_model": "embedding-2"},
+    "qiniu":    {"base_url": "https://api.qnaigc.com/v1",  "model": "deepseek-v3", "needs_key": True, "embed_model": ""},
+    "ollama":   {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:7b", "needs_key": False, "embed_model": "nomic-embed-text"},
 }
 
 
@@ -346,3 +346,39 @@ def answer(question: str, context: str = "", history: list | None = None) -> (st
             messages.append({"role": m["role"], "content": m["content"][:4000]})
     messages.append({"role": "user", "content": (f"背景：{context}\n\n问题：{question}" if context else question)})
     return _chat(messages, cfg)
+
+
+# ---------------------------------------------------------------------------
+# 对外：向量嵌入（RAG 知识库用，OpenAI 兼容 /embeddings）
+# ---------------------------------------------------------------------------
+
+def embed(text: str, cfg: dict | None = None, timeout: int = 60) -> list:
+    """文本 -> 向量。未配置 / 供应商不支持 / 调用失败均返回空列表。"""
+    cfg = cfg or load_config()
+    if not is_ready():
+        return []
+    prov = cfg.get("provider", "deepseek")
+    info = PROVIDERS.get(prov, PROVIDERS["deepseek"])
+    base = (cfg.get("base_url") or info["base_url"]).rstrip("/")
+    if prov == "ollama" and "localhost" in base:
+        base = _ollama_default_base()
+    # 嵌入模型优先级：配置项 embed_model > 供应商默认 > 对话模型
+    model = (cfg.get("embed_model") or info.get("embed_model")
+             or cfg.get("model") or info["model"])
+    api_key = cfg.get("api_key", "")
+    url = f"{base}/embeddings"
+    payload = {"model": model, "input": text}
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+        emb = (body.get("data") or [{}])[0].get("embedding") or []
+        return emb if isinstance(emb, list) else []
+    except urllib.error.URLError as exc:
+        return []
+    except Exception:  # noqa: BLE001
+        return []

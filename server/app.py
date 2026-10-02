@@ -80,6 +80,9 @@ import migrate  # noqa: E402  换机迁移（配置包导出 / 导入 / 路径�
 import auth      # noqa: E402  账号/会话/权限分级
 import editions  # noqa: E402  版本能力矩阵（免费版/家庭版/企业版）
 import licensing  # noqa: E402  一机一码授权激活（与 editions 配套）
+import knowledge  # noqa: E402  二期 RAG 知识库（家庭/专业版）
+import response   # noqa: E402  三期 应急响应自动化（专业版）
+import photo_search  # noqa: E402  三期 照片语义搜索（专业版，脚手架）
 
 # 通知通道类型 <- editions.alerts 能力键的映射（alerts 键见 editions.EDITIONS）
 _ALERT_CHANNEL_MAP = {
@@ -726,6 +729,32 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:  # noqa: BLE001
                     self._send_json({"ok": False, "error": str(exc)})
 
+            elif route == "/api/ai/kb/list":
+                # 知识库文档列表（家庭/专业版可见，免费版返回空 + 升级提示）
+                if not editions.limits().get("knowledge"):
+                    self._send_json({"ok": True, "docs": [], "upgrade": True,
+                                     "message": "知识库为家庭版专属功能"})
+                    return
+                self._send_json({"ok": True, "docs": knowledge.list_docs(),
+                                 "remaining": knowledge.quota_remaining()})
+
+            elif route == "/api/ai/emergency/report":
+                # 应急处置报告（专业版专属）
+                if not editions.limits().get("emergency"):
+                    self._send_json({"ok": False, "upgrade": True,
+                                     "error": "应急响应自动化为专业版专属功能"})
+                    return
+                self._send_json({"ok": True, **response.report()})
+
+            elif route == "/api/ai/photo/status":
+                # 照片语义搜索状态（专业版，脚手架）
+                if not editions.limits().get("photo_search"):
+                    self._send_json({"ok": False, "upgrade": True,
+                                     "error": "照片语义搜索为专业版专属功能"})
+                    return
+                self._send_json({"ok": True, "status": photo_search.STATUS,
+                                 "message": "照片语义搜索脚手架已就位，图像 embedding 接入后开放。"})
+
             elif route == "/api/anomalies":
                 # 统一异常列表（硬件/容量/趋势/防勒索告警），供网页端与桌面小助手共用同一套规则
                 self._send_json({"ok": True, "anomalies": anomalies.collect_anomalies(),
@@ -1336,6 +1365,119 @@ class Handler(BaseHTTPRequestHandler):
                     ai_butler.quota_incr()
                     self._send_json({"ok": True, "text": result,
                                      "remaining": ai_butler.quota_remaining()})
+
+            elif route.startswith("/api/ai/kb/"):
+                # 二期：RAG 知识库（家庭/专业版专属）
+                if not editions.limits().get("knowledge"):
+                    self._send_json({"ok": False, "upgrade": True,
+                                     "error": "知识库为家庭版专属功能，请升级家庭版。"})
+                    return
+                if route == "/api/ai/kb/ingest":
+                    if not ai.is_ready():
+                        raise StorageError("AI 未配置，请先到「设置」启用 AI 解读（需支持 embeddings 的模型）")
+                    title = (payload.get("title") or "").strip()
+                    text = payload.get("text")
+                    data_b64 = payload.get("data_base64")
+                    if data_b64:
+                        import base64
+                        raw = base64.b64decode(data_b64)
+                        # 写临时文件再摄入，便于复用文件解析（pdf/docx 等）
+                        import tempfile
+                        suf = (payload.get("ext") or "txt").lower().lstrip(".")
+                        tf = tempfile.NamedTemporaryFile(suffix="." + suf, delete=False)
+                        tf.write(raw); tf.close()
+                        try:
+                            res = knowledge.ingest_file(tf.name)
+                        finally:
+                            try:
+                                os.remove(tf.name)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        self._send_json({"ok": True, **res})
+                    elif text is not None:
+                        if not title:
+                            title = "粘贴内容-%d" % int(time.time())
+                        res = knowledge.ingest_text(title, text, kind="text")
+                        self._send_json({"ok": True, **res})
+                    else:
+                        raise StorageError("请提供 text 或 data_base64")
+                elif route == "/api/ai/kb/delete":
+                    doc_id = (payload.get("id") or "").strip()
+                    if not doc_id:
+                        raise StorageError("缺少 id")
+                    knowledge.delete_doc(doc_id)
+                    self._send_json({"ok": True})
+                elif route == "/api/ai/kb/query":
+                    question = (payload.get("question") or "").strip()
+                    if not question:
+                        raise StorageError("请先输入问题")
+                    if not ai.is_ready():
+                        raise StorageError("AI 未配置，请先到「设置」启用 AI 解读")
+                    ok, rem = knowledge.quota_check()
+                    if not ok:
+                        self._send_json({"ok": False, "quota": True, "remaining": 0,
+                                         "upgrade": True,
+                                         "error": "本月知识库调用已用完（家庭版 500 次/月），下月自动恢复或升级专业版不限量。"})
+                        return
+                    ans, err, sources = knowledge.query(question)
+                    if err:
+                        self._send_json({"ok": False, "error": err}, 400)
+                    elif ans is None:
+                        self._send_json({"ok": True, "text": err or "未命中知识库",
+                                         "sources": [], "remaining": knowledge.quota_remaining()})
+                    else:
+                        knowledge.quota_incr()
+                        titles = knowledge.doc_titles(sources)
+                        self._send_json({"ok": True, "text": ans,
+                                         "sources": [{"id": s, "title": titles.get(s, s)} for s in sources],
+                                         "remaining": knowledge.quota_remaining()})
+                else:
+                    raise StorageError("未知的知识库接口")
+
+            elif route.startswith("/api/ai/emergency/"):
+                # 三期：应急响应自动化（专业版专属）
+                if not editions.limits().get("emergency"):
+                    self._send_json({"ok": False, "upgrade": True,
+                                     "error": "应急响应自动化为专业版专属功能，请升级专业版。"})
+                    return
+                if route == "/api/ai/emergency/snapshot":
+                    vid = (payload.get("volume") or "").strip()
+                    if not vid:
+                        raise StorageError("请提供 volume（卷 id 或挂载点）")
+                    res = response.snapshot_now(vid, payload.get("label") or "")
+                    self._send_json({"ok": True, **res})
+                elif route == "/api/ai/emergency/isolate":
+                    path = (payload.get("path") or "").strip()
+                    if not path:
+                        raise StorageError("请提供 path")
+                    res = response.isolate(path)
+                    self._send_json({"ok": True, **res})
+                elif route == "/api/ai/emergency/clean":
+                    vid = (payload.get("volume") or "").strip()
+                    keep = int(payload.get("keep") or 10)
+                    if not vid:
+                        raise StorageError("请提供 volume")
+                    res = response.clean_old(vid, keep)
+                    self._send_json({"ok": True, **res})
+                else:
+                    raise StorageError("未知的应急接口")
+
+            elif route.startswith("/api/ai/photo/"):
+                # 三期：照片语义搜索（专业版专属，脚手架）
+                if not editions.limits().get("photo_search"):
+                    self._send_json({"ok": False, "upgrade": True,
+                                     "error": "照片语义搜索为专业版专属功能，请升级专业版。"})
+                    return
+                if route == "/api/ai/photo/index":
+                    root = (payload.get("root") or "").strip()
+                    res = photo_search.index_gallery(root)
+                    self._send_json(res)
+                elif route == "/api/ai/photo/search":
+                    q = (payload.get("query") or "").strip()
+                    res = photo_search.semantic_search(q)
+                    self._send_json(res)
+                else:
+                    raise StorageError("未知的照片检索接口")
 
             elif route == "/api/ai/local":
                 # 本地 AI 中转：浏览器直连用户电脑 Ollama 被 CORS 拦时的兜底通道。
