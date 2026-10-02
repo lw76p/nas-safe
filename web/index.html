@@ -370,6 +370,7 @@
 
     <div class="settings-layout">
       <nav class="settings-menu">
+        <button class="settings-tab" data-tab="license">版本与激活</button>
         <button class="settings-tab active" data-tab="notify">通知</button>
         <button class="settings-tab" data-tab="autosnap">自动快照</button>
         <button class="settings-tab" data-tab="daily">日报</button>
@@ -379,6 +380,22 @@
       </nav>
 
       <div class="settings-body">
+        <!-- 版本与激活 -->
+        <div class="settings-pane" data-pane="license">
+          <h3 class="sub-h">版本与激活</h3>
+          <div class="set-row"><span class="set-label">当前版本</span><span id="licEdition">—</span></div>
+          <div class="set-row"><span class="set-label">本机机器码</span><span id="licFp" style="font-family:monospace">—</span>
+            <button class="btn ghost" id="licCopyFp" style="margin-left:8px">复制</button></div>
+          <div id="licStatus" class="notice" style="display:none"></div>
+          <div class="set-row"><span class="set-label">激活码</span>
+            <input id="licKey" class="text-input" type="text" placeholder="粘贴厂商给你的激活码" style="flex:1"></div>
+          <div class="set-actions">
+            <button class="btn primary" id="licActivateBtn">激活</button>
+            <button class="btn ghost" id="licDeactivateBtn" style="display:none">取消授权</button>
+          </div>
+          <p class="muted" style="margin:6px 0 0">免费版：管 2 台设备、每卷留 3 份快照，防勒索/快照/取回全能用。家庭版：快照不限量、能一键换机、管 3 台设备。企业版：全部不设限。激活后马上生效，不用重启。</p>
+        </div>
+
         <!-- 通知 -->
         <div class="settings-pane active" data-pane="notify">
           <h3 class="sub-h">通知通道</h3>
@@ -572,6 +589,6 @@
 
 <div class="toast-root" id="toastRoot"></div>
 
-<script src="/app-20261002aa.js"></script>
+<script src="/app-20261002ab.js"></script>
 </body>
 </html>

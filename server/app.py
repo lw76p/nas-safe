@@ -76,6 +76,8 @@ import devices  # noqa: E402
 import netscan  # noqa: E402  联网设备自动扫描  跨品牌多设备总控制台（注册 + 分层聚合 + 健康汇总）
 import migrate  # noqa: E402  换机迁移（配置包导出 / 导入 / 路径映射 / 能力降级）
 import auth      # noqa: E402  账号/会话/权限分级
+import editions  # noqa: E402  版本能力矩阵（免费版/家庭版/企业版）
+import licensing  # noqa: E402  一机一码授权激活（与 editions 配套）
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
@@ -772,8 +774,13 @@ class Handler(BaseHTTPRequestHandler):
                     "config": daily_report.load_config(),
                     "last": daily_report.load_last(),
                 })
+            elif route == "/api/license":
+                # 授权信息：机器码 / 当前版本 / 是否已激活（设置页「版本与激活」用）
+                self._send_json({"ok": True, **licensing.info()})
             elif route == "/api/system":
-                self._send_json(build_system_info())
+                _sys_info = build_system_info()
+                _sys_info["edition"] = editions.summary()
+                self._send_json(_sys_info)
             elif route == "/api/devices":
                 # 跨品牌多设备总控制台：分层聚合所有设备健康快照
                 force = bool(query.get("force"))
@@ -791,7 +798,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
             elif route == "/api/migrate/export":
-                # 换机迁移：导出本机可移植配置包（供前端下载）
+                # 换机迁移：导出本机可移植配置包（供前端下载）。免费版不含换机迁移
+                if not editions.can("migrate"):
+                    self._send_json({"ok": False, "error":
+                        "换机迁移是家庭版/企业版功能，当前版本没有。升级后即可一键换机",
+                        "upgrade": True})
+                    return
                 self._send_json({"ok": True, "bundle": migrate.build_bundle()})
             elif route == "/api/volumes":
                 self._send_json(build_volume_list())
@@ -978,6 +990,10 @@ class Handler(BaseHTTPRequestHandler):
             if route in ("/api/agent/register", "/api/agent/heartbeat"):
                 payload = self._read_json()
                 if route == "/api/agent/register":
+                    _aok, _amsg = editions.check_devices(len(devices.load_devices()) + 1)
+                    if not _aok:
+                        self._send_json({"ok": False, "error": _amsg})
+                        return
                     self._send_json(devices.agent_register(payload.get("token"), {
                         "hostname": str(payload.get("hostname") or "")[:64],
                         "os": str(payload.get("os") or "")[:80],
@@ -1313,6 +1329,10 @@ class Handler(BaseHTTPRequestHandler):
 
             # ---------- 跨品牌多设备总控制台 ----------
             elif route == "/api/devices/add":
+                _dok, _dmsg = editions.check_devices(len(devices.load_devices()) + 1)
+                if not _dok:
+                    self._send_json({"ok": False, "error": _dmsg, "upgrade": True})
+                    return
                 self._send_json({"ok": True, **devices.add_device(payload)})
             elif route == "/api/devices/remove":
                 dev_id = (payload.get("id") or "").strip()
@@ -1341,6 +1361,11 @@ class Handler(BaseHTTPRequestHandler):
             # ---------- 换机迁移 ----------
             elif route == "/api/migrate/preview":
                 # 导入预览（dry_run）：计算路径映射 + 能力降级结果，不落地
+                if not editions.can("migrate"):
+                    self._send_json({"ok": False, "error":
+                        "换机迁移是家庭版/企业版功能，当前版本没有。升级后即可一键换机",
+                        "upgrade": True})
+                    return
                 bundle = payload.get("bundle")
                 ok, msg = migrate.validate_bundle(bundle)
                 if not ok:
@@ -1354,6 +1379,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "report": report})
             elif route == "/api/migrate/import":
                 # 正式导入：需 confirm=True；写入本机 state_dir
+                if not editions.can("migrate"):
+                    self._send_json({"ok": False, "error":
+                        "换机迁移是家庭版/企业版功能，当前版本没有。升级后即可一键换机",
+                        "upgrade": True})
+                    return
                 if payload.get("confirm") is not True:
                     self._send_json({
                         "ok": False,
@@ -1371,6 +1401,17 @@ class Handler(BaseHTTPRequestHandler):
                     dry_run=False,
                 )
                 self._send_json({"ok": True, "report": report})
+
+            # ---------- 版本与激活 ----------
+            elif route == "/api/license/activate":
+                key = str(payload.get("key") or "")
+                ok, msg = licensing.activate(key)
+                self._send_json({"ok": ok, "message": msg, **licensing.info()},
+                                200 if ok else 400)
+            elif route == "/api/license/deactivate":
+                ok, msg = licensing.deactivate()
+                self._send_json({"ok": ok, "message": msg, **licensing.info()},
+                                200 if ok else 500)
 
             else:
                 self._send_json({"ok": False, "error": f"未知接口: {route}"}, 404)

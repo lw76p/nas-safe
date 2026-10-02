@@ -75,8 +75,9 @@ EDITIONS: dict = {
     },
 }
 
-# 现阶段未接入授权，默认给完整能力（不影响既有部署行为）
-DEFAULT_EDITION = "home"
+# 授权层（licensing.py）已接入：无授权文件时就是免费版。
+# 免费版保留全部「能救命」的核心能力，砍的是规模/自动化/便利（见上方矩阵）。
+DEFAULT_EDITION = "free"
 
 _LICENSE_FILE = "license.json"
 

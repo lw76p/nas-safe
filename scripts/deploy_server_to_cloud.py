@@ -29,6 +29,8 @@ FILES = [
     "devices.py",
     "netscan.py",
     "auth.py",
+    "editions.py",
+    "licensing.py",
     "notify.py",
     "reset_admin.py",
     "snapshot_vss.py",
