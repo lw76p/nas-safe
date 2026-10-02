@@ -443,7 +443,7 @@ def find_snapshot(volume_id: str, snapshot_id: str) -> "storage.Snapshot":
     for vol in storage.list_all_volumes():
         if (vol.volume_id or vol.mountpoint) == volume_id:
             for snap in storage.list_all_snapshots(vol):
-                if snap.snapshot_id == snapshot_id:
+                if snapshot_id in (snap.snapshot_id, snap.name):
                     return snap
     raise StorageError(f"未找到快照: {volume_id}/{snapshot_id}")
 

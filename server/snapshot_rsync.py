@@ -248,6 +248,7 @@ def list_snapshots(volume) -> list:
             readonly=True,
             description=desc,
             fs_type="rsync",
+            snapshot_id=name,          # 目录名即稳定唯一 id（浏览/取回统一入口靠它定位）
             vital=bool(meta.get("vital", False)),
             backend="fs",
         ))
@@ -407,6 +408,7 @@ def create_snapshot(volume, name: str, vital: bool = True):
         description=f"硬链接增量 · 共 {stats.get('files', 0)} 个文件"
                     f"（本次新增 {stats.get('copied', 0)}）",
         fs_type="rsync",
+        snapshot_id=os.path.basename(dst),  # 目录名即稳定唯一 id
         vital=bool(vital),
         backend="fs",
     )
