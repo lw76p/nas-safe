@@ -71,6 +71,8 @@ import duplicates  # noqa: E402  重复文件清理（只读报告 + 隔离式�
 import junk  # noqa: E402  磁盘垃圾清理（回收站/缩略图/Docker缓存/旧日志，只读报告+按类清理）
 import daily_report  # noqa: E402  每日健康日报（定时聚合快照/告警/空间/硬盘，复用通知链路推送）
 import smartd  # noqa: E402  硬盘 SMART 健康采集（跨品牌，smartctl 多路径探测 + QTS 包兜底）
+import devices  # noqa: E402  跨品牌多设备总控制台（注册 + 分层聚合 + 健康汇总）
+import migrate  # noqa: E402  换机迁移（配置包导出 / 导入 / 路径映射 / 能力降级）
 
 HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NASSAFE_PORT", "8848"))
@@ -652,6 +654,13 @@ class Handler(BaseHTTPRequestHandler):
                 })
             elif route == "/api/system":
                 self._send_json(build_system_info())
+            elif route == "/api/devices":
+                # 跨品牌多设备总控制台：分层聚合所有设备健康快照
+                force = bool(query.get("force"))
+                self._send_json({"ok": True, **devices.collect_all(force=force)})
+            elif route == "/api/migrate/export":
+                # 换机迁移：导出本机可移植配置包（供前端下载）
+                self._send_json({"ok": True, "bundle": migrate.build_bundle()})
             elif route == "/api/volumes":
                 self._send_json(build_volume_list())
             elif route == "/api/snapshots":
@@ -1071,6 +1080,52 @@ class Handler(BaseHTTPRequestHandler):
                     cfg["minute"] = m
                 daily_report.save_config(cfg)
                 self._send_json({"ok": True, "config": cfg})
+
+            # ---------- 跨品牌多设备总控制台 ----------
+            elif route == "/api/devices/add":
+                self._send_json({"ok": True, **devices.add_device(payload)})
+            elif route == "/api/devices/remove":
+                dev_id = (payload.get("id") or "").strip()
+                if not dev_id:
+                    raise StorageError("缺少 id 参数")
+                self._send_json({"ok": True, **devices.remove_device(dev_id)})
+            elif route == "/api/devices/refresh":
+                # 强制刷新聚合（忽略远程缓存，立即重拉）
+                self._send_json({"ok": True, **devices.collect_all(force=True)})
+
+            # ---------- 换机迁移 ----------
+            elif route == "/api/migrate/preview":
+                # 导入预览（dry_run）：计算路径映射 + 能力降级结果，不落地
+                bundle = payload.get("bundle")
+                ok, msg = migrate.validate_bundle(bundle)
+                if not ok:
+                    raise StorageError(msg)
+                report = migrate.apply_bundle(
+                    bundle,
+                    path_map=payload.get("path_map") or {},
+                    target_brand=payload.get("target_brand") or None,
+                    dry_run=True,
+                )
+                self._send_json({"ok": True, "report": report})
+            elif route == "/api/migrate/import":
+                # 正式导入：需 confirm=True；写入本机 state_dir
+                if payload.get("confirm") is not True:
+                    self._send_json({
+                        "ok": False,
+                        "error": "导入会覆盖本机配置，需要 confirm=true 二次确认",
+                    }, 400)
+                    return
+                bundle = payload.get("bundle")
+                ok, msg = migrate.validate_bundle(bundle)
+                if not ok:
+                    raise StorageError(msg)
+                report = migrate.apply_bundle(
+                    bundle,
+                    path_map=payload.get("path_map") or {},
+                    target_brand=payload.get("target_brand") or None,
+                    dry_run=False,
+                )
+                self._send_json({"ok": True, "report": report})
 
             else:
                 self._send_json({"ok": False, "error": f"未知接口: {route}"}, 404)

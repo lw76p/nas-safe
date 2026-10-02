@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/style-20261002b.css">
+<link rel="stylesheet" href="/style-20261002f.css">
 </head>
 <body>
 
@@ -38,7 +38,8 @@
 
 <!-- 主导航：分区查看，避免单页过长 -->
 <nav class="tabs" id="mainTabs" aria-label="主导航">
-  <button class="tab active" data-view="home">▦ 总览</button>
+  <button class="tab active" data-view="console">🖥 设备控制台</button>
+  <button class="tab" data-view="home">▦ 本机总览</button>
   <button class="tab" data-view="snapshots">◷ 快照时间轴</button>
   <button class="tab" data-view="monitor"><span id="monitorDot" class="monitor-dot monitor-dot-off">◉</span> 实时监控</button>
   <button class="tab" data-view="dups">⧉ 重复文件</button>
@@ -57,7 +58,84 @@
     </div>
   </section>
 
-  <!-- 系统仪表盘（主页顶部，按能力渲染，15s 自动刷新） -->
+  <!-- 跨品牌多设备总控制台（主界面：分层分级呈现所有 NAS 设备） -->
+  <section class="panel zone zone-monitor" id="consolePanel" data-view="console">
+    <div class="panel-head">
+      <div class="zone-head">
+        <span class="zone-ico">🖥</span>
+        <div>
+          <h2>设备控制台</h2>
+          <p class="sub">跨品牌多设备统一管控 · 自动识别各品牌 NAS 与自建设备 · 分层分级呈现</p>
+        </div>
+      </div>
+      <div class="panel-actions">
+        <button class="btn ghost" id="consoleRefreshBtn">刷新</button>
+        <button class="btn primary" id="addDeviceBtn">＋ 添加设备</button>
+      </div>
+    </div>
+
+    <!-- 总体态势条 -->
+    <div class="console-overview" id="consoleOverview">
+      <div class="cov-card"><span class="cov-num" id="covDevices">—</span><span class="cov-label">设备</span></div>
+      <div class="cov-card"><span class="cov-num" id="covOnline">—</span><span class="cov-label">在线</span></div>
+      <div class="cov-card"><span class="cov-num" id="covDisks">—</span><span class="cov-label">硬盘总数</span></div>
+      <div class="cov-card cov-risk"><span class="cov-num" id="covRisk">—</span><span class="cov-label">需关注硬盘</span></div>
+      <div class="cov-card"><span class="cov-num" id="covSnaps">—</span><span class="cov-label">受保护快照</span></div>
+      <div class="cov-card cov-risk"><span class="cov-num" id="covUnprot">—</span><span class="cov-label">未保护卷</span></div>
+    </div>
+
+    <!-- 设备分组树 -->
+    <div id="consoleGroups" class="console-groups">
+      <p class="muted">正在汇总各设备状态…</p>
+    </div>
+
+    <!-- 换机迁移 -->
+    <div class="migrate-card">
+      <div class="migrate-head">
+        <span class="zone-ico">⇄</span>
+        <div>
+          <h3>换机迁移 · 一键搬家用新设备</h3>
+          <p class="sub">把本机的通知、自动快照、日报、AI、受保护路径等设置打包，导入到另一台 NAS（可跨品牌）。换盘符时填好路径映射即可自动改写。</p>
+        </div>
+      </div>
+      <div class="migrate-actions">
+        <button class="btn ghost" id="exportMigBtn">⬇ 导出本机配置</button>
+        <label class="btn primary" for="importMigFile">⬆ 选择迁移包导入</label>
+        <input type="file" id="importMigFile" accept=".json,application/json" hidden>
+      </div>
+      <div id="migPathMap" class="mig-pathmap" hidden>
+        <div class="set-row">
+          <span class="set-label">旧共享根</span>
+          <input id="migOldRoot" class="text-input" placeholder="如 /share/CACHEDEV2_DATA">
+        </div>
+        <div class="set-row">
+          <span class="set-label">新共享根</span>
+          <input id="migNewRoot" class="text-input" placeholder="如 /volume1">
+        </div>
+        <div class="set-row">
+          <span class="set-label">新品牌</span>
+          <select id="migTargetBrand" class="sel-input">
+            <option value="">自动识别本机</option>
+            <option value="qnap">威联通 QNAP</option>
+            <option value="synology">群晖 Synology</option>
+            <option value="ugreen">绿联 UGOS</option>
+            <option value="feiniu">飞牛 fnOS</option>
+            <option value="truenas">TrueNAS</option>
+            <option value="omv">OpenMediaVault</option>
+            <option value="unraid">Unraid</option>
+            <option value="generic_linux">通用 Linux / 自建设备</option>
+          </select>
+        </div>
+        <div class="set-actions">
+          <button class="btn ghost" id="migPreviewBtn">预览变更</button>
+          <button class="btn primary" id="migApplyBtn">应用导入</button>
+        </div>
+        <div id="migPreview" class="mig-preview notice" hidden></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 系统仪表盘（本机总览顶部，按能力渲染，15s 自动刷新） -->
   <section class="panel zone zone-monitor" id="dashboardPanel" data-view="home">
     <div class="panel-head">
       <div class="zone-head">
@@ -416,6 +494,6 @@
 
 <div class="toast-root" id="toastRoot"></div>
 
-<script src="/app-20261002a.js"></script>
+<script src="/app-20261002f.js"></script>
 </body>
 </html>
