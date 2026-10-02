@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
 
 import storage  # noqa: E402
@@ -136,6 +137,7 @@ def collect_local_summary(dev: dict) -> dict:
         "host": "", "port": 0,
         "last_seen": time.time(),
         "note": dev.get("note", ""),
+        "agent": {"status": "installed", "label": "监控中心"},
         "smart": {"available": False},
         "snapshot": {"total_units": 0, "protected_units": 0,
                      "unprotected_units": 0, "snap_count": 0},
@@ -200,6 +202,7 @@ def collect_remote_summary(dev: dict) -> dict:
         "type": "remote", "enabled": dev.get("enabled", True),
         "status": "offline", "host": dev.get("host", ""), "port": dev.get("port", 0),
         "last_seen": dev.get("last_seen", 0), "note": dev.get("note", ""),
+        "agent": dev.get("agent") or {},
         "smart": {"available": False}, "snapshot": {"total_units": 0, "protected_units": 0,
                                                    "unprotected_units": 0, "snap_count": 0},
         "guard": {"level": "ok", "label": "未知"},
@@ -317,6 +320,8 @@ def add_device(payload: dict) -> dict:
             d["enabled"] = True
             d["net_kind"] = (payload.get("net_kind") or d.get("net_kind") or "").strip()
             d["brand_label"] = (payload.get("brand_label") or d.get("brand_label") or "").strip()
+            if payload.get("agent_request"):
+                d["agent"] = _agent_pending(d.get("agent"))
             save_devices(devs)
             return {"ok": True, "id": d.get("id"), "updated": True}
 
@@ -335,9 +340,111 @@ def add_device(payload: dict) -> dict:
         "note": "",
         "net_kind": (payload.get("net_kind") or "").strip(),
         "brand_label": (payload.get("brand_label") or "").strip(),
+        "agent": _agent_pending(None) if payload.get("agent_request") else {},
     })
     save_devices(devs)
     return {"ok": True, "id": dev_id}
+
+
+# ---------------------------------------------------------------------------
+# 轻量代理（v0：回连注册 + 心跳，后续扩展快照/迁移指令通道）
+# ---------------------------------------------------------------------------
+
+def _agent_pending(cur: dict | None) -> dict:
+    """生成/复用「待安装」状态，令牌不变避免重复安装命令失效。"""
+    ag = dict(cur or {})
+    if ag.get("status") != "installed":
+        ag["status"] = "pending"
+        if not ag.get("token"):
+            ag["token"] = secrets.token_hex(8)
+        ag["requested_at"] = time.time()
+    return ag
+
+
+def set_agent_request(dev_id: str) -> dict:
+    """中控里手动补装：把设备标记为待装并下发专属安装令牌。"""
+    devs = load_devices()
+    hit = None
+    for d in devs:
+        if d.get("id") == dev_id:
+            hit = d
+            break
+    if hit is None:
+        raise storage.StorageError("设备不存在")
+    hit["agent"] = _agent_pending(hit.get("agent"))
+    save_devices(devs)
+    return {"ok": True, "id": dev_id, "agent": hit["agent"]}
+
+
+def _find_by_agent_token(devs: list, token: str):
+    token = (token or "").strip()
+    if not token:
+        return None
+    for d in devs:
+        if (d.get("agent") or {}).get("token") == token:
+            return d
+    return None
+
+
+def agent_register(token: str, info: dict | None = None) -> dict:
+    """被控端运行安装脚本后回连注册：标记为已安装。"""
+    devs = load_devices()
+    hit = _find_by_agent_token(devs, token)
+    if hit is None:
+        raise storage.StorageError("安装令牌无效")
+    ag = hit.get("agent") or {}
+    ag["status"] = "installed"
+    ag["installed_at"] = time.time()
+    if info:
+        ag["info"] = info
+    hit["agent"] = ag
+    hit["last_seen"] = time.time()
+    save_devices(devs)
+    return {"ok": True, "id": hit.get("id"), "name": hit.get("name")}
+
+
+def agent_heartbeat(token: str) -> dict:
+    """被控端每分钟心跳：更新在线时间。"""
+    devs = load_devices()
+    hit = _find_by_agent_token(devs, token)
+    if hit is None:
+        return {"ok": False, "error": "安装令牌无效"}
+    ag = hit.get("agent") or {}
+    ag["last_checkin"] = time.time()
+    if ag.get("status") != "installed":
+        ag["status"] = "installed"
+        ag.setdefault("installed_at", time.time())
+    hit["agent"] = ag
+    hit["last_seen"] = time.time()
+    save_devices(devs)
+    return {"ok": True}
+
+
+AGENT_INSTALL_TEMPLATE = """#!/bin/sh
+# NAS Safe 轻量代理（v0）：只做「回连注册 + 每分钟心跳」，只读，不改系统配置
+CENTER="__CENTER__"
+TOKEN="__TOKEN__"
+echo "{\\"token\\":\\"$TOKEN\\"}" > /tmp/.nassafe_hb.json 2>/dev/null || exit 1
+HB="curl -sS -X POST $CENTER/api/agent/heartbeat -H Content-Type:application/json -d @/tmp/.nassafe_hb.json"
+# 注册：告诉中控这台机器装好了
+curl -sS -X POST "$CENTER/api/agent/register" -H Content-Type:application/json \\
+  -d "{\\"token\\":\\"$TOKEN\\",\\"hostname\\":\\"$(hostname 2>/dev/null || echo unknown)\\",\\"os\\":\\"$(uname 2>/dev/null)\\"}" >/dev/null 2>&1 || true
+# 心跳：优先写 crontab（重启也在）；写不进就先跑个后台循环
+if command -v crontab >/dev/null 2>&1; then
+  ( crontab -l 2>/dev/null | grep -v nassafe-agent; echo "* * * * * $HB >/dev/null 2>&1 # nassafe-agent" ) | crontab - >/dev/null 2>&1 || true
+fi
+( while :; do $HB >/dev/null 2>&1; sleep 60; done ) >/dev/null 2>&1 &
+echo "[NAS Safe] 代理已安装，已回连中控。"
+"""
+
+
+def agent_install_script(token: str, center: str) -> str:
+    devs = load_devices()
+    hit = _find_by_agent_token(devs, token)
+    if hit is None:
+        raise storage.StorageError("安装令牌无效，请先在中控「安装轻量代理」里重新生成")
+    center = (center or "").rstrip("/")
+    return AGENT_INSTALL_TEMPLATE.replace("__CENTER__", center).replace("__TOKEN__", token)
 
 
 def _default_local_name(dev: dict | None = None) -> str:

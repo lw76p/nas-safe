@@ -597,7 +597,9 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         # 公开接口：健康检查、认证相关、静态文件；其余都需要登录
-        public_api = ("/api/health", "/api/auth/setup", "/api/auth/check", "/api/auth/logout")
+        # /api/agent/install.sh 公开的原因：被控设备无法登录中控，靠一次性安装令牌鉴权
+        public_api = ("/api/health", "/api/auth/setup", "/api/auth/check", "/api/auth/logout",
+                      "/api/agent/install.sh")
         needs_auth = route.startswith("/api/") and route not in public_api
 
         try:
@@ -749,6 +751,18 @@ class Handler(BaseHTTPRequestHandler):
                 # 跨品牌多设备总控制台：分层聚合所有设备健康快照
                 force = bool(query.get("force"))
                 self._send_json({"ok": True, **devices.collect_all(force=force)})
+            elif route == "/api/agent/install.sh":
+                # 轻量代理安装脚本（公开 + 一次性令牌鉴权，被控设备跑这条命令回连中控）
+                token = (query.get("t") or [""])[0].strip()
+                host = self.headers.get("Host") or ""
+                scheme = (self.headers.get("X-Forwarded-Proto") or "http").strip()
+                script = devices.agent_install_script(token, f"{scheme}://{host}")
+                body = script.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/x-shellscript; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
             elif route == "/api/migrate/export":
                 # 换机迁移：导出本机可移植配置包（供前端下载）
                 self._send_json({"ok": True, "bundle": migrate.build_bundle()})
@@ -886,6 +900,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+                return
+
+            # 轻量代理回连接口：被控设备无法登录中控，改用安装令牌鉴权（不走会话）
+            if route in ("/api/agent/register", "/api/agent/heartbeat"):
+                payload = self._read_json()
+                if route == "/api/agent/register":
+                    self._send_json(devices.agent_register(payload.get("token"), {
+                        "hostname": str(payload.get("hostname") or "")[:64],
+                        "os": str(payload.get("os") or "")[:80],
+                    }))
+                else:
+                    self._send_json(devices.agent_heartbeat(payload.get("token")))
                 return
 
             # 除认证接口外，所有 POST 都需要管理员权限（功能开关/写操作）
@@ -1230,6 +1256,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not dev_id:
                     raise StorageError("缺少 id 参数")
                 self._send_json({"ok": True, **devices.rename_device(dev_id, name)})
+            elif route == "/api/devices/agent":
+                # 手动补装轻量代理：标记待装并生成专属安装令牌
+                dev_id = (payload.get("id") or "").strip()
+                if not dev_id:
+                    raise StorageError("缺少 id 参数")
+                self._send_json(devices.set_agent_request(dev_id))
             elif route == "/api/devices/refresh":
                 # 强制刷新聚合（忽略远程缓存，立即重拉）
                 self._send_json({"ok": True, **devices.collect_all(force=True)})
