@@ -897,7 +897,16 @@ class Handler(BaseHTTPRequestHandler):
                     raise StorageError("请先创建管理员账号")
                 username = (payload.get("username") or "").strip()
                 password = payload.get("password") or ""
-                sess = auth.login(username, password)
+                try:
+                    sess = auth.login(username, password)
+                except ValueError as exc:
+                    # 密码错误/限速是预期内的客户端错误，回 401 而不是 500
+                    self.send_response(401)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"ok": False, "error": str(exc)}).encode("utf-8"))
+                    return
                 self.send_response(200)
                 self._set_session_cookie(sess["sid"], sess["max_age"])
                 self.send_header("Content-Type", "application/json; charset=utf-8")
