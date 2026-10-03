@@ -1138,6 +1138,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(storage.sync_protected_baseline())
                 return
 
+            if route == "/api/snapshots/vss_cleanup":
+                # Windows VSS 孤儿影子副本清理：confirm=false 只预览，true 才删
+                try:
+                    from snapshot_vss import cleanup_orphans
+                except Exception:  # noqa: BLE001
+                    self._send_json({"ok": False,
+                                     "error": "本机不是 Windows 或缺少 VSS 后端"}, 400)
+                    return
+                self._send_json(cleanup_orphans(dry_run=payload.get("confirm") is not True))
+
             if route == "/api/snapshot/create":
                 volume = (payload.get("volume") or "").strip()
                 if not volume:

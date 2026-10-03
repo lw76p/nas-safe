@@ -72,7 +72,7 @@ def _need_windows() -> None:
 def _need_admin() -> None:
     if not is_admin():
         raise StorageError(
-            "创建/删除卷影副本需要管理员权限：请以管理员身份重新启动 NAS Safe"
+            "创建/删除卷影副本需要管理员权限：请以管理员身份重新启动 TS Safe"
         )
 
 
@@ -287,6 +287,52 @@ def _prune_repo(repo: str) -> None:
             os.remove(os.path.join(repo, f))
         except OSError:
             pass
+
+
+def cleanup_orphans(dry_run: bool = True) -> dict:
+    """清理「VSS 里有影子副本、但本机仓库元数据已丢」的系统侧孤儿。
+
+    场景：换 state 目录 / 重装后仓库元数据没了，ClientAccessible 影子副本
+    仍占着 VSS 存储区（旧版管理方式/手工测试也会留下）。只删未登记的
+    ClientAccessible 影子副本；dry_run=True 只统计不删除。
+    """
+    _need_windows()
+    _need_admin()
+    tracked: set = set()
+    root = _state_root()
+    if os.path.isdir(root):
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                if not f.endswith(".json"):
+                    continue
+                try:
+                    meta = _read_meta(os.path.join(dirpath, f))
+                    sid = (meta.get("shadow_id") or "").strip().lower()
+                    if sid:
+                        tracked.add(sid)
+                except Exception:  # noqa: BLE001
+                    pass
+    ps = ("Get-CimInstance Win32_ShadowCopy | ForEach-Object { "
+          "Write-Output ($_.ID + '|' + $_.DeviceObject + '|' + $_.InstallDate) }")
+    out = _run_powershell(ps)
+    found: list = []
+    killed: list = []
+    for line in out.splitlines():
+        line = line.strip()
+        if "|" not in line:
+            continue
+        parts = line.split("|", 2)
+        sid = parts[0].strip()
+        if not sid or sid.lower() in tracked:
+            continue
+        item = {"shadow_id": sid,
+                "device": parts[1].strip() if len(parts) > 1 else "",
+                "installed": parts[2].strip() if len(parts) > 2 else ""}
+        found.append(item)
+        if not dry_run and _delete_shadow(sid):
+            killed.append(sid)
+    return {"ok": True, "orphans": found, "deleted": killed,
+            "dry_run": bool(dry_run), "tracked": len(tracked)}
 
 
 # ---------------------------------------------------------------------------
