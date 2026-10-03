@@ -92,7 +92,7 @@ EDITIONS: dict = {
         "max_snapshots": UNLIMITED,
         "auto_snapshot_intervals": ["hourly", "daily", "weekly"],
         "console": "full",
-        "alerts": ["email", "wechat", "webhook", "bark", "ntfy", "feishu", "custom"],
+        "alerts": ["email", "wechat", "webhook", "bark", "ntfy", "feishu", "telegram", "custom"],
         "custom_alerts": True,                  # 自行输入接口并推送
         "ai_cloud_sources": UNLIMITED,
         "ai_local": True,

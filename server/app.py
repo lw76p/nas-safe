@@ -92,6 +92,7 @@ _ALERT_CHANNEL_MAP = {
     "bark": ("bark",),
     "ntfy": ("ntfy",),
     "feishu": ("feishu",),
+    "telegram": ("telegram",),
     "custom": ("custom",),
 }
 
@@ -1218,7 +1219,7 @@ class Handler(BaseHTTPRequestHandler):
                 if _bad:
                     self._send_json({"ok": False, "upgrade": True,
                                      "error": "通知通道（" + "、".join(_bad) +
-                                     "）是专业版功能，当前版本没有。升级后可用群机器人、飞书、手机推送等更多方式"})
+                                     "）是专业版功能，当前版本没有。升级后可用群机器人、飞书、手机推送、Telegram 等更多方式"})
                     return
                 notify.save_config(cfg)
                 self._send_json({"ok": True, "config": _mask_notify_cfg(notify.load_config())})
@@ -1379,6 +1380,30 @@ class Handler(BaseHTTPRequestHandler):
                         "；".join(f"[{a.get('level','')}]{a.get('type','')}" for a in alerts[:8])))
                 except Exception:  # noqa: BLE001
                     pass
+                if payload.get("use_kb"):
+                    # 结合知识库（家庭/专业版）：召回知识库片段注入上下文；配额用完/异常则静默跳过
+                    try:
+                        ok_kb, _rem = knowledge.quota_check()
+                        if ok_kb:
+                            hits = knowledge.search(question, top_k=4)
+                            if hits:
+                                refs = "\n\n".join("[资料] " + h["text"] for h in hits)
+                                ctx_parts.append("用户知识库中可能相关的资料（回答时可参考并说明来源）：\n" + refs)
+                                knowledge.quota_incr()
+                    except Exception:  # noqa: BLE001
+                        pass
+                if payload.get("use_kb"):
+                    # 结合知识库（家庭/专业版）：召回知识库片段注入上下文；配额用完/异常则静默跳过
+                    try:
+                        ok_kb, _rem = knowledge.quota_check()
+                        if ok_kb:
+                            hits = knowledge.search(question, top_k=4)
+                            if hits:
+                                refs = "\n\n".join("[资料] " + h["text"] for h in hits)
+                                ctx_parts.append("用户知识库中可能相关的资料（回答时可参考并说明来源）：\n" + refs)
+                                knowledge.quota_incr()
+                    except Exception:  # noqa: BLE001
+                        pass
                 history = payload.get("history") if isinstance(payload.get("history"), list) else None
                 result, err = ai.answer(question, context="\n".join(ctx_parts), history=history)
                 if err:

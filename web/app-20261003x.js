@@ -1213,7 +1213,7 @@ async function callLocalAIViaNAS(question, context, history) {
   return data.text;
 }
 
-async function routeAI(question, cloudEndpoint, context, history, extra) {
+async function routeAI(question, cloudEndpoint, context, history) {
   const prov = ($("aiProvider") && $("aiProvider").value) || "";
   if (prov === "ollama") {
     // 统一返回 {text} 对象——调用方（问AI/解读/异常文案）都按 data.text 取答案；
@@ -1234,7 +1234,6 @@ async function routeAI(question, cloudEndpoint, context, history, extra) {
   else {
     body = context ? { question, context } : { question };
     if (history && history.length) body.history = history; // 多轮上下文
-    if (extra && typeof extra === "object") Object.assign(body, extra);
   }
   return await api(cloudEndpoint, { method: "POST", body: JSON.stringify(body) }, 120000);
 }
@@ -3040,7 +3039,7 @@ function setAiChatMode(mode) {
   if (hint) {
     hint.textContent = aiChatMode === "butler"
       ? "管家模式：AI 可调用本地工具执行建快照、列存储单元、查异常改动、搜文件、看健康。"
-      : "问答模式：AI 根据当前系统状态和告警回答，可勾选下方「结合知识库」。";
+      : "问答模式：AI 根据当前系统状态和告警进行回答。";
   }
 }
 
@@ -3053,10 +3052,9 @@ function aiAsk(mode = "ask") {
     `<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
        <button id="aiModeAsk" class="btn ${aiChatMode === "ask" ? "primary" : "ghost"}" onclick="setAiChatMode('ask')">问答模式</button>
        <button id="aiModeButler" class="btn ${aiChatMode === "butler" ? "primary" : "ghost"}" onclick="setAiChatMode('butler')">管家模式</button>
-       <span id="aiModeHint" class="muted" style="font-size:12px;flex:1">${aiChatMode === "butler" ? "管家模式：AI 可调用本地工具执行建快照、列存储单元、查异常改动、搜文件、看健康。" : "问答模式：AI 根据当前系统状态和告警回答，可勾选下方「结合知识库」。"}</span>
+       <span id="aiModeHint" class="muted" style="font-size:12px;flex:1">${aiChatMode === "butler" ? "管家模式：AI 可调用本地工具执行建快照、列存储单元、查异常改动、搜文件、看健康。" : "问答模式：AI 根据当前系统状态和告警进行回答。"}</span>
      </div>
      <div id="aiChatLog" style="flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 2px 10px;margin-bottom:10px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;justify-content:flex-start"></div>
-     <label id="aiKbRow" class="chk-inline" style="display:none;margin:8px 0 0"><input type="checkbox" id="aiKbChk"> 结合知识库回答（文档在「设置 → 知识库」管理）</label>
      <textarea id="aiChatInput" class="text-input" rows="3" style="display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:86px;line-height:1.6;flex:none"
        placeholder="${aiChatMode === "butler" ? "直接下指令或提问，例如：帮我建一张快照 / 看看有没有异常改动 / 搜一下简历 / 硬盘健康吗？" : "输入问题，回车发送（Shift+回车换行）。AI 答完可继续追问或补充信息。"}"></textarea>
      <p class="muted" style="margin:8px 0 0">回答基于当前系统状态与告警，仅供参考；关键操作请以人工判断为准。</p>`,
@@ -3074,16 +3072,6 @@ function aiAsk(mode = "ask") {
   if (box) { box.style.maxWidth = "880px"; box.style.width = "94vw"; box.style.maxHeight = "88vh"; box.style.height = "88vh"; }
   const mbody = $("modalBody");
   if (mbody) { mbody.style.display = "flex"; mbody.style.flexDirection = "column"; mbody.style.overflowY = "hidden"; }
-  // 知识库勾选：仅家庭/专业版显示（免费版隐藏；结果缓存避免每次弹窗都请求）
-  const kbRow = $("aiKbRow");
-  if (window.__tssafeEdition === undefined) {
-    api("/api/license").then((d) => {
-      window.__tssafeEdition = d.edition || "free";
-      if (kbRow) kbRow.style.display = window.__tssafeEdition === "free" ? "none" : "";
-    }).catch(() => {});
-  } else if (kbRow) {
-    kbRow.style.display = window.__tssafeEdition === "free" ? "none" : "";
-  }
   renderAiChat();
   const ta = $("aiChatInput");
   if (ta) {
@@ -3115,9 +3103,7 @@ async function sendAiChat() {
   try {
     const endpoint = aiChatMode === "butler" ? "/api/ai/butler" : "/api/ai/ask";
     // history 不含本条（本条作为 question 单传）；最多带最近 20 条防爆
-    const kbChk = $("aiKbChk");
-    const extra = (aiChatMode === "ask" && kbChk && kbChk.checked) ? { use_kb: true } : undefined;
-    const data = await routeAI(q, endpoint, "", aiChatHistory.slice(0, -1).slice(-20), extra);
+    const data = await routeAI(q, endpoint, "", aiChatHistory.slice(0, -1).slice(-20));
     let ans = "";
     if (data && typeof data === "object") {
       ans = data.text;
