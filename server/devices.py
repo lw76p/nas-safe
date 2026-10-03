@@ -620,11 +620,16 @@ try {
   Invoke-RestMethod -Method Post -Uri "$Center/api/agent/register" -ContentType "application/json" -Body $reg -TimeoutSec 8 | Out-Null
 } catch {}
 
-# 3) Scheduled task: heartbeat every minute (survives reboot)
-$act = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Dir\heartbeat.ps1`""
+# 3) Scheduled task: heartbeat every minute (survives reboot; wscript wrapper = no console flash)
+#    计划任务直接启动 powershell.exe 必闪黑框一瞬（-WindowStyle Hidden 挡不住），
+#    必须经 wscript + vbs 以完全隐藏窗口的方式拉起。
+$vbs = Join-Path $Dir "heartbeat.vbs"
+$vbsline = 'CreateObject("Wscript.Shell").Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""' + "$Dir\heartbeat.ps1" + '"", 0, False'
+$vbsline | Set-Content -Encoding ASCII -Path $vbs
+$act = "wscript.exe `"$vbs`""
 schtasks /Create /F /SC MINUTE /MO 1 /TN "NassafeAgent" /TR $act | Out-Null
-# Run once right now so the console flips to 已装 immediately
-& (Join-Path $Dir "heartbeat.ps1")
+# Run once right now (windowless) so the console flips to installed immediately
+wscript.exe $vbs
 Write-Host "[TS Safe] Windows agent installed OK. Heartbeat task: NassafeAgent (every minute)."
 '''
 
