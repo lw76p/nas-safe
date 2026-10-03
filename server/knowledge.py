@@ -215,17 +215,21 @@ def _read_docx(path: str) -> str:
 def ingest_file(path: str) -> dict:
     title = os.path.basename(path)
     ext = os.path.splitext(path)[1].lower()
-    if ext in (".txt", ".md", ".srt", ".text"):
-        with open(path, encoding="utf-8", errors="replace") as f:
+    if ext in (".txt", ".md", ".srt", ".text", ".csv"):
+        # csv 用 utf-8-sig：吃掉 Excel 导出常带的 BOM
+        enc = "utf-8-sig" if ext == ".csv" else "utf-8"
+        with open(path, encoding=enc, errors="replace") as f:
             text = f.read()
         if ext == ".srt":
             text = _strip_srt(text)
     elif ext == ".pdf":
         text = _read_pdf(path)
-    elif ext in (".docx", ".doc"):
+    elif ext == ".docx":
         text = _read_docx(path)
+    elif ext == ".doc":
+        raise ValueError("不支持老版 .doc 格式：请先用 Word/WPS 另存为 .docx 再上传")
     else:
-        raise ValueError("不支持的文件类型：%s（支持 txt/md/srt/pdf/docx）" % ext)
+        raise ValueError("不支持的文件类型：%s（支持 txt/md/srt/csv/pdf/docx）" % ext)
     return ingest_text(title, text, kind=ext.lstrip("."))
 
 

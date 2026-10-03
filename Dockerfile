@@ -20,10 +20,12 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# 知识库文档解析依赖（pdf/docx）；csv/txt/md 走标准库
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
 COPY server/ /app/server/
 COPY web/ /app/web/
-# 桌面小助手 EXE（随镜像分发，供 Web 界面「下载安装包」使用；漏掉则重建容器后下载 404）
-COPY agent/ /app/agent/
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
