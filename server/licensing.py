@@ -26,6 +26,7 @@ import os
 import socket
 import sys
 import time
+import urllib.request
 import uuid
 
 import editions
@@ -103,6 +104,14 @@ def ensure_secret() -> bool:
 
 
 def _secret() -> bytes:
+    # master 密钥：官方签发环境用 NASSAFE_MASTER_SECRET(hex) 注入，全网一致；
+    # 未配置时回落本机 state 文件（兼容旧自签模式，用户机器将走云端验签）。
+    hx = os.environ.get("NASSAFE_MASTER_SECRET", "").strip()
+    if hx:
+        try:
+            return bytes.fromhex(hx)
+        except Exception:
+            pass
     path = _secret_path()
     if not os.path.exists(path):
         return b""
@@ -152,6 +161,28 @@ def issue_key(edition: str, fingerprint: str, days: int = 0) -> str:
     return f"{_KEY_PREFIX}.{payload_b64}.{_sign(payload_b64, secret)}"
 
 
+def _is_official_issuer() -> bool:
+    """官方签发机器：配置了 master 密钥，可本地验签。"""
+    return bool(os.environ.get("NASSAFE_MASTER_SECRET", "").strip())
+
+
+def verify_with_cloud(key: str, fp: str) -> tuple[bool, str, dict]:
+    """非官方机器向官方验签服务核码（默认指向官方云端）。返回 (ok, msg, payload)。"""
+    url = os.environ.get("NASSAFE_LICENSE_VERIFY_URL",
+                         "http://47.108.213.178:8848/api/license/cloud-verify").strip()
+    body = json.dumps({"key": key, "fp": fp}).encode("utf-8")
+    req = urllib.request.Request(url, data=body,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            d = json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001  网络不可达不给通过
+        return False, "无法连接激活服务器，请检查本机网络后重试", {}
+    if not d.get("ok"):
+        return False, str(d.get("error") or "激活码校验未通过"), {}
+    return True, "", d.get("payload") or {}
+
+
 def verify_key(key: str) -> tuple[bool, str, dict]:
     """验码。返回 (是否有效, 提示, payload)。只验签名/格式/有效期，不核对机器码。"""
     k = (key or "").strip()
@@ -179,8 +210,11 @@ def verify_key(key: str) -> tuple[bool, str, dict]:
 
 
 def activate(key: str) -> tuple[bool, str]:
-    """激活：验码 + 核对本机机器码 + 落盘。"""
-    ok, msg, payload = verify_key(key)
+    """激活：验码（官方机器本地验 / 用户机器云端验）+ 核对本机机器码 + 落盘。"""
+    if _is_official_issuer():
+        ok, msg, payload = verify_key(key)
+    else:
+        ok, msg, payload = verify_with_cloud((key or "").strip(), machine_fingerprint())
     if not ok:
         return False, msg
     fp = machine_fingerprint()

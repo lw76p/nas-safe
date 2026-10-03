@@ -4961,6 +4961,7 @@ function loadLicense() {
     if (!d || !d.ok) return;
     window.__lic = d;
     window.__licIssueDemo = !!d.issue_demo;
+    window.__licPayUrl = (d.pay_url || "").trim();
     if (p && p.ok && p.prices) LIC_PRICES = p.prices;
     $("licFp").textContent = d.fingerprint || "—";
     let label = d.label || d.edition || "—";
@@ -5007,7 +5008,71 @@ function renderLicenseCompare(current) {
 function upgradeTo(edition) {
   const price = LIC_PRICES[edition] || 0;
   const name = { home: "家庭版", business: "专业版" }[edition] || edition;
-  openWeChatPayModal(edition, price, name);
+  const base = (window.__licPayUrl || "").trim();
+  if (base) startRealPay(base, edition, price, name);
+  else openWeChatPayModal(edition, price, name);
+}
+
+// 真实微信支付：发卡网关下单 → 展示二维码 → 轮询订单 → 支付成功自动填入激活码。
+// 网关不可达（如域名解析未恢复）时自动回落到线下购买引导。
+async function startRealPay(base, edition, price, name) {
+  const fp = ($("licFp").textContent || "").trim();
+  const api = base.replace(/\/$/, "");
+  let d = null;
+  try {
+    const r = await fetch(api + "/order", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_id: "ts_" + edition, machine_code: fp })
+    });
+    d = await r.json();
+    if (!d || !d.ok || !d.code_url) throw new Error((d && d.error) || "下单失败");
+  } catch (e) {
+    toast("在线支付暂不可用，已切换线下购买方式", "warn");
+    openWeChatPayModal(edition, price, name);
+    return;
+  }
+  const orderId = d.order_id;
+  openModal(
+    "微信支付 · 升级到" + name,
+    `<div class="wx-pay">
+       <div class="wx-pay-head"><span class="wx-logo">💚</span> 微信扫码支付</div>
+       <div class="wx-amount">¥${price}<small> .00</small></div>
+       <div class="wx-qrtitle">请用微信「扫一扫」付款</div>
+       <div class="wx-qr" id="wxQr"></div>
+       <p class="muted" id="wxPayState" style="font-size:12px;margin:8px 0 0">等待支付中…支付成功会自动填入激活码（本窗可关，激活码也可稍后到「版本与升级」页粘贴）。</p>
+       <div class="wx-machine">本机机器码：<code>${escapeHtml(fp)}</code></div>
+     </div>`,
+    `<button class="btn ghost" data-act="close">关闭</button>`,
+    {}
+  );
+  const qrEl = $("wxQr");
+  if (qrEl) {
+    try {
+      const q = qrcode(0, "M");
+      q.addData(d.code_url);
+      q.make();
+      qrEl.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2 });
+    } catch (_) { qrEl.textContent = d.code_url; }
+  }
+  const box = $("modalBox");
+  if (box) box.style.maxWidth = "420px";
+  let tries = 0;
+  const timer = setInterval(async () => {
+    tries++;
+    if (tries > 240 || !$("wxQr")) { clearInterval(timer); return; }
+    try {
+      const st = await fetch(api + "/order/" + orderId);
+      const sd = await st.json();
+      if (sd && sd.ok && sd.status === "paid" && sd.license_key) {
+        clearInterval(timer);
+        closeModal();
+        $("licKey").value = sd.license_key;
+        const el = $("licStatus");
+        if (el) { el.style.display = "block"; el.className = "notice ok"; el.textContent = "支付成功！激活码已填入，点下方「激活」完成升级。"; }
+        toast("支付成功，已获取激活码", "ok");
+      }
+    } catch (_) { /* 网络抖动忽略，下轮再试 */ }
+  }, 2500);
 }
 
 // 模拟微信支付窗口：真实项目里这里会展示由发卡端生成的微信支付二维码；

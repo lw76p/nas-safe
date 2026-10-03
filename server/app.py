@@ -847,7 +847,8 @@ class Handler(BaseHTTPRequestHandler):
                 # 授权信息：机器码 / 当前版本 / 是否已激活（设置页「版本与激活」用）
                 # issue_demo：在线支付未接前默认 False；仅演示环境设 NASSAFE_ISSUE_DEMO=1 打开
                 self._send_json({"ok": True, **licensing.info(),
-                                 "issue_demo": os.environ.get("NASSAFE_ISSUE_DEMO") == "1"})
+                                 "issue_demo": os.environ.get("NASSAFE_ISSUE_DEMO") == "1",
+                                 "pay_url": os.environ.get("NASSAFE_PAY_URL", "")})
             elif route == "/api/license/prices":
                 # 升级价格：服务端实时读取（state/prices.json 可覆盖默认值，供发卡后台同步）
                 self._send_json({"ok": True, "prices": licensing.get_prices()})
@@ -1105,6 +1106,25 @@ class Handler(BaseHTTPRequestHandler):
                     }))
                 else:
                     self._send_json(devices.agent_heartbeat(payload.get("token")))
+                return
+
+            # 官方验签端点（免登录）：用户机器激活时由其服务端调用，机器对机器无用户会话；
+            # 仅配置了 master 密钥的官方机器开放，且只做验签不落库，无越权风险。
+            if route == "/api/license/cloud-verify":
+                if not os.environ.get("NASSAFE_MASTER_SECRET"):
+                    self._send_json({"ok": False, "error": "验证服务未配置"}, 403)
+                    return
+                payload = self._read_json()
+                key = str(payload.get("key") or "")
+                fp_ask = str(payload.get("fp") or "").strip().upper()
+                ok, msg, pl = licensing.verify_key(key)
+                if not ok:
+                    self._send_json({"ok": False, "error": msg}, 400)
+                    return
+                if fp_ask and str(pl.get("fp") or "").upper() != fp_ask:
+                    self._send_json({"ok": False, "error": "机器码不符"}, 400)
+                    return
+                self._send_json({"ok": True, "payload": pl})
                 return
 
             # 除认证接口外，所有 POST 都需要管理员权限（功能开关/写操作）
