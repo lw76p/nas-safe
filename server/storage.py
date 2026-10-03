@@ -433,7 +433,7 @@ def list_zfs_datasets() -> list[Volume]:
         parts = line.split("\t")
         if len(parts) < 3:
             continue
-        name, mountpoint, dtype = parts[0], parts[1], parts[2]
+        name, mountpoint = parts[0], parts[1]
         if mountpoint in ("-", "none", "legacy"):
             continue
         volumes.append(Volume(
@@ -812,7 +812,7 @@ def browse_snapshot(snapshot: Snapshot, subpath: str = "") -> dict:
         return _sb(snapshot, subpath)
 
     if getattr(snapshot, "backend", "fs") == "qnap" or snapshot.fs_type == "qnap":
-        from qnap import default_client, SNAP_MOUNT_ROOT
+        from qnap import default_client
         client = default_client()
         try:
             if (client.mode == "local"

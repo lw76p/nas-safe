@@ -31,7 +31,7 @@ import re
 import shlex
 import subprocess
 import threading
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from typing import Optional
 
 

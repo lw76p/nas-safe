@@ -46,9 +46,9 @@ import base64
 import json
 import os
 import re
+import time
 import shutil
 import sys
-import threading
 import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -59,7 +59,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import storage  # noqa: E402
 from storage import (  # noqa: E402
-    StorageError, CommandNotFound, Snapshot, Volume,
+    StorageError, CommandNotFound,
 )
 
 import integrity  # noqa: E402  v2 内容完整性校验
@@ -248,7 +248,6 @@ def human_size(num_bytes) -> str:
 
 def dir_size(path: str, limit_seconds: float = 3.0) -> int:
     """估算目录占用。超时即返回已统计部分，避免大目录卡死接口。"""
-    import time
     start = time.monotonic()
     total = 0
     for root, _dirnames, files in os.walk(path):
@@ -290,7 +289,7 @@ def build_system_info() -> dict:
     profile = storage.probe_system()
     # 合并跨品牌能力画像（品牌标签 + 快照后端 + 白话说明），让前端统一展示
     try:
-        from brands import detect_brand, detect_capabilities
+        from brands import detect_capabilities
         caps = detect_capabilities()
         profile.os_id = caps.get("brand") or profile.os_id
         profile.os_name = caps.get("brand_label") or profile.os_name

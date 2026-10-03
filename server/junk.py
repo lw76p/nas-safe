@@ -60,7 +60,6 @@ def _client():
 
 
 def _thumbs_script() -> str:
-    q = shlex.quote
     return (
         f"find {SCAN_ROOTS} -xdev -type d \\( -name '.@__thumb' -o -name '@Thumbnail' \\) "
         f"-print0 2>/dev/null | xargs -0 -r du -sk 2>/dev/null"

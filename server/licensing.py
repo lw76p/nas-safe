@@ -26,7 +26,6 @@ import os
 import socket
 import sys
 import time
-import urllib.request
 import uuid
 
 try:

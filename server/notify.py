@@ -21,6 +21,7 @@ import json
 import os
 import smtplib
 import time
+import threading
 import urllib.request
 import urllib.error
 from email.mime.text import MIMEText
@@ -131,40 +132,6 @@ def _send_feishu(ch: dict, text: str, *_) -> (bool, str):
     except Exception:  # noqa: BLE001  # 非 JSON 回执按成功处理
         pass
     return True, info[:120]
-
-
-def _send_telegram(ch: dict, text: str, *_) -> (bool, str):
-    """Telegram Bot 推送：国内服务器直连不通，默认走官方 Cloudflare 中继；海外机器中继失败时自动直连。"""
-    token = (ch.get("token") or "").strip()
-    chat_id = (ch.get("chat_id") or "").strip()
-    if not token or not chat_id:
-        return False, "还没填机器人 Token 和接收人 ID（找 @BotFather 建机器人，给 @userinfobot 发消息查 ID）"
-    relay = os.environ.get("NASSAFE_TG_RELAY",
-                           "https://www.tsetch.com/api/issuance/tgrelay").strip()
-    if relay:
-        ok, info = _http_post_json(relay, {"token": token, "chat_id": chat_id, "text": text})
-        if ok:
-            try:
-                d = json.loads(info)
-                if isinstance(d, dict) and d.get("ok"):
-                    return True, "telegram ok"
-                if isinstance(d, dict):
-                    return False, "Telegram 返回: " + str(d.get("error") or d.get("description") or d)[:160]
-            except Exception:  # noqa: BLE001
-                return True, "relay ok"
-    # 中继不可达（海外机器）→ 直连
-    ok2, info2 = _http_post_json(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        {"chat_id": chat_id, "text": text})
-    if ok2:
-        try:
-            d = json.loads(info2)
-            if isinstance(d, dict) and not d.get("ok"):
-                return False, "Telegram 返回: " + str(d.get("description") or d)[:160]
-        except Exception:  # noqa: BLE001
-            pass
-        return True, "telegram ok"
-    return False, (info2 or info or "发送失败")
 
 
 def _send_telegram(ch: dict, text: str, *_) -> (bool, str):
@@ -614,8 +581,6 @@ def scan_and_dispatch() -> None:
 
 def start_notifier(interval: int = 60) -> "threading.Thread":
     """启动后台守护线程，每隔 interval 秒扫描并推送新告警。"""
-    import threading
-
     def _loop() -> None:
         while True:
             time.sleep(max(10, interval))

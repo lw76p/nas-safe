@@ -378,7 +378,7 @@ def embed(text: str, cfg: dict | None = None, timeout: int = 60) -> list:
             body = json.loads(resp.read().decode("utf-8", "replace"))
         emb = (body.get("data") or [{}])[0].get("embedding") or []
         return emb if isinstance(emb, list) else []
-    except urllib.error.URLError as exc:
+    except urllib.error.URLError:
         return []
     except Exception:  # noqa: BLE001
         return []
