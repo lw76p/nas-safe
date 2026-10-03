@@ -1,5 +1,5 @@
 """
-NAS Safe — 存储系统探测适配层
+TS Safe — 存储系统探测适配层
 
 设计原则：
   1. 只读优先：探测阶段绝不修改任何数据
@@ -928,12 +928,12 @@ def restore_from_snapshot(snapshot: Snapshot, rel_path: str, dest: str) -> dict:
 # ---------------------------------------------------------------------------
 # 篡改检测 / 受保护快照基线
 # ---------------------------------------------------------------------------
-# 设计：NAS Safe 创建的快照自动登记到「受保护基线」(state/protected.json)。
+# 设计：TS Safe 创建的快照自动登记到「受保护基线」(state/protected.json)。
 # 巡检时对比"当前实际快照列表"与基线：
 #   - 基线中有、当前消失         → critical「受保护快照消失」（可能被删/勒索清除）
 #   - 基线里 vital=True、当前解锁 → warn「快照锁被解除」
 #   - 基线里 readonly=True、当前变可写 → warn「快照变为可写」
-# 主动通过 NAS Safe 删除的快照会 unregister，不触发告警。
+# 主动通过 TS Safe 删除的快照会 unregister，不触发告警。
 
 def _iso_now() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")

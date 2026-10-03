@@ -1,5 +1,5 @@
 """
-NAS Safe — 端到端测试
+TS Safe — 端到端测试
 
 在 Windows 上用模拟数据验证核心逻辑（无需真实 btrfs）。
 测试内容：
@@ -210,7 +210,7 @@ def test_os_release_parse():
 
 if __name__ == "__main__":
     print("=" * 58)
-    print("  NAS Safe — 端到端测试")
+    print("  TS Safe — 端到端测试")
     print("=" * 58)
 
     test_path_validation()

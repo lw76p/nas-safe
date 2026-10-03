@@ -217,7 +217,7 @@ def scan_and_push() -> dict:
         sent[i["key"]] = now
     _save_sent(sent)
     level = "critical" if any(i["sev"] >= 2 for i in fresh) else "warn"
-    title = "NAS Safe 异常提醒"
+    title = "TS Safe 异常提醒"
     detail = "；".join(i["title"] for i in fresh)
     res = notify.push_alert(title, detail, level)
     return {"ok": res.get("ok", False), "pushed": len(fresh), "channel": res.get("channel", ""),

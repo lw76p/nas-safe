@@ -1,5 +1,5 @@
 """
-NAS Safe — 每日状态日报
+TS Safe — 每日状态日报
 
 每天定时把 NAS 状态（备份、异常、能清理的空间、硬盘状态）发到用户已配置的
 微信 / 邮箱 / 群机器人等。完全复用现有通知链路，不需要额外权限。
@@ -215,7 +215,7 @@ def _fmt_bytes(n) -> str:
 
 def format_text(report: dict) -> str:
     """把结构化报告压成一条适合推送的纯文本卡片。"""
-    lines = ["📋 NAS Safe 每日状态", f"⏰ {report.get('generated_at','')}", ""]
+    lines = ["📋 TS Safe 每日状态", f"⏰ {report.get('generated_at','')}", ""]
     snap = report.get("snapshots") or {}
     lines.append("【备份情况】")
     if snap:
@@ -296,7 +296,7 @@ def send_daily() -> dict:
         # 复用 notify.dispatch：把日报作为「事件」推送，自动走所有已启用通道
         sent = notify.dispatch(
             alerts=[],
-            events=[{"title": "NAS Safe 每日状态", "detail": text}],
+            events=[{"title": "TS Safe 每日状态", "detail": text}],
         )
     last = {"report": report, "text": text, "sent_at": report.get("generated_at"), "dispatch": sent}
     save_last(last)

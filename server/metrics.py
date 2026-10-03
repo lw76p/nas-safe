@@ -1,5 +1,5 @@
 """
-NAS Safe — 系统指标采集（仪表盘数据源，仅标准库）
+TS Safe — 系统指标采集（仪表盘数据源，仅标准库）
 
 设计原则（跨品牌分层适配，与 probe.sh 同哲学）：
   第一层 通用 Linux（飞牛/OMV/Unraid/TrueNAS/QTS 都有）：

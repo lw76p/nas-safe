@@ -1,5 +1,5 @@
 """
-NAS Safe — 威联通 QNAP 适配层测试
+TS Safe — 威联通 QNAP 适配层测试
 
   A. 纯单元测试（无需网络/真实 NAS）：
      1. qcli_volume -l 输出解析
@@ -356,7 +356,7 @@ def test_live_integration():
 
 if __name__ == "__main__":
     print("=" * 58)
-    print("  NAS Safe — QNAP 适配层测试")
+    print("  TS Safe — QNAP 适配层测试")
     print("=" * 58)
 
     test_parse_volumes()

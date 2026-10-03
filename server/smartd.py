@@ -1,5 +1,5 @@
 """
-NAS Safe — 硬盘 SMART 健康采集（跨品牌，100% 只读）
+TS Safe — 硬盘 SMART 健康采集（跨品牌，100% 只读）
 
 设计原则（与 probe_smart.sh / metrics.py 同哲学，分层适配，绝不报错刷屏）：
   通道 A（通用，优先）：smartctl 跨品牌采集

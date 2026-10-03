@@ -70,7 +70,7 @@ def _which(cmd: str) -> bool:
 
 
 def _self_state_dir() -> str:
-    """NAS Safe 自身 state 目录绝对路径（快照源必须排除，防自我套娃）。"""
+    """TS Safe 自身 state 目录绝对路径（快照源必须排除，防自我套娃）。"""
     try:
         from storage import state_dir
         return os.path.abspath(state_dir())

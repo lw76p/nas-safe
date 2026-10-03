@@ -1,5 +1,5 @@
 """
-NAS Safe — AI 解读模块（仅标准库，零第三方依赖）
+TS Safe — AI 解读模块（仅标准库，零第三方依赖）
 
 定位（见 PRODUCT.md §五）：AI 是"翻译官 + 检索员 + 提案人"，不是"决策者"。
   - 把 SMART / 快照 / 体检 / 告警数据翻译成人话 + 给处置建议
@@ -82,7 +82,7 @@ def is_ready() -> bool:
 
 _LOCAL_PORTS = [11434, 1234, 8080, 8000, 9997, 4000]
 _LAN_SCAN_PORTS = [11434, 1234]  # 局域网全段只扫最常见的两个端口，控制耗时
-_OLLAMA_UA = "Mozilla/5.0 (compatible; NAS Safe/1.0)"
+_OLLAMA_UA = "Mozilla/5.0 (compatible; TS Safe/1.0)"
 
 
 def _http_json(url: str, timeout: float = 2.5):
@@ -325,7 +325,7 @@ def interpret(report_text: str) -> (str, str):
         return None, "没有可解读的内容"
     messages = [
         {"role": "system", "content": _SYSTEM},
-        {"role": "user", "content": f"以下是 NAS Safe 的数据，请解读：\n\n{text}"},
+        {"role": "user", "content": f"以下是 TS Safe 的数据，请解读：\n\n{text}"},
     ]
     return _chat(messages, cfg)
 

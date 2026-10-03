@@ -1,5 +1,5 @@
 """
-NAS Safe — 威联通 QTS 官方快照适配层（B 类档位）
+TS Safe — 威联通 QTS 官方快照适配层（B 类档位）
 
 威联通 QTS 底层是 LVM + ext4，块级快照走官方 qcli_volumesnapshot CLI，
 而不是 btrfs/zfs 命令。本模块封装其 创建 / 列出 / 删除 / 锁定 接口。
@@ -13,7 +13,7 @@ NAS Safe — 威联通 QTS 官方快照适配层（B 类档位）
 
 设计：
   - 自包含，不 import storage（避免循环依赖）；storage 以懒加载方式调用本模块。
-  - 本地模式：直接 subprocess 调用 qcli（适用于把 NAS Safe 装在 QTS 主机上的场景）。
+  - 本地模式：直接 subprocess 调用 qcli（适用于把 TS Safe 装在 QTS 主机上的场景）。
   - SSH 模式：经 paramiko 连接 QTS（适用于容器部署），参数用 shlex 转义，密码安全传递。
   - 零强制第三方依赖：paramiko 仅在 SSH 模式被懒加载。
 
@@ -303,7 +303,7 @@ class QnapClient:
             )
         except FileNotFoundError as exc:
             raise QnapError(
-                "未找到 qcli 命令，确认 NAS Safe 运行在 QNAP QTS 主机上"
+                "未找到 qcli 命令，确认 TS Safe 运行在 QNAP QTS 主机上"
             ) from exc
         except subprocess.TimeoutExpired as exc:
             raise QnapError(f"qcli 命令超时: {' '.join(args)}") from exc

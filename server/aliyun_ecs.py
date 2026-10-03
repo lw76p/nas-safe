@@ -1,12 +1,12 @@
 """
-NAS Safe — 阿里云 ECS 云盘快照后端（雏形 / prototype）
+TS Safe — 阿里云 ECS 云盘快照后端（雏形 / prototype）
 
 防勒索卖点（云端版）：
   - 云盘快照是块级、与实例云盘分离存储；勒索软件加密实例本地文件，并不影响
     已经存在的快照（快照在远端对象存储，不在被加密的云盘上）。
   - 「不可删」机制采用「双凭证」模型：
       * 保护凭证 PROTECTOR（默认启用）：仅有 CreateSnapshot / Describe* 权限，
-        没有 DeleteSnapshot。NAS Safe 创建的所有快照都用它 —— 因此运行中的
+        没有 DeleteSnapshot。TS Safe 创建的所有快照都用它 —— 因此运行中的
         程序（乃至实例被攻陷拿到 root）都无法删除这些快照。
       * 管理凭证 MANAGER（需单独的 .aliyun_manager.json，默认不加载到进程）：
         拥有完整 ECS 权限，仅在人工/受控清理时显式提供。删除操作若无 MANAGER
@@ -266,7 +266,7 @@ def _now_iso() -> str:
 
 
 def _tags_protected(snap: dict) -> bool:
-    """快照是否被标记为 NAS Safe 受保护（nassafe-vital=true）。"""
+    """快照是否被标记为 TS Safe 受保护（nassafe-vital=true）。"""
     tags = snap.get("Tags")
     if not tags:
         return False
@@ -392,7 +392,7 @@ def create_snapshot(volume: Volume, name: str, vital: bool = True,
         "RegionId": client.region,
         "DiskId": volume.volume_id or volume.mountpoint,
         "SnapshotName": name,
-        "Description": "NAS Safe 受保护快照 (anti-ransomware)",
+        "Description": "TS Safe 受保护快照 (anti-ransomware)",
         "Tag.1.Key": "nassafe",
         "Tag.1.Value": "protected",
         "Tag.2.Key": "nassafe-vital",
@@ -411,7 +411,7 @@ def create_snapshot(volume: Volume, name: str, vital: bool = True,
         backend="aliyun",
         vital=vital,
         status="Creating",
-        description="NAS Safe 受保护快照",
+        description="TS Safe 受保护快照",
     )
 
 

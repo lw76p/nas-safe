@@ -3941,6 +3941,10 @@ const NOTIFY_FIELDS = {
     { key: "template_id", label: "模板 ID" },
     { key: "openid", label: "接收者 OpenID" },
   ],
+  feishu: [
+    { key: "url", label: "飞书机器人 Webhook 地址" },
+    { key: "secret", label: "签名密钥（机器人没开签名校验就留空）", secret: true },
+  ],
   webhook: [{ key: "url", label: "Webhook URL" }],
   bark: [
     { key: "key", label: "Bark Key / 完整 URL" },
@@ -4071,18 +4075,21 @@ function applyAiProviderLimits(list, current) {
   const sel = $("aiProvider");
   if (!sel || !Array.isArray(list) || !list.length) return;
   Array.from(sel.options).forEach((o) => {
+    // 当前版本用不上的接口直接不显示（不是置灰），升级后自动出现在列表里
     const ok = list.indexOf(o.value) >= 0 || o.value === current;
     const base = (o.getAttribute("data-label") || o.textContent).replace(/（升级后可用）$/, "");
     o.setAttribute("data-label", base);
+    o.textContent = base;
+    o.hidden = !ok;
+    o.style.display = ok ? "" : "none";
     o.disabled = !ok;
-    o.textContent = ok ? base : base + "（升级后可用）";
   });
   const hint = $("aiEditionHint");
   if (hint) {
     const names = Array.from(sel.options)
       .filter((o) => list.indexOf(o.value) >= 0)
       .map((o) => o.getAttribute("data-label") || o.textContent).join("、");
-    hint.textContent = `当前版本可用：${names}。其余接口升级后解锁（本地 AI 需家庭版及以上）。`;
+    hint.textContent = `当前版本可用：${names}。升级到家庭版后，其余云端 AI 和本地 AI 会自动加进列表。`;
   }
 }
 
@@ -4094,15 +4101,23 @@ function applyNotifyTypeLimits(list, current) {
     const ok = list.indexOf(o.value) >= 0 || o.value === current;
     const base = (o.getAttribute("data-label") || o.textContent).replace(/（专业版）$/, "");
     o.setAttribute("data-label", base);
+    o.textContent = base;
+    o.hidden = !ok;
+    o.style.display = ok ? "" : "none";
     o.disabled = !ok;
-    o.textContent = ok ? base : base + "（专业版）";
+  });
+  // 整组都被隐藏时，把分组标题也一起藏掉，不留空标题
+  Array.from(sel.querySelectorAll("optgroup")).forEach((g) => {
+    const any = Array.from(g.querySelectorAll("option")).some((o) => !o.hidden);
+    g.hidden = !any;
+    g.style.display = any ? "" : "none";
   });
   const hint = $("notifyEditionHint");
   if (hint) {
     const names = Array.from(sel.options)
       .filter((o) => o.value && list.indexOf(o.value) >= 0)
       .map((o) => o.getAttribute("data-label") || o.textContent).join("、");
-    hint.textContent = `当前版本可用：${names}。群机器人 / Bark / ntfy 等自定义通道是专业版功能。`;
+    hint.textContent = `当前版本可用：${names}。升级到专业版后，会自动出现飞书 / 群机器人 / Bark / ntfy 等通道。`;
   }
 }
 
@@ -4601,13 +4616,13 @@ function showDesktopAgentGuide() {
   openModal(
     "🖥 安装桌面小助手（关掉网页也能提醒）",
     `<p>装上这个本机小助手后，<b>彻底关掉网页也能收到提醒</b>：它缩在电脑右下角的托盘图标里，
-       有异常时图标中间亮起红色感叹号并弹一次通知；开机自启，一直守护。</p>
+       有异常时图标上亮起红点并弹一次提醒；开机自启，一直守护。</p>
      <ol class="perm-steps">
-       <li>点右下角 <b>「⬇ 下载安装包（zip）」</b>，得到 <code>桌面助手.zip</code>（已内置本机 NAS 地址）</li>
+       <li>点右下角 <b>「⬇ 下载安装包（zip）」</b>，得到 <code>桌面助手.zip</code>（要连哪台设备已经帮你填好了，什么都不用填）</li>
        <li><b>右键解压</b>到任意文件夹，双击里面的 <code>桌面助手.exe</code></li>
        <li>自动弹出「安装 TS Safe 助手」窗口并显示进度，几秒后提示「安装完成」——
            <b>不用选地址、不用填任何东西</b></li>
-       <li>右下角出现绿色盾牌图标（和软件同色），鼠标放上去显示「TS Safe · 快照保护中」</li>
+       <li>右下角出现 <b>蓝紫色盾牌图标</b>（和网页左上角的标志一样），鼠标放上去显示「TS Safe · 快照保护中」</li>
      </ol>
      <p class="muted">不需要安装 Python，也不需要管理员权限。<br>
        若 Windows 提示「已保护你的电脑」：点 <b>更多信息 → 仍要运行</b>（未签名软件的正常提示）。<br>

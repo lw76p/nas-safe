@@ -3,7 +3,7 @@
 """管理员密码重置逃生门（忘密码自救）。
 
 适用：忘记密码、又没在注册时留找回邮箱（或邮件通道未配置）的情况。
-在 NAS Safe 所在机器上运行（需要在程序根目录下，即和 server/ 平级）：
+在 TS Safe 所在机器上运行（需要在程序根目录下，即和 server/ 平级）：
 
     python3 server/reset_admin.py              # 交互式：列出账号，按提示重置
     python3 server/reset_admin.py 用户名 新密码   # 一条命令直接重置
@@ -27,7 +27,7 @@ def main() -> None:
     if len(args) >= 2:
         username, pw = args[0].strip(), args[1]
     else:
-        print("NAS Safe 管理员密码重置")
+        print("TS Safe 管理员密码重置")
         users = auth.list_users()
         if not users:
             print("还没有任何账号，直接打开网页会进入注册页。")
