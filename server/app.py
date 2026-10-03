@@ -1062,6 +1062,40 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True})
                 return
 
+            # 本人改密码（已登录，需原密码；用当前会话身份，不允许改他人）
+            if route == "/api/auth/change_password":
+                user = self._current_user()
+                if not user:
+                    self._send_json({"ok": False, "error": "请先登录"}, 401)
+                    return
+                payload = self._read_json()
+                try:
+                    auth.change_password(
+                        user["username"],
+                        (payload.get("old_password") or ""),
+                        (payload.get("new_password") or ""),
+                    )
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)})
+                    return
+                self._send_json({"ok": True})
+                return
+
+            # 本人改邮箱（已登录）
+            if route == "/api/auth/set_email":
+                user = self._current_user()
+                if not user:
+                    self._send_json({"ok": False, "error": "请先登录"}, 401)
+                    return
+                payload = self._read_json()
+                try:
+                    auth.set_email(user["username"], (payload.get("email") or "").strip())
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)})
+                    return
+                self._send_json({"ok": True})
+                return
+
             # 轻量代理回连接口：被控设备无法登录中控，改用安装令牌鉴权（不走会话）
             if route in ("/api/agent/register", "/api/agent/heartbeat"):
                 payload = self._read_json()

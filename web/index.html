@@ -380,6 +380,7 @@
         <button class="settings-tab" data-tab="ai">AI 配置</button>
         <button class="settings-tab" data-tab="appearance">外观</button>
         <button class="settings-tab" data-tab="agent">桌面提醒</button>
+        <button class="settings-tab" data-tab="account">账号安全</button>
       </nav>
 
       <div class="settings-body">
@@ -532,6 +533,23 @@
             本地 AI 打开时会自动用它生成提醒文字（数据不出本机），同时推送到微信 / 邮件，多个通道都配时会并行发送。
           </p>
         </div>
+
+        <!-- 账号安全 -->
+        <div class="settings-pane" data-pane="account">
+          <h3 class="sub-h">账号安全</h3>
+          <div class="set-row"><span class="set-label">当前账号</span><span id="accUser">—</span></div>
+          <h4 class="sub-h" style="margin-top:14px">修改密码</h4>
+          <div class="set-row"><span class="set-label">原密码</span><input id="accOldPw" class="text-input" type="password" placeholder="当前密码" autocomplete="current-password"></div>
+          <div class="set-row"><span class="set-label">新密码</span><input id="accNewPw" class="text-input" type="password" placeholder="至少 6 位" autocomplete="new-password"></div>
+          <div class="set-row"><span class="set-label">确认新密码</span><input id="accNewPw2" class="text-input" type="password" placeholder="再输一次" autocomplete="new-password"></div>
+          <div id="accPwMsg" class="notice" style="display:none"></div>
+          <div class="set-actions"><button class="btn primary" id="accChangePwBtn">保存新密码</button></div>
+          <h4 class="sub-h" style="margin-top:18px">修改邮箱（用于找回密码）</h4>
+          <div class="set-row"><span class="set-label">新邮箱</span><input id="accEmail" class="text-input" type="email" placeholder="用于接收找回密码验证码"></div>
+          <div id="accEmailMsg" class="notice" style="display:none"></div>
+          <div class="set-actions"><button class="btn primary" id="accSaveEmailBtn">保存邮箱</button></div>
+          <p class="muted" style="margin-top:10px">邮箱用于「忘记密码」时接收验证码；没绑邮箱则只能走管理员重设。</p>
+        </div>
       </div>
     </div>
   </section>
@@ -593,6 +611,6 @@
 
 <div class="toast-root" id="toastRoot"></div>
 
-<script src="/app-20261003b.js"></script>
+<script src="/app-20261003c.js"></script>
 </body>
 </html>
