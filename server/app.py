@@ -64,7 +64,7 @@ from storage import (  # noqa: E402
 
 import integrity  # noqa: E402  v2 内容完整性校验
 import behavior   # noqa: E402  v3 勒索行为检测
-import notify     # noqa: E402  多渠道告警通知（微信服务号/Webhook/Bark/ntfy/邮件）
+import notify     # noqa: E402  多渠道告警通知（微信服务号/群机器人/手机推送/邮件等）
 import ai         # noqa: E402  AI 解读（多云供应商 + 本地 Ollama）
 import ai_butler  # noqa: E402  AI 管家（对话式工具调用 + 免费版额度）
 import autosnapshot  # noqa: E402  自动快照调度器（每小时 vital 锁快照 + 保留清理）
@@ -1196,7 +1196,7 @@ class Handler(BaseHTTPRequestHandler):
                 if _bad:
                     self._send_json({"ok": False, "upgrade": True,
                                      "error": "通知通道（" + "、".join(_bad) +
-                                     "）是专业版功能，当前版本没有。升级后可用群机器人/Bark/飞书等自定义接口"})
+                                     "）是专业版功能，当前版本没有。升级后可用群机器人、飞书、手机推送等更多方式"})
                     return
                 notify.save_config(cfg)
                 self._send_json({"ok": True, "config": _mask_notify_cfg(notify.load_config())})

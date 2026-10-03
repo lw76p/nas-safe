@@ -4,7 +4,7 @@ TS Safe — 多渠道告警通知分发器（仅标准库，零第三方依赖�
 设计原则（见 PRODUCT.md §九）：
   - A 类零门槛：企业微信 / 飞书 / 钉钉 群机器人 Webhook（粘一条 URL 即用）
   - B 类核心：微信服务号模板消息（需 appid/appsecret/template_id/openid）
-  - 极客向：Bark / ntfy
+  - 手机推送：苹果 Bark / 安卓苹果通用 ntfy
   - 补充：邮件（SMTP）
   - 全部配置存于 state 目录的 notify.json，**绝不进仓库**；未配置任何通道时
     dispatch() 为空操作，核心功能零影响。
@@ -136,7 +136,7 @@ def _send_feishu(ch: dict, text: str, *_) -> (bool, str):
 def _send_bark(ch: dict, text: str, *_) -> (bool, str):
     url = ch.get("url", "").strip()
     if not url:
-        return False, "缺少 Bark URL"
+        return False, "还没填推送钥匙（App 里复制的那串）"
     # Bark: https://api.day.app/<key>/标题/内容
     key = ch.get("key", "").strip()
     if not key and "day.app" in url:
@@ -155,7 +155,7 @@ def _send_ntfy(ch: dict, text: str, *_) -> (bool, str):
     topic = ch.get("topic", "").strip()
     base = ch.get("base", "https://ntfy.sh").strip().rstrip("/")
     if not topic:
-        return False, "缺少 ntfy topic"
+        return False, "还没填频道名（自己起一个就行）"
     url = f"{base}/{topic}"
     req = urllib.request.Request(url, data=text.encode("utf-8"), method="POST")
     req.add_header("Title", "TS Safe 安全动态")
