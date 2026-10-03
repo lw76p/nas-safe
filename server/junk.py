@@ -165,7 +165,7 @@ def _scan_worker() -> None:
             cat("recycle", "回收站", recycle, sum(i["kb"] for i in recycle) * 1024,
                 "网络回收站里已删除但未清空的文件"),
             cat("thumbs", "缩略图缓存", thumbs, sum(i["kb"] for i in thumbs) * 1024,
-                "QTS 自动生成的缩略图，删后浏览图片时会自动重建；HMP 海报在应用目录，不受影响"),
+                "系统自动生成的缩略图缓存，删掉后下次浏览图片会自动重建，不影响照片和视频本身"),
             cat("logs", "30 天前的轮转日志", logs, sum(i["size"] for i in logs),
                 "只列出 30 天前的轮转/压缩日志，活动日志一律不碰"),
             cat("docker", "Docker 可回收空间", [], 0,

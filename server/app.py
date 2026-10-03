@@ -1,5 +1,5 @@
 """
-NAS Safe — 后端 API 服务
+TS Safe — 后端 API 服务
 
 依赖：仅标准库（http.server），零第三方依赖。
       这样保证在任何 NAS 上都能直接跑起来，不需要装 pip 包。
@@ -130,16 +130,16 @@ AGENT_EXE = "桌面助手.exe"   # 主程序中文文件名（URL 路由仍用 A
 
 
 _AGENT_README = (
-    "NAS Safe 桌面小助手 - 安装说明\r\n"
+    "TS Safe 桌面小助手 - 安装说明\r\n"
     "\r\n"
     "【安装只要两步】\r\n"
     "1. 解压本压缩包到任意文件夹\r\n"
-    "2. 双击 桌面助手.exe：会自动弹出「安装 NAS Safe 桌面助手」窗口并显示安装进度，\r\n"
+    "2. 双击 桌面助手.exe：会自动弹出「安装 TS Safe 桌面助手」窗口并显示安装进度，\r\n"
     "   几秒后提示「安装完成」，不需要你选择或填写任何东西\r\n"
     "\r\n"
     "【装好后它长什么样】\r\n"
     "- 自动缩到电脑右下角的托盘图标里（绿色盾牌），不占屏幕\r\n"
-    "- 鼠标放上去显示：NAS Safe · 快照保护中\r\n"
+    "- 鼠标放上去显示：TS Safe · 快照保护中\r\n"
     "- 有异常时：图标中间亮起红色感叹号，并弹一次 Windows 通知（自动消失）\r\n"
     "- 左键点图标 = 查看未读提醒（点一条消一条）；右键 = 全部已读 / 退出\r\n"
     "- 看完的不再提醒，没看的不重复弹，只在图标上留红色标记\r\n"
@@ -186,15 +186,15 @@ def _gen_setup_bat(base_url: str) -> str:
     """
     bat = """@echo off
 setlocal EnableExtensions
-title NAS Safe Agent Setup
+title TS Safe Agent Setup
 set "DIR=%APPDATA%\\NASSafeAgent"
 set "URL=__BASE__"
 set "PYW="
-echo [NAS Safe] Downloading agent...
+echo [TS Safe] Downloading agent...
 mkdir "%DIR%" 2>nul
 powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; try{Invoke-WebRequest -UseBasicParsing -Uri '%URL%/agent/desktop_agent.py' -OutFile '%DIR%\\desktop_agent.py' -TimeoutSec 30}catch{exit 1}"
 if errorlevel 1 (
-  echo [NAS Safe] Download failed. Please check the NAS address: %URL%
+  echo [TS Safe] Download failed. Please check the NAS address: %URL%
   pause
   exit /b 1
 )
@@ -203,13 +203,13 @@ for /f "delims=" %%P in ('where pyw.exe 2^>nul') do if not defined PYW set "PYW=
 if not defined PYW if exist "%LOCALAPPDATA%\\Programs\\Python\\Python313\\pythonw.exe" set "PYW=%LOCALAPPDATA%\\Programs\\Python\\Python313\\pythonw.exe"
 if not defined PYW if exist "%LOCALAPPDATA%\\Programs\\Python\\Python312\\pythonw.exe" set "PYW=%LOCALAPPDATA%\\Programs\\Python\\Python312\\pythonw.exe"
 if not defined PYW (
-  echo [NAS Safe] Python was not found on this PC.
+  echo [TS Safe] Python was not found on this PC.
   echo Please install Python 3 from the page that is opening, then run this file again.
   start "" "https://www.python.org/downloads/"
   pause
   exit /b 1
 )
-echo [NAS Safe] Installing... A setup window will appear. Choose your NAS and click the button.
+echo [TS Safe] Installing... A setup window will appear. Choose your NAS and click the button.
 start "" "%PYW%" "%DIR%\\desktop_agent.py" --nas "%URL%" --install
 exit /b 0
 """
@@ -529,7 +529,10 @@ def do_restore_file(snapshot_path: str, relative_file: str, destination: str) ->
 # ---------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "NAS Safe/1.0"
+    server_version = "TS Safe/1.0"
+    # HTTP/1.1 + keep-alive：浏览器复用连接、且每条响应必须带 Content-Length，
+    # 否则客户端无法界定响应体边界，表现为「200 但空体 / 页面转圈 / 接口偶发无响应」。
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):  # 静默，避免污染日志
         pass
@@ -584,26 +587,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Set-Cookie", auth.cookie_header(sid, max_age))
 
     def _send_401(self) -> None:
-        self.send_response(401)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
         # 只有客户端主动带 Basic 凭证（脚本/代理）且失败时才 challenge；
         # 浏览器正常访问裸 401，不弹原生认证框（由前端登录弹窗接管）
-        if (self.headers.get("Authorization") or "").startswith("Basic "):
-            self.send_header("WWW-Authenticate", 'Basic realm="NAS Safe"')
-        self.end_headers()
-        self.wfile.write(json.dumps({"ok": False, "error": "请先登录"}).encode("utf-8"))
+        basic = (self.headers.get("Authorization") or "").startswith("Basic ")
+        extra = [("WWW-Authenticate", 'Basic realm="TS Safe"')] if basic else None
+        self._send_json({"ok": False, "error": "请先登录"}, 401, extra_headers=extra)
 
     # -- 响应helpers ------------------------------------------------------
 
-    def _send_json(self, payload: dict, status: int = 200) -> None:
-        body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    def _send_bytes(self, body: bytes, status: int = 200,
+                   ctype: str = "application/json; charset=utf-8",
+                   extra_headers=None) -> None:
+        """统一发送响应：自动带 Content-Length，保证 HTTP/1.1 keep-alive 下体边界明确。"""
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for (k, v) in (extra_headers or []):
+            self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(body)
+        if body:
+            self.wfile.write(body)
+
+    def _send_json(self, payload: dict, status: int = 200, extra_headers=None) -> None:
+        body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        self._send_bytes(body, status, extra_headers=extra_headers)
 
     def _send_file(self, path: str) -> None:
         if not os.path.isfile(path):
@@ -642,11 +650,13 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
         query = parse_qs(parsed.query)
 
-        # 公开接口：健康检查、认证相关、静态文件；其余都需要登录
-        # /api/agent/install.sh 公开的原因：被控设备无法登录中控，靠一次性安装令牌鉴权
-        public_api = ("/api/health", "/api/auth/setup", "/api/auth/check", "/api/auth/logout",
-                      "/api/agent/install.sh", "/api/agent/install.ps1", "/api/auth/onelink")
-        needs_auth = route.startswith("/api/") and route not in public_api
+        # 鉴权模型（翻转版，参照 HMP 家庭影视库）：
+        # 看数据免登录（公开）—— 所有 GET 数据接口默认公开，未登录也能看控制台/监控/快照等。
+        # 改设置/动系统才要登录 —— 所有 POST 写操作由 do_POST 的 _require_admin 把关（绕开网页 curl 也改不动）。
+        # 认证类接口（setup/check/logout/onelink/health）保持原生可用，供首次设账号与免输入登录。
+        # /api/agent/install.sh|ps1 走一次性安装令牌，不依赖会话（在各自处理器内校验令牌）。
+        # 少数会暴露文件系统浏览 / 配置导出的 GET 仍要求管理员，避免匿名遍历磁盘或导出配置。
+        PROTECTED_GET = ("/api/list_dir", "/api/browse", "/api/migrate/export")
 
         try:
             if route == "/api/auth/setup":
@@ -667,27 +677,23 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     sess = auth.consume_onelink_token(token)
                 except ValueError:
-                    self.send_response(302)
-                    self.send_header("Location", "/?onelink_err=1")
-                    self.send_header("Cache-Control", "no-store")
-                    self.end_headers()
+                    self._send_bytes(b"", 302, extra_headers=[("Location", "/?onelink_err=1")])
                     return
-                self.send_response(302)
-                self.send_header("Location", "/")
-                self.send_header("Set-Cookie", auth.cookie_header(sess["sid"], sess["max_age"]))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
+                self._send_bytes(
+                    b"", 302,
+                    extra_headers=[
+                        ("Location", "/"),
+                        ("Set-Cookie", auth.cookie_header(sess["sid"], sess["max_age"])),
+                    ])
                 return
             if route == "/api/auth/logout":
-                self.send_response(200)
-                self.send_header("Set-Cookie", auth.logout_cookie_header())
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+                self._send_json(
+                    {"ok": True}, 200,
+                    extra_headers=[("Set-Cookie", auth.logout_cookie_header())])
                 return
 
-            if needs_auth and not self._require_auth():
+            # GET 数据接口默认公开；仅文件系统浏览与配置导出类 GET 仍需管理员
+            if route in PROTECTED_GET and not self._require_auth():
                 return
             if route == "/api/health":
                 self._send_json({"ok": True, "time": iso_now()})
@@ -791,6 +797,8 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "config": _mask_notify_cfg(notify.load_config()),
                     "relay_available": notify.relay_configured(),
+                    # 当前版本允许的通知通道；前端据此把用不了的通道置灰并标注「升级后可用」
+                    "allowed_types": sorted(_edition_alert_types()),
                 })
             elif route == "/api/ai/config":
                 cfg = ai.load_config()
@@ -849,30 +857,28 @@ class Handler(BaseHTTPRequestHandler):
                 # 跨品牌多设备总控制台：分层聚合所有设备健康快照
                 force = bool(query.get("force"))
                 self._send_json({"ok": True, **devices.collect_all(force=force)})
+            elif route == "/api/devices/manage":
+                # 联机设备管控（设置后台）：在线统计 + 每台设备的状态/代理/功能开关（只读查询）
+                self._send_json({**devices.get_manage()})
+            elif route == "/api/devices/snapshots":
+                # 快照页的「联机设备快照预览」：本机走 /api/snapshots，远程由本控制台代理对端只读拉取
+                dev_id = (query.get("device") or [""])[0]
+                vol = (query.get("volume") or [""])[0]
+                self._send_json(devices.remote_snapshots(dev_id, vol))
             elif route == "/api/agent/install.sh":
                 # 轻量代理安装脚本（公开 + 一次性令牌鉴权，被控设备跑这条命令回连中控）
                 token = (query.get("t") or [""])[0].strip()
                 host = self.headers.get("Host") or ""
                 scheme = (self.headers.get("X-Forwarded-Proto") or "http").strip()
                 script = devices.agent_install_script(token, f"{scheme}://{host}")
-                body = script.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/x-shellscript; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
+                self._send_bytes(script.encode("utf-8"), 200, ctype="text/x-shellscript; charset=utf-8")
             elif route == "/api/agent/install.ps1":
                 # Windows 版轻量代理（PowerShell 注册 + schtasks 每分钟心跳），令牌鉴权同 install.sh
                 token = (query.get("t") or [""])[0].strip()
                 host = self.headers.get("Host") or ""
                 scheme = (self.headers.get("X-Forwarded-Proto") or "http").strip()
                 script = devices.agent_install_script_ps(token, f"{scheme}://{host}")
-                body = script.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
+                self._send_bytes(script.encode("utf-8"), 200, ctype="text/plain; charset=utf-8")
             elif route == "/api/migrate/export":
                 # 换机迁移：导出本机可移植配置包（供前端下载）。免费版不含换机迁移
                 if not editions.can("migrate"):
@@ -990,12 +996,9 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     raise StorageError(str(exc))
                 sess = auth.login(username, password)
-                self.send_response(200)
-                self._set_session_cookie(sess["sid"], sess["max_age"])
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(json.dumps({"ok": True, "user": sess["username"], "role": sess["role"]}).encode("utf-8"))
+                self._send_json(
+                    {"ok": True, "user": sess["username"], "role": sess["role"]}, 200,
+                    extra_headers=[("Set-Cookie", auth.cookie_header(sess["sid"], sess["max_age"]))])
                 return
             if route == "/api/auth/login":
                 payload = self._read_json()
@@ -1010,26 +1013,16 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     # 密码错误/限速是预期内的客户端错误，回 401 而不是 500
                     print("[login] DENIED user=%r reason=%s" % (username, exc), flush=True)
-                    self.send_response(401)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"ok": False, "error": str(exc)}).encode("utf-8"))
+                    self._send_json({"ok": False, "error": str(exc)}, 401)
                     return
-                self.send_response(200)
-                self._set_session_cookie(sess["sid"], sess["max_age"])
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(json.dumps({"ok": True, "user": sess["username"], "role": sess["role"]}).encode("utf-8"))
+                self._send_json(
+                    {"ok": True, "user": sess["username"], "role": sess["role"]}, 200,
+                    extra_headers=[("Set-Cookie", auth.cookie_header(sess["sid"], sess["max_age"]))])
                 return
             if route == "/api/auth/logout":
-                self.send_response(200)
-                self.send_header("Set-Cookie", auth.logout_cookie_header())
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+                self._send_json(
+                    {"ok": True}, 200,
+                    extra_headers=[("Set-Cookie", auth.logout_cookie_header())])
                 return
 
             # 找回密码：登录页可用（未登录），靠「账号 + 注册邮箱」身份核验，验证码邮件送达后才允许改密
@@ -1044,7 +1037,7 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     raise StorageError(str(exc))
                 ok, msg = notify.send_system_mail(
-                    email, "NAS Safe 找回密码验证码",
+                    email, "TS Safe 找回密码验证码",
                     "你的找回密码验证码是：%s\n\n10 分钟内有效，请勿透露给他人。\n如果这不是你本人的操作，请忽略这封邮件。" % code)
                 if not ok:
                     raise StorageError("验证码已生成，但邮件发送失败：" + msg)
@@ -1157,7 +1150,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(do_restore_file(snapshot_path, relative_file, destination))
 
             elif route == "/api/snapshot/revert":
-                # 整卷回滚：破坏性操作。护栏 = confirm 严格 True + 仅 NAS Safe 托管快照
+                # 整卷回滚：破坏性操作。护栏 = confirm 严格 True + 仅 TS Safe 托管快照
                 print(f"[revert] 收到回滚请求 confirm={payload.get('confirm')} vid={payload.get('volume_id')} sid={payload.get('snapshot_id')}", flush=True)
                 if payload.get("confirm") is not True:
                     self._send_json({
@@ -1170,12 +1163,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not vid or not sid:
                     raise StorageError("缺少 volume_id / snapshot_id 参数")
                 snap = find_snapshot(vid, sid)
-                # 只允许回滚 NAS Safe 自己创建的快照（与前端 canRevert 判定一致），
+                # 只允许回滚 TS Safe 自己创建的快照（与前端 canRevert 判定一致），
                 # 防止误回滚 QTS 系统快照或用户手工建立的无关快照。
                 if not re.match(r"^(auto-|nassafe_|snap-)", snap.name or ""):
                     print(f"[revert] 拒绝：非托管快照 name={snap.name}", flush=True)
                     raise StorageError(
-                        "只允许回滚 NAS Safe 创建的快照（auto-/nassafe_/snap- 前缀）"
+                        "只允许回滚 TS Safe 创建的快照（auto-/nassafe_/snap- 前缀）"
                     )
                 storage.revert_volume(snap)
                 print(f"[revert] 回滚命令已提交 vid={vid} sid={sid} name={snap.name}", flush=True)
@@ -1216,7 +1209,7 @@ class Handler(BaseHTTPRequestHandler):
 
             elif route == "/api/notify/alert":
                 # 异常主动推送：按最快触达自动优选通道（微信服务号 > 手机推送 > 群机器人 > 邮件）
-                title = str(payload.get("title") or "NAS Safe 异常提醒")
+                title = str(payload.get("title") or "TS Safe 异常提醒")
                 detail = str(payload.get("detail") or "")
                 level = str(payload.get("level") or "warn")
                 keys = payload.get("keys")
@@ -1622,7 +1615,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise StorageError("缺少 id 参数")
                 self._send_json({"ok": True, **devices.remove_device(dev_id)})
             elif route == "/api/devices/scan":
-                # 自动扫描：局域网 + 异地组网（Tailscale/WireGuard/VPN 等）里的 NAS Safe
+                # 自动扫描：局域网 + 异地组网（Tailscale/WireGuard/VPN 等）里的 TS Safe
                 self._send_json({"ok": True, **netscan.scan(payload)})
             elif route == "/api/devices/rename":
                 dev_id = (payload.get("id") or "").strip()
@@ -1639,6 +1632,11 @@ class Handler(BaseHTTPRequestHandler):
             elif route == "/api/devices/refresh":
                 # 强制刷新聚合（忽略远程缓存，立即重拉）
                 self._send_json({"ok": True, **devices.collect_all(force=True)})
+            elif route == "/api/devices/manage":
+                # 联机设备管控（设置后台）：改单台设备的功能开关 / 补装代理
+                # 注意：do_POST 里没有 method 变量（只有 do_GET/do_POST 两套独立路由链），
+                # 这里走到就一定是 POST，别再判断 method，否则 NameError 直接 500。
+                self._send_json({**devices.set_manage(payload)})
 
             # ---------- 换机迁移 ----------
             elif route == "/api/migrate/preview":
@@ -1685,6 +1683,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "report": report})
 
             # ---------- 版本与激活 ----------
+            elif route == "/api/license/issue":
+                # 模拟「支付成功」后由发卡端下发激活码：本机按机器码实时签一张码。
+                # 仅本机可用（机器码即本机），等同官方发卡给本机出的码。
+                ed = (payload.get("edition") or "").strip()
+                if ed not in ("home", "business"):
+                    self._send_json({"ok": False, "error": "无效版本"}, 400)
+                    return
+                try:
+                    licensing.ensure_secret()
+                    fp = licensing.machine_fingerprint()
+                    code = licensing.issue_key(ed, fp, 0)
+                    self._send_json({"ok": True, "edition": ed, "code": code})
+                except Exception as exc:  # noqa: BLE001
+                    self._send_json({"ok": False, "error": f"发码失败：{exc}"}, 500)
             elif route == "/api/license/activate":
                 key = str(payload.get("key") or "")
                 ok, msg = licensing.activate(key)
@@ -1708,7 +1720,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     profile = storage.probe_system()
     print("=" * 58)
-    print("  NAS Safe — 防勒索快照管理")
+    print("  TS Safe — 防勒索快照管理")
     print("=" * 58)
     print(f"  系统      : {profile.os_name} ({profile.os_id})")
     print(f"  内核      : {profile.kernel}")

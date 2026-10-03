@@ -1,23 +1,14 @@
-/* TS Safe — 前端逻辑 */
-const APP_JS_VER = "20261003m";
+/* NAS Safe — 前端逻辑 */
+const APP_JS_VER = "20261003h";
 
 const $ = (id) => document.getElementById(id);
 
 let currentUser = null;
-let needsSetup = false;            // 后端是否还未初始化管理员账号（首次需注册）
-let pendingProtectedView = null;   // 未登录时点过受保护入口，登录成功后跳转到此视图
-// 受保护视图：涉及读取系统目录 / 删除文件 / 改配置，必须登录后才可进入
-const PROTECTED_VIEWS = ["dups", "junk", "migrate", "settings"];
-// 这三个是「工具」，从「功能设置」菜单里启动（点击后跳到对应全屏视图）
-const TOOL_VIEWS = ["dups", "junk", "migrate"];
 const state = {
   system: null,
   volumes: [],
   activeVolume: null,
   snapshots: [],
-  snapDevice: "local",   // 快照页当前看哪台设备："local"=本机，其它=联机设备 id
-  snapVolumes: [],       // 当前设备的卷列表（本机用 state.volumes，联机设备单独存）
-  snapReadonly: false,   // 联机设备的快照只能看、不能动
   browseSnapshot: null,
   browsePath: null,
   browseStack: [],
@@ -76,26 +67,15 @@ async function api(path, options = {}, timeoutMs = 60000) {
       }
       throw new Error("需要管理员权限");
     }
-    const respClone = res.clone();
     let data;
     try {
       data = await res.json();
     } catch {
-      // 响应体不是合法 JSON：把原始内容读出来，给出可定位的提示，而不是笼统的「非法响应」
-      let raw = "";
-      try { raw = (await respClone.text()).slice(0, 300); } catch {}
-      const trimmed = (raw || "").trim();
-      if (trimmed.startsWith("<")) {
-        throw new Error("服务端返回了网页而非数据（可能会话已失效被重定向），请刷新页面后重新登录");
-      }
-      if (!trimmed) {
-        throw new Error(`服务端未返回任何内容（HTTP ${res.status}），请刷新页面后重试`);
-      }
-      throw new Error(`服务端返回了无法解析的内容（HTTP ${res.status}），请刷新页面后重试`);
+      throw new Error(`服务返回了非法响应 (HTTP ${res.status})`);
     }
     if (!data.ok) {
       // 服务端卡点（设备数/迁移等）返回 upgrade:true——这正是展示升级页的时机
-      if (data.upgrade && !window.__suppressUpgradeJump && typeof openUpgradeModal === "function") openUpgradeModal();
+      if (data.upgrade && typeof openUpgradeModal === "function") openUpgradeModal();
       throw new Error(data.error || "未知错误");
     }
     return data;
@@ -124,9 +104,9 @@ function setStatus(text, kind = "") {
 async function boot() {
   try {
     if (document.getElementById("jsVer")) document.getElementById("jsVer").textContent = APP_JS_VER;
-    // 看数据免登录：只拦截「首次未初始化」(initAuth 会弹注册框)；游客态继续加载公开数据
-    await initAuth();
-    if (needsSetup) return;
+    // 先确认登录/初始化：未登录时功能按钮会被服务端拒绝，前端同步弹出登录框
+    const authOk = await initAuth();
+    if (!authOk) return;
     const sys = await api("/api/system");
     state.system = sys.system;
     const s = sys.system;
@@ -139,14 +119,6 @@ async function boot() {
     }
 
     await loadVolumes();
-  } catch (err) {
-    setStatus("连接失败", "err");
-    showBanner("error", "无法连接到 TS Safe 服务", err.message);
-    return;
-  }
-  // 以下为「非核心」恢复逻辑：即使某子视图（控制台/时间轴等）加载失败，
-  // 也不该让整页退回「连接失败」——核心数据（系统+存储单元）已就绪即视为已连接。
-  try {
     // 启动即恢复上次选中的卷（不强制跳转视图）：刷新后勒索行为扫描等
     // 依赖 state.activeVolume 的功能才不会报「请先选择一个卷」。
     const savedVol = localStorage.getItem("nassafe_volume");
@@ -164,8 +136,9 @@ async function boot() {
     }
     // 强刷后恢复上次所在视图的数据：默认进入设备控制台
     onEnterView(localStorage.getItem("nassafe_view") || "console");
-  } catch (e) {
-    toast("部分数据加载较慢或失败：" + (e.message || e), "warn");
+  } catch (err) {
+    setStatus("连接失败", "err");
+    showBanner("error", "无法连接到 NAS Safe 服务", err.message);
   }
 }
 
@@ -179,31 +152,15 @@ function updateAuthUI() {
     box.innerHTML = `<span class="user"><b>${escapeHtml(currentUser.username)}</b><small>${escapeHtml(currentUser.role === "admin" ? "管理员" : "只读")}</small></span>
       <button class="btn ghost sm" data-act="logout" id="authBtn">退出</button>`;
     box.querySelector("[data-act='logout']").onclick = async () => {
-      try {
-        await api("/api/auth/logout", { method: "POST" });
-      } catch (e) {
-        // 即便登出接口异常也照常刷新：本地会话必然清掉，刷新后由服务端权威状态决定
-        toast(e.message || "退出请求失败，仍会刷新页面", "warn");
-      }
-      // 先立即把右上角改成「登录」并清掉本地登录态，不等刷新就有可见反馈（避免「点退出没反应」误感）
+      await api("/api/auth/logout", { method: "POST" });
       currentUser = null;
       updateAuthUI();
       toast("已退出登录");
-      // 再整页刷新，由服务端权威状态兜底
-      location.reload();
     };
   } else if (btn) {
     btn.textContent = "登录";
     btn.onclick = openLoginModal;
   }
-}
-
-// 受保护入口：未登录时先要求注册（首次）或登录，验证通过后再进入目标视图
-function requireLoginFor(view) {
-  if (currentUser) { showView(view); return; }
-  pendingProtectedView = view;
-  if (needsSetup) openSetupModal();
-  else openLoginModal();
 }
 
 function openLoginModal() {
@@ -222,24 +179,17 @@ function openLoginModal() {
       const p = $("loginPass").value;
       try {
         const r = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ username: u, password: p }) });
-        if (!r || !r.user) throw new Error("登录成功但服务端未返回账号信息，请刷新页面");
-        // 登录成功：先把本地状态改成「已登录」并关弹窗，立即有反馈；
-        // 再整页刷新，由服务端会话权威决定「已登录」状态，避免前端内存态出错
         currentUser = { username: r.user, role: r.role };
         updateAuthUI();
         closeModal();
-        location.reload();
-        return;
+        toast(`欢迎回来，${escapeHtml(r.user)}`);
+        await boot();
       } catch (e) {
         const el = $("loginErr");
         if (el) el.textContent = e.message;
-        else toast(e.message || "登录失败", "warn");
       }
     }
   }, { stay: true });
-  // 直接把登录按钮的 onclick 绑到 login 动作上，避免只依赖 modalRoot 委托（防止任何 data-act 选择器歧义导致点不动）
-  const lb = document.querySelector('#modalFoot button[data-act="login"]');
-  if (lb) lb.onclick = modalActions.login;
   const pass = $("loginPass");
   if (pass) pass.onkeydown = (e) => { if (e.key === "Enter" && modalActions.login) modalActions.login(); };
   const fl = $("forgotLink");
@@ -317,7 +267,7 @@ function openForgotStep2(username) {
 
 function openSetupModal() {
   const body = `<div class="auth-form">
-    <p class="muted">欢迎使用 TS Safe。先注册一个管理员账号，注册登录后才能使用快照、防勒索、设备管控等全部功能（不注册只能看页面）。注册完会直接带你去设置页做初次配置。</p>
+    <p class="muted">欢迎使用 NAS Safe。先注册一个管理员账号，注册登录后才能使用快照、防勒索、设备管控等全部功能（不注册只能看页面）。注册完会直接带你去设置页做初次配置。</p>
     <label>账号<input class="text-input" id="setupUser" placeholder="2~32 位字母/数字/下划线" autocomplete="username"></label>
     <label>密码<input class="text-input" id="setupPass" type="password" placeholder="至少 6 位" autocomplete="new-password"></label>
     <label>确认密码<input class="text-input" id="setupPass2" type="password" placeholder="再输一次" autocomplete="new-password"></label>
@@ -340,12 +290,7 @@ function openSetupModal() {
         closeModal();
         toast(`注册成功，欢迎 ${escapeHtml(r.user)}！先完成基础设置`);
         await boot();
-        if (pendingProtectedView) {
-          const pv = pendingProtectedView; pendingProtectedView = null;
-          showView(pv);
-        } else {
-          showView("settings");
-        }
+        showView("settings");
       } catch (e) { err.textContent = e.message; }
     }
   }, { stay: true });
@@ -356,7 +301,6 @@ function openSetupModal() {
 async function initAuth() {
   try {
     const r = await api("/api/auth/check");
-    needsSetup = !!r.needs_setup;
     if (r.needs_setup) {
       openSetupModal();
       return false;
@@ -413,9 +357,8 @@ async function loadVolumes() {
   state.volumes = data.volumes;
 
   // 时间轴页的卷切换下拉框：选项 = 所有存储卷
-  // 快照页正看着某台联机设备时，下拉里装的是那台设备的卷，别被本机卷覆盖回去
   const sel = $("tlVolumeSel");
-  if (sel && (!state.snapDevice || state.snapDevice === "local")) {
+  if (sel) {
     sel.innerHTML = state.volumes
       .map((v) => `<option value="${escapeHtml(v.mountpoint ?? String(v.id))}">${escapeHtml(v.name)}</option>`)
       .join("");
@@ -924,7 +867,7 @@ function currentAnomalies() {
     list.push({
       key: `alert-${a.title}`, sev: a.level === "critical" ? 2 : 1,
       title: a.title || "快照保护异常", detail: a.detail || "", view: "monitor",
-      q: `TS Safe 报告异常：${a.title || ""}${a.detail ? "：" + a.detail : ""}。请分析原因并给出排查与修复步骤`,
+      q: `NAS Safe 报告异常：${a.title || ""}${a.detail ? "：" + a.detail : ""}。请分析原因并给出排查与修复步骤`,
     });
   });
   return list;
@@ -966,7 +909,7 @@ async function pushAnomalyAlert(list) {
       } catch (e) { /* AI 不可用时退回原始摘要 */ }
     }
     try {
-      const n = new Notification("TS Safe 异常提醒", { body, tag: "nassafe-anom", requireInteraction: true });
+      const n = new Notification("NAS Safe 异常提醒", { body, tag: "nassafe-anom", requireInteraction: true });
       n.onclick = () => { window.focus(); openAnomalyModal(); };
     } catch (e) { /* 部分浏览器限制非 HTTPS 通知，忽略 */ }
   }
@@ -976,7 +919,7 @@ async function pushAnomalyAlert(list) {
       await api("/api/notify/alert", {
         method: "POST",
         body: JSON.stringify({
-          title: "TS Safe 异常提醒",
+          title: "NAS Safe 异常提醒",
           detail: summary,
           level: worst.sev >= 2 ? "critical" : "warn",
         }),
@@ -1314,8 +1257,7 @@ async function aiDiscover() {
 
 
 
-// 顶栏标签页：设备控制台 / 本机总览 / 快照时间轴 为免登录数据查看；
-// 实时监控 / 重复文件 / 磁盘清理 / 换机迁移 / 设置 为受保护视图，只能从「设置与管理」登录后进入。
+// 顶栏标签页：设备控制台 / 本机总览 / 快照时间轴 / 实时监控 / 重复文件 / 设置；风险横幅全局常驻。
 const VIEWS = ["console", "home", "snapshots", "monitor", "dups", "junk", "migrate", "settings"];
 
 /* ===================== 跨品牌多设备总控制台 ===================== */
@@ -1329,15 +1271,12 @@ function healthClass(h) {
 
 async function loadConsole(force) {
   const box = $("consoleGroups");
-  // 无感刷新：页面已经渲染过就不再清空内容转圈，后台拉到新数据后原位更新；
-  // 只有第一次进入（还没内容）才显示加载动画，之后刷新用户基本无感知。
-  const firstLoad = !box || !box.querySelector(".net-tile, .topo-stage");
-  if (box && firstLoad) box.innerHTML = `<p class="muted"><span class="spinner"></span>正在汇总各品牌设备状态…</p>`;
+  if (box) box.innerHTML = `<p class="muted"><span class="spinner"></span>正在汇总各品牌设备状态…</p>`;
   try {
     const data = await api("/api/devices" + (force ? "?force=1" : ""), {}, 20000);
     renderConsole(data);
   } catch (e) {
-    if (box && firstLoad) box.innerHTML = `<p class="muted">汇总失败：${escapeHtml(e.message)}</p>`;
+    if (box) box.innerHTML = `<p class="muted">汇总失败：${escapeHtml(e.message)}</p>`;
   }
 }
 
@@ -1384,20 +1323,6 @@ function withDemoDevices(data) {
 }
 
 
-/* 无感刷新：记录上次渲染的「设备指纹」，新数据进来先对比——
-   指纹没变（设备没增减/没改名/状态字段没变）就只原位改文字与颜色，
-   不重建 DOM：卡片不闪、拓扑粒子动画不中断、滚动位置不丢。 */
-let _consoleSig = "";
-let _selectedDevId = "";
-function consoleSig(devs) {
-  return devs.map((d) => [
-    d.id, deviceDisplayName(d), d.status, d.health || 0,
-    (d.agent && d.agent.status) || "",
-    d.smart && d.smart.available ? `${d.smart.disk_count}-${d.smart.bad || 0}-${d.smart.warn || 0}` : "na",
-    `${(d.snapshot && d.snapshot.protected_units) || 0}/${(d.snapshot && d.snapshot.total_units) || 0}`,
-  ].join(":")).join("|");
-}
-
 function renderConsole(data) {
   const totals = data.totals || {};
   const set = (id, v) => { const el = $(id); if (el) el.textContent = (v == null ? "—" : v); };
@@ -1416,20 +1341,6 @@ function renderConsole(data) {
     return;
   }
   const remotes = all.filter((d) => d.type !== "local");
-  // 无感刷新路径：设备列表结构没变，只原位更新卡片与拓扑状态
-  const sig = consoleSig(all);
-  if (sig === _consoleSig && wrap.querySelector(".net-tile")) {
-    for (const d of remotes) updateNetTile(d);
-    const cnt = wrap.querySelector(".dev-group-count");
-    if (cnt) cnt.textContent = `${remotes.length} 台`;
-    _consoleData = withDemoDevices(data);
-    updateTopoStatus(_consoleData.devices || []);
-    const localNow = (_consoleData.devices || []).find((d) => d.type === "local") || (_consoleData.devices || [])[0];
-    const selDev = findDev(_consoleData, _selectedDevId) || localNow;
-    if (selDev) selectDevice(selDev.id, { quiet: true });
-    return;
-  }
-  _consoleSig = sig;
   // 本机不再在这里重复出卡片：顶部详情区已展示本机状态并带「进入本机」按钮
   let html = "";
   // 联网设备：图标框排列，一眼看到每台的监控状态
@@ -1438,7 +1349,7 @@ function renderConsole(data) {
         <span class="dev-group-count">${remotes.length} 台</span></div>
       <div class="net-grid">`;
   if (!remotes.length) {
-    html += `<p class="muted net-empty">还没有添加联网设备，到左侧「功能设置 → 添加设备」里添加。</p>`;
+    html += `<p class="muted net-empty">还没有添加联网设备，点右上角「＋ 添加设备」。</p>`;
   }
   for (const d of remotes) html += netTile(d);
   html += `</div></div>`;
@@ -1450,14 +1361,20 @@ function renderConsole(data) {
       const id = b.dataset.enter;
       const dev = findDev(data, id);
       if (!dev) return;
-      openDeviceControl(dev);
+      if (dev.type === "local") { showView("home"); }
+      else if (dev.host) {
+        const url = `http${dev.https ? "s" : ""}://${dev.host}:${dev.port}/`;
+        window.open(url, "_blank");
+      }
     };
   });
   wrap.querySelectorAll("[data-net-open]").forEach((b) => {
     b.onclick = (ev) => {
       ev.stopPropagation();
       const dev = findDev(_consoleData, b.dataset.netOpen);
-      openDeviceControl(dev);
+      if (!dev) return;
+      if (dev.host) window.open(`http${dev.https ? "s" : ""}://${dev.host}:${dev.port}/`, "_blank");
+      else toast("这台设备还没登记访问地址", "err");
     };
   });
   wrap.querySelectorAll("[data-net]").forEach((t) => {
@@ -1487,45 +1404,7 @@ function renderConsole(data) {
   _consoleData = dataEff;
   renderTopology(dataEff);
   const localDev = (data.devices || []).find((d) => d.type === "local") || (data.devices || [])[0];
-  const selDev = (_selectedDevId && findDev(dataEff, _selectedDevId)) || localDev;
-  if (selDev) selectDevice(selDev.id);
-}
-
-/* 原位更新一张联网设备卡片（不重建 DOM）：只改健康色、在线状态、硬盘/快照两行 */
-function updateNetTile(d) {
-  const t = document.querySelector(`.net-tile[data-net="${CSS.escape(d.id)}"]`);
-  if (!t) return;
-  const hc = healthClass(d.health);
-  const offline = d.status === "offline";
-  const hLabel = HEALTH_LABEL[d.health] || "正常";
-  const sm = d.smart || {}, sn = d.snapshot || {};
-  t.className = `net-tile ${hc} ${offline ? "offline" : ""}`;
-  t.style.setProperty("--col", topoHealthColor(d));
-  const st = t.querySelector(".nt-state");
-  if (st) st.innerHTML = `<span class="nt-dot"></span>${offline ? "离线" : escapeHtml(hLabel)}`;
-  const mt = t.querySelector(".nt-metrics");
-  if (mt) mt.innerHTML = `<span>${netDiskText(sm)}</span><span>⛨ ${sn.protected_units || 0}/${sn.total_units || 0} 卷受保护</span>`;
-}
-
-/* 原位更新拓扑节点/连线的颜色与状态文字（不重建画面，粒子动画不中断） */
-function updateTopoStatus(devs) {
-  for (const d of devs) {
-    const id = CSS.escape(d.id);
-    const col = topoHealthColor(d);
-    const off = d.status === "offline";
-    const node = document.querySelector(`.topo-node[data-id="${id}"]`);
-    if (node) {
-      const st = off ? "off" : ((d.health || 0) >= 2 ? "warn" : "ok");
-      node.className = `topo-node ${st}${off ? " off" : ""}`;
-      node.style.setProperty("--col", col);
-      const s = node.querySelector(".tn-status");
-      if (s) s.textContent = off ? "离线" : (d.health_label || "正常");
-      const ico = node.querySelector(".tn-badge");
-      if (ico) ico.style.background = col;
-    }
-    const link = document.querySelector(`.topo-link[data-id="${id}"]`);
-    if (link) { link.setAttribute("stroke", col); link.classList.toggle("off", off); }
-  }
+  if (localDev) selectDevice(localDev.id);
 }
 
 /* ---------- 设备拓扑思维导图（中心总控台 + 环绕设备节点） ---------- */
@@ -1826,7 +1705,7 @@ function renderTopology(data) {
   if (!host) return;
   const devs = data.devices || [];
   if (!devs.length) {
-    host.innerHTML = `<p class="muted">还没有设备，到「功能设置 → 添加设备」里添加后这里会显示。</p>`;
+    host.innerHTML = `<p class="muted">还没有设备，点「＋ 添加设备」开始。</p>`;
     return;
   }
   const W = 1000, H = 600, cx = 500, cy = 300;
@@ -1990,20 +1869,19 @@ function renderTopology(data) {
   startTopoDrift(stage, items, { W, H, cx, cy, rx, ry, n, gaps });
 }
 
-function selectDevice(id, opts) {
+function selectDevice(id) {
   const dev = findDev(_consoleData, id);
   if (!dev) return;
-  _selectedDevId = id;
   document.querySelectorAll(".topo-node").forEach((n) => {
     const sel = n.dataset.id === id;
     n.classList.toggle("selected", sel);
-    if (sel && !(opts && opts.quiet)) { n.classList.remove("flip"); void n.offsetWidth; n.classList.add("flip"); }  // 立体翻转
+    if (sel) { n.classList.remove("flip"); void n.offsetWidth; n.classList.add("flip"); }  // 立体翻转
   });
   renderDeviceDetail(dev);
 }
 
-function renderDeviceDetail(dev, target) {
-  const box = target ? $(target) : $("deviceDetail");
+function renderDeviceDetail(dev) {
+  const box = $("deviceDetail");
   if (!box) return;
   box.style.display = "block";
   const offline = dev.status === "offline";
@@ -2059,12 +1937,11 @@ function renderDeviceDetail(dev, target) {
     actions += `<button class="btn ghost sm" id="ddAgentBtn">${agState === "pending" ? "查看安装命令" : "安装轻量代理"}</button>`;
   }
 
-  // 进入按钮放在标题行右侧（dd-side）；联机设备点它是打开「设备管控」页，
-  // 离线时也要能点（正是离线才需要去检查地址/代理），所以不再置灰。
+  // 进入按钮放在标题行右侧（dd-side）、「在线/离线」状态前面；离线则置灰不可点
   const canEnter = dev.type === "local" || !!dev.host;
-  const enterLabel = dev.type === "local" ? "进入本机" : "设备管控";
+  const enterLabel = dev.type === "local" ? "进入本机" : "打开控制台";
   const enterBtnHtml = canEnter
-    ? `<button class="btn primary sm" id="ddSideBtn">${enterLabel}</button>`
+    ? `<button class="btn primary sm" id="ddSideBtn"${offline ? " disabled" : ""}>${enterLabel}</button>`
     : "";
 
   box.innerHTML = `
@@ -2087,15 +1964,16 @@ function renderDeviceDetail(dev, target) {
     </div>
     <div class="dd-actions">${actions}</div>`;
 
-  const sideBtn = box.querySelector("#ddSideBtn");
+  const sideBtn = $("ddSideBtn");
   if (sideBtn) sideBtn.onclick = () => {
-    openDeviceControl(dev);
+    if (dev.type === "local") showView("home");
+    else window.open(`http${dev.https ? "s" : ""}://${dev.host}:${dev.port}/`, "_blank");
   };
-  const agBtn = box.querySelector("#ddAgentBtn");
+  const agBtn = $("ddAgentBtn");
   if (agBtn) agBtn.onclick = () => openAgentModal(dev);
-  const rn2 = box.querySelector("#ddRenameBtn");
+  const rn2 = $("ddRenameBtn");
   if (rn2) rn2.onclick = () => openRenameModal(dev.id);
-  const rm = box.querySelector("#ddRemoveBtn");
+  const rm = $("ddRemoveBtn");
   if (rm) rm.onclick = async () => {
     if (!confirm("确定要移除这台设备吗？")) return;
     try {
@@ -2117,11 +1995,6 @@ async function openAgentModal(dev) {
   const base = `${location.protocol}//${location.host}`;
   const cmd = token ? `curl -sS "${base}/api/agent/install.sh?t=${token}" | sh` : "";
   const cmdPs = token ? `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm '${base}/api/agent/install.ps1?t=${token}' | iex"` : "";
-  // 不想登到目标设备上去敲命令时：在自己这台电脑上用 SSH 远程执行（Linux/NAS/云服务器可用）
-  const devHost = (dev.host || "").trim();
-  const cmdSsh = token && devHost
-    ? `ssh 用户名@${devHost} "curl -sS '${base}/api/agent/install.sh?t=${token}' | sh"`
-    : "";
   const cmdRow = (label, c, id) => c
     ? `<div class="set-row" style="align-items:flex-start"><span class="set-label" style="min-width:56px">${label}</span>
        <div class="agent-cmd" style="flex:1"><code id="${id}">${escapeHtml(c)}</code><button class="btn ghost sm" data-act="copy_${id}">复制</button></div></div>`
@@ -2131,14 +2004,7 @@ async function openAgentModal(dev) {
     `<p class="muted" style="margin:0 0 8px">给 <b>${escapeHtml(deviceDisplayName(dev))}</b> 装上轻量代理后，中控就能帮它做快照防勒索、换机迁移等完整控制。<br>
      装法：登到那台设备（Windows 用 PowerShell，NAS/群晖/云服务器用 SSH），粘贴运行对应的命令。代理只回连报到（每分钟一次），不会改对端的任何配置。</p>
      ${cmdRow("Linux/Mac", cmd, "agentCmdSh") || `<p class="muted">安装命令生成失败（令牌没拿到），请关掉重试。</p>`}
-     ${cmdRow("Windows", cmdPs, "agentCmdPs")}
-     ${cmdRow("远程装", cmdSsh, "agentCmdSsh")}
-     <p class="muted" style="margin:10px 0 0;line-height:1.8">
-       <b>能不能由这台电脑帮别的设备装？</b><br>
-       · Linux / 群晖 / 威联通 / 云服务器：能。用上面「远程装」那条，把「用户名」换成对方的 SSH 账号，在<b>这台电脑</b>上执行一次就行，不用登到对方机器。<br>
-       · Windows：不行。Windows 没有对外开放的远程执行通道，必须<b>在那台电脑的 PowerShell 里</b>跑一次「Windows」那条命令（建议管理员身份）。<br>
-       这是有意的安全设计：中控不能凭空拿到别人设备的控制权，总得有一次「本机同意」。
-     </p>`,
+     ${cmdRow("Windows", cmdPs, "agentCmdPs")}`,
     `<button class="btn ghost" data-act="close">关闭</button>
      ${cmd ? `<button class="btn primary" data-act="checkagent">我已运行，检测一下</button>` : ""}`,
     {
@@ -2148,10 +2014,6 @@ async function openAgentModal(dev) {
       },
       copy_agentCmdPs: async () => {
         try { await navigator.clipboard.writeText(cmdPs); toast("Windows 命令已复制，到 PowerShell 里粘贴运行（建议管理员身份）", "ok"); }
-        catch (e) { toast("自动复制失败，请手动选中命令复制", "warn"); }
-      },
-      copy_agentCmdSsh: async () => {
-        try { await navigator.clipboard.writeText(cmdSsh); toast("已复制：把「用户名」换成对方的 SSH 账号后，在这台电脑上执行", "ok"); }
         catch (e) { toast("自动复制失败，请手动选中命令复制", "warn"); }
       },
       checkagent: async () => {
@@ -2197,13 +2059,6 @@ function topoKindFromBrand(brand) {
   return "chip";
 }
 
-/* 硬盘监测一行文案：netTile 与无感刷新的原位更新共用，保证两边永远一致 */
-function netDiskText(sm) {
-  return sm.available
-    ? `💽 ${sm.disk_count} 块${sm.bad ? " · " + sm.bad + " 块异常" : sm.warn ? " · " + sm.warn + " 块注意" : " · 全部良好"}`
-    : "💽 硬盘监测不可用";
-}
-
 /* 联网设备用「图标框」排列：一眼看到每台的机型、名字与监控状态 */
 function netTile(d) {
   const hc = healthClass(d.health);
@@ -2213,16 +2068,18 @@ function netTile(d) {
   const ring = TOPO_KIND_COLORS[kind] || TOPO_KIND_COLORS.chip;
   const offline = d.status === "offline";
   const sm = d.smart || {}, sn = d.snapshot || {};
-  const diskTxt = netDiskText(sm);
+  const diskTxt = sm.available
+    ? `💽 ${sm.disk_count} 块${sm.bad ? " · " + sm.bad + " 块异常" : sm.warn ? " · " + sm.warn + " 块注意" : " · 全部良好"}`
+    : "💽 硬盘监测不可用";
   const snapTxt = `⛨ ${sn.protected_units || 0}/${sn.total_units || 0} 卷受保护`;
   const gname = (d.group && d.group !== "本地设备" && d.group !== "远程设备") ? d.group : "";
   return `<div class="net-tile ${hc} ${offline ? "offline" : ""}" data-net="${escapeHtml(d.id)}" style="--col:${col};--ring:${ring}">
       ${gname ? `<span class="nt-tag">${escapeHtml(gname)}</span>` : ""}
       <div class="nt-badge">${topoDeviceGlyph(kind)}</div>
-      <div class="nt-name" title="${escapeHtml(deviceDisplayName(d))}">${escapeHtml(deviceDisplayName(d))}<button class="nm-edit" data-rename="${escapeHtml(d.id)}" title="给这台改名">✎</button></div>
+      <div class="nt-name">${escapeHtml(deviceDisplayName(d))}<button class="nm-edit" data-rename="${escapeHtml(d.id)}" title="给这台改名">✎</button></div>
       <div class="nt-state"><span class="nt-dot"></span>${offline ? "离线" : escapeHtml(hLabel)}</div>
       <div class="nt-metrics"><span>${diskTxt}</span><span>${snapTxt}</span></div>
-      <div class="nt-foot"><button class="btn ghost sm" data-net-open="${escapeHtml(d.id)}">设备管控</button></div>
+      <div class="nt-foot"><button class="btn ghost sm" data-net-open="${escapeHtml(d.id)}">打开控制台</button></div>
     </div>`;
 }
 
@@ -2279,245 +2136,8 @@ function deviceCard(d) {
     </div>`;
 }
 
-/* ---------- 联机设备状态总览（「联机设备」页） ---------- */
-
-// 打开一台设备的「管控页」。
-// 以前是 window.open 对端的局域网地址（http://192.168.x.x:8848），从外网/云端的
-// 控制台点开根本连不上。现在统一改成：在本控制台里打开这台设备的管控页面，
-// 功能设置都在当前控制台完成，不依赖对端地址能不能访问。
-function openDeviceControl(dev) {
-  if (!dev) return;
-  if (dev.type === "local") { showView("home"); return; }
-  _manageFocus = dev.id;
-  showView("settings");
-  showSettingsTab("manage");
-}
-
-// 联机设备总览：复用 /api/devices 的聚合结果，按卡片网格呈现所有已联机设备
-async function loadDeviceOverview(force) {
-  const box = $("deviceOverview");
-  // 无感刷新：已渲染过就不清空转圈，拉到新数据原位更新
-  const firstLoad = !box || !box.querySelector(".ov-card");
-  if (box && firstLoad) box.innerHTML = `<p class="muted"><span class="spinner"></span>正在汇总联机设备…</p>`;
-  try {
-    const data = await api("/api/devices" + (force ? "?force=1" : ""), {}, 20000);
-    _overviewData = data;
-    renderDeviceOverview(data);
-  } catch (e) {
-    if (box && firstLoad) box.innerHTML = `<p class="muted">加载失败：${escapeHtml(e.message || "")}</p>`;
-  }
-}
-
-let _overviewData = null;
-let _overviewSig = "";
-let _manageFocus = "";   // 从总览「功能设置」跳过来时高亮的设备
-
-function renderDeviceOverview(data) {
-  const box = $("deviceOverview");
-  if (!box) return;
-  const all = (data.devices || []);
-  const cur = all.find((d) => d.type === "local") || all[0];
-  const online = all.filter((d) => d.status === "online").length;
-  if (!all.length) {
-    box.innerHTML = `<p class="muted">还没有登记任何设备。到「功能设置 → 添加设备」里添加后这里会显示。</p>`;
-    _overviewSig = "";
-    return;
-  }
-  const ovSig = all.map((d) => [d.id, deviceDisplayName(d), d.status, d.health || 0,
-    (d.agent && d.agent.status) || "", d.brand_label || d.brand || ""].join(":")).join("|");
-  if (ovSig === _overviewSig && box.querySelector(".ov-card")) {
-    // 无感刷新：卡片没增减，只原位更新状态与代理徽标
-    for (const d of all) updateOverviewCard(d);
-    const barCnt = box.querySelector(".ov-bar span");
-    if (barCnt) barCnt.innerHTML = `共 <b>${all.length}</b> 台 · 在线 <b>${online}</b> 台`;
-    return;
-  }
-  _overviewSig = ovSig;
-  let html = `<div class="ov-bar">
-      <span>共 <b>${all.length}</b> 台 · 在线 <b>${online}</b> 台</span>
-      <span class="ov-hint">点击任一台看详情 · 功能设置到「功能设置」里单独配</span>
-    </div><div class="ov-grid">`;
-  for (const d of all) {
-    const offline = d.status === "offline";
-    const hc = healthClass(d.health);
-    const hLabel = HEALTH_LABEL[d.health] || "正常";
-    const brand = d.brand_label || d.brand || "未知设备";
-    const ag = d.agent || {};
-    const agState = ag.status === "installed" ? "installed" : ag.status === "pending" ? "pending" : "none";
-    const agChip = d.type === "local" ? `<span class="ov-agent ok">代理 已装</span>`
-      : `<span class="ov-agent ${agState}">${agState === "installed" ? "代理 已装" : agState === "pending" ? "代理 待装" : "代理 未装"}</span>`;
-    const canEnter = d.type === "local" || !!d.host;
-    html += `<div class="ov-card ${hc} ${offline ? "offline" : ""}" data-ov="${escapeHtml(d.id)}">
-        <div class="ov-card-head">
-          <span class="brand-badge">${escapeHtml(brand)}</span>
-          <span class="dev-status ${offline ? "off" : "on"}">${offline ? "离线" : "在线"}</span>
-        </div>
-        <div class="ov-card-name">${escapeHtml(deviceDisplayName(d))}</div>
-        <div class="ov-card-health"><span class="dev-health-dot ${hc}"></span><span>${hLabel}</span></div>
-        <div class="ov-card-foot">${agChip}</div>
-        <div class="ov-card-actions">
-          <button class="btn ghost sm" data-ov-detail="${escapeHtml(d.id)}">查看详情</button>
-          <button class="btn primary sm" data-ov-set="${escapeHtml(d.id)}">功能设置</button>
-          ${canEnter ? `<button class="btn ghost sm" data-ov-enter="${escapeHtml(d.id)}">${d.type === "local" ? "进入本机" : "设备管控"}</button>` : ""}
-        </div>
-      </div>`;
-  }
-  html += `</div>`;
-  box.innerHTML = html;
-  box.querySelectorAll("[data-ov-detail]").forEach((b) => {
-    b.onclick = () => { const d = findDev(_overviewData, b.dataset.ovDetail); if (d) openDeviceDetailModal(d); };
-  });
-  box.querySelectorAll("[data-ov-set]").forEach((b) => {
-    b.onclick = () => { _manageFocus = b.dataset.ovSet; showView("settings"); showSettingsTab("manage"); };
-  });
-  box.querySelectorAll("[data-ov-enter]").forEach((b) => {
-    b.onclick = () => {
-      const d = findDev(_overviewData, b.dataset.ovEnter);
-      if (!d) return;
-      openDeviceControl(d);
-    };
-  });
-}
-
-/* 原位更新一张总览卡片：健康色 / 在线状态 / 代理徽标（不动按钮，绑定不丢） */
-function updateOverviewCard(d) {
-  const c = document.querySelector(`.ov-card[data-ov="${CSS.escape(d.id)}"]`);
-  if (!c) return;
-  const offline = d.status === "offline";
-  const hc = healthClass(d.health);
-  const hLabel = HEALTH_LABEL[d.health] || "正常";
-  const ag = d.agent || {};
-  const agState = ag.status === "installed" ? "installed" : ag.status === "pending" ? "pending" : "none";
-  const agChip = d.type === "local" ? `<span class="ov-agent ok">代理 已装</span>`
-    : `<span class="ov-agent ${agState}">${agState === "installed" ? "代理 已装" : agState === "pending" ? "代理 待装" : "代理 未装"}</span>`;
-  c.className = `ov-card ${hc} ${offline ? "offline" : ""}`;
-  const stEl = c.querySelector(".ov-card-head .dev-status");
-  if (stEl) { stEl.className = `dev-status ${offline ? "off" : "on"}`; stEl.textContent = offline ? "离线" : "在线"; }
-  const hEl = c.querySelector(".ov-card-health");
-  if (hEl) hEl.innerHTML = `<span class="dev-health-dot ${hc}"></span><span>${hLabel}</span>`;
-  const fEl = c.querySelector(".ov-card-foot");
-  if (fEl) fEl.innerHTML = agChip;
-}
-
-// 单台设备详情：复用 renderDeviceDetail，装进弹窗方便从总览直接看具体数据
-function openDeviceDetailModal(dev) {
-  openModal(
-    "设备详情 · " + deviceDisplayName(dev),
-    `<div id="deviceDetailModal" style="display:block"></div>`,
-    `<button class="btn ghost" data-act="close">关闭</button>`,
-    {}
-  );
-  renderDeviceDetail(dev, "deviceDetailModal");
-}
-
 /* ---------- 添加设备：先自动扫一遍（局域网 + 异地组网），扫不到再手填 ---------- */
 const SCAN_KIND_LABEL = { lan: "局域网", vpn: "异地组网", manual: "手填网段" };
-
-// 联机设备管控（设置后台）：在线统计 + 每台设备的状态/代理/功能开关；
-// 未装轻量代理的设备只能查看预览（功能开关禁用），装好代理后才可集中设置。
-async function renderManage() {
-  const sumEl = $("manageSummary");
-  const listEl = $("manageList");
-  if (!listEl) return;
-  listEl.innerHTML = `<p class="muted"><span class="spinner"></span>正在加载联机设备…</p>`;
-  let data;
-  try { data = await api("/api/devices/manage", {}, 15000); }
-  catch (e) { listEl.innerHTML = `<p class="muted">加载失败：${escapeHtml(e.message || "")}</p>`; return; }
-  if (sumEl) sumEl.innerHTML = `联机设备 <b>${data.total}</b> 台 · 在线 <b>${data.online}</b> 台`;
-  if (!data.devices || !data.devices.length) {
-    listEl.innerHTML = `<p class="muted">还没有登记任何设备。到「＋ 添加设备」里添加，并给设备装上轻量代理后即可在此集中管控。</p>`;
-    return;
-  }
-  const FEAT_LABEL = { dups: "重复文件清理", junk: "磁盘清理", migrate: "换机迁移", autosnap: "自动快照" };
-  const FEAT_KEYS = ["dups", "junk", "migrate", "autosnap"];
-  let html = "";
-  for (const d of data.devices) {
-    const offline = d.status !== "online";
-    const agState = d.agent_status === "installed" ? "installed" : d.agent_status === "pending" ? "pending" : "none";
-    const noAgent = agState !== "installed";
-    const focused = d.id === _manageFocus ? " focused" : "";
-    let feats = "";
-    for (const k of FEAT_KEYS) {
-      const on = !!d.features[k];
-      feats += `<label class="mg-feat ${noAgent ? "disabled" : ""}" title="${noAgent ? "需先安装轻量代理" : ""}">
-          <input type="checkbox" data-feat="${k}" data-mid="${escapeHtml(d.id)}"${on ? " checked" : ""}${noAgent ? " disabled" : ""}> ${FEAT_LABEL[k]}</label>`;
-    }
-    // 本机：进本机总览；联机设备：这里已经是管控页了，按钮改为去看它的快照
-    const enterBtn = d.type === "local"
-      ? `<button class="btn ghost sm" data-m-enter="${escapeHtml(d.id)}">进入本机</button>`
-      : `<button class="btn ghost sm" data-m-snap="${escapeHtml(d.id)}">查看快照</button>`;
-    const agentBtn = noAgent
-      ? `<button class="btn primary sm" data-m-agent="${escapeHtml(d.id)}">安装轻量代理</button>`
-      : `<span class="mg-agent ok">代理 已装</span>`;
-    // 删除设备：本机不能被删（后端同样拒绝），其余设备（在线/离线都行）随时可移除
-    const delBtn = d.type === "local"
-      ? ""
-      : `<button class="btn ghost sm mg-del" data-m-del="${escapeHtml(d.id)}" title="把这台设备从列表里移除，以后可以重新添加">删除设备</button>`;
-    html += `<div class="mg-device${focused}" data-mid="${escapeHtml(d.id)}">
-        <div class="mg-head">
-          <span class="mg-name">${escapeHtml(d.name)}</span>
-          <span class="dev-status ${offline ? "off" : "on"}">${offline ? "离线" : "在线"}</span>
-          <span class="mg-agent ${agState}">${agState === "installed" ? "代理 已装" : agState === "pending" ? "代理 待装" : "代理 未装"}</span>
-        </div>
-        <div class="mg-body">
-          <div class="mg-feats">${feats}</div>
-          <div class="mg-actions">${agentBtn}${enterBtn}${delBtn}</div>
-        </div>
-      </div>`;
-  }
-  listEl.innerHTML = html;
-  _manageFocus = "";
-  listEl.querySelectorAll("input[data-feat]").forEach((c) => {
-    c.onchange = async () => {
-      const id = c.dataset.mid, k = c.dataset.feat, v = c.checked;
-      try {
-        await api("/api/devices/manage", { method: "POST", body: JSON.stringify({ id, [k]: v }) });
-        toast(`${FEAT_LABEL[k]}已${v ? "开启" : "关闭"}`, "ok");
-      } catch (e) { toast("保存失败：" + e.message, "err"); c.checked = !v; }
-    };
-  });
-  listEl.querySelectorAll("[data-m-agent]").forEach((b) => {
-    b.onclick = async () => {
-      const id = b.dataset.mAgent;
-      try {
-        const r = await api("/api/devices/agent", { method: "POST", body: JSON.stringify({ id }) });
-        const name = b.closest(".mg-device").querySelector(".mg-name").textContent;
-        openAgentModal({ id, name, agent: (r && r.agent) || {} });
-        renderManage();
-      } catch (e) { toast("操作失败：" + e.message, "err"); }
-    };
-  });
-  listEl.querySelectorAll("[data-m-enter]").forEach((b) => {
-    b.onclick = () => showView("home");
-  });
-  listEl.querySelectorAll("[data-m-snap]").forEach((b) => {
-    b.onclick = () => {
-      showView("snapshots");
-      selectSnapDevice(b.dataset.mSnap);
-    };
-  });
-  listEl.querySelectorAll("[data-m-del]").forEach((b) => {
-    b.onclick = async () => {
-      const id = b.dataset.mDel;
-      const box = b.closest(".mg-device");
-      const nmEl = box && box.querySelector(".mg-name");
-      const name = (nmEl && nmEl.textContent) || "这台设备";
-      if (!confirm(`确定要从设备列表里删除「${name}」吗？\n\n删除后控制台不再纳管它，需要时可以重新添加。`)) return;
-      b.disabled = true;
-      try {
-        await api("/api/devices/remove", { method: "POST", body: JSON.stringify({ id }) });
-        toast("已删除设备", "ok");
-        // 快照页若正看这台设备，回落到本机，避免指向已删设备
-        if (state.snapDevice === id) { state.snapDevice = "local"; _snapDevList = []; }
-        try { await loadDeviceOverview(true); } catch (e) { /* 刷新总览失败不影响删除结果 */ }
-        renderManage();
-      } catch (e) {
-        b.disabled = false;
-        toast("删除失败：" + (e.message || ""), "err");
-      }
-    };
-  });
-}
 
 function addDevice() { openAddDeviceModal(); }
 
@@ -2525,11 +2145,11 @@ function openAddDeviceModal() {
   openModal(
     "＋ 添加设备",
     `<div class="scan-form">
-      <p class="muted scan-tip">先自动扫一遍：会找出同网络里的所有设备。已装 TS Safe 的可以直接接管；没装的也能先加为监控设备，或者给那台设备安装轻量代理后再实现快照、迁移等完整控制。只读探测，不会改对端任何东西。<br>注：TS Safe 默认服务端口为 <b>8848</b>（本机控制台也在用）；若某台设备已占用该端口，添加时请在「端口」里填它的实际端口。</p>
+      <p class="muted scan-tip">先自动扫一遍：会找出同网络里的所有设备。已装 NAS Safe 的可以直接接管；没装的也能先加为监控设备，或者给那台设备安装轻量代理后再实现快照、迁移等完整控制。只读探测，不会改对端任何东西。</p>
       <div class="scan-grid">
         <label class="scan-row"><span>端口</span><input id="scanPort" class="text-input" value="8848" inputmode="numeric"></label>
         <label class="scan-row"><span>分组</span><input id="scanGroup" class="text-input" value="联网设备" placeholder="家里 / 公司 / 机房"></label>
-        <label class="scan-row"><span>账号（选填）</span><input id="scanUser" class="text-input" placeholder="对端 TS Safe 的登录账号"></label>
+        <label class="scan-row"><span>账号（选填）</span><input id="scanUser" class="text-input" placeholder="对端 NAS Safe 的登录账号"></label>
         <label class="scan-row"><span>密码（选填）</span><input id="scanPwd" class="text-input" type="password" placeholder="对端登录密码"></label>
         <label class="scan-row wide"><span>额外网段</span><input id="scanCidrs" class="text-input" placeholder="如 100.64.0.0/10，多个用空格隔开"></label>
       </div>
@@ -2576,37 +2196,32 @@ function renderScanResult(data) {
   if (!box) return;
   const found = data.found || [];
   if (!found.length) {
-    box.innerHTML = `<p class="muted">扫了 ${data.scanned || 0} 个地址，没找到已装 TS Safe 的设备。<br>
-      可能是对端还没装、端口不一样，或者被防火墙挡了。可以先点「手动添加」直接填地址；未装 TS Safe 的设备也能作为监控设备加入。</p>
-    <p class="muted scan-note">没扫到你的电脑？先确认它和这台设备在<b>同一个网段</b>；Windows 默认防火墙会挡掉探测，
-      放行「文件和打印机共享（回显请求 - ICMPv4-In）」后再扫一次。也可以直接在「额外网段」里填它的地址，例如 <code>192.168.8.100/32</code>。</p>`;
+    box.innerHTML = `<p class="muted">扫了 ${data.scanned || 0} 个地址，没找到已装 NAS Safe 的设备。<br>
+      可能是对端还没装、端口不一样，或者被防火墙挡了。可以先点「手动添加」直接填地址；未装 NAS Safe 的设备也能作为监控设备加入。</p>`;
     return;
   }
   let html = `<div class="scan-sum">扫了 ${data.scanned} 个地址，找到 ${found.length} 台（用时 ${data.seconds}s）。给每台起个好认的名字，之后随时能改：</div>`;
   for (const f of found) {
     const kindTxt = SCAN_KIND_LABEL[f.kind] || "联网";
     const netTxt = f.iface && f.iface !== "手动填写" ? `${kindTxt} · ${escapeHtml(f.iface)}` : kindTxt;
-    const brandTxt = f.brand_label || f.brand || "TS Safe";
+    const brandTxt = f.brand_label || f.brand || "NAS Safe";
     const defName = `${brandTxt} ${f.ip}`;
     const kind = (f.kind === "vpn") ? "chip" : topoKindFromBrand(f.brand);
     const isSelf = !!f.is_self;
-    const isAdded = !!f.added;                       // 已经加过：不再默认勾选，避免加出重复设备
-    const skip = isSelf || isAdded;
-    html += `<div class="scan-item${isSelf ? " self" : ""}${isAdded ? " added" : ""}">
-      <label class="si-pick"><input type="checkbox"${skip ? "" : " checked"}
+    html += `<div class="scan-item${isSelf ? " self" : ""}">
+      <label class="si-pick"><input type="checkbox"${isSelf ? "" : " checked"}
         data-ip="${escapeHtml(f.ip)}" data-port="${f.port}" data-brand="${escapeHtml(f.brand || "generic_linux")}" data-kind="${escapeHtml(f.kind || "")}"></label>
       <div class="si-ico">${topoDeviceGlyph(kind)}</div>
       <div class="si-main">
         <input class="text-input si-name" value="${escapeHtml(defName)}" maxlength="24">
-        <div class="si-meta">${escapeHtml(f.ip)}:${f.port} · ${escapeHtml(brandTxt)} · ${escapeHtml(netTxt)}${f.need_auth ? " · 需要账号" : ""}${isSelf ? " · 就是这台（已在控制台里，不用再加）" : ""}${isAdded ? ` · <span class="si-added">已经在设备列表里${f.added_name ? `（${escapeHtml(f.added_name)}）` : ""}，别再加了</span>` : ""}</div>
+        <div class="si-meta">${escapeHtml(f.ip)}:${f.port} · ${escapeHtml(brandTxt)} · ${escapeHtml(netTxt)}${f.need_auth ? " · 需要账号" : ""}${isSelf ? " · 就是这台（已在控制台里，不用再加）" : ""}</div>
       </div>
     </div>`;
   }
   if (data.truncated) html += `<p class="muted scan-note">网段太大，只扫了一部分；可以在「额外网段」里填更小的网段（如 192.168.8.0/24）缩小范围。</p>`;
   const others = data.others || [];
   if (others.length) {
-    html += `<div class="scan-others"><div class="scan-sum">网络里还发现 ${others.length} 台设备（还没装 TS Safe，装了就能纳管）：</div>
-      <div class="scan-sum muted" style="font-weight:400">没看到你的电脑？确认它在同一网段，且防火墙没挡住探测（Windows 需放行 ICMP 回显）；也可以把它的 IP 直接填进「额外网段」。</div>`;
+    html += `<div class="scan-others"><div class="scan-sum">网络里还发现 ${others.length} 台设备（还没装 NAS Safe，装了就能纳管）：</div>`;
     for (const o of others) {
       const portTxt = (o.open_ports || []).slice(0, 6).join(",") || "无开放端口";
       const byAi = o.by === "ai";
@@ -2614,7 +2229,7 @@ function renderScanResult(data) {
         <div class="si-ico">${topoDeviceGlyph(o.device_type === "pc" ? (o.brand_label || "").includes("Mac") ? "laptop" : "pc" : o.device_type === "camera" ? "camera" : o.device_type === "router" ? "router" : o.device_type === "server" ? "server" : o.device_type === "nas" || o.device_type === "nas_safe" ? "nas" : "chip")}</div>
         <div class="si-main">
           <div class="si-name2">${escapeHtml(o.suggest_name || o.brand_label || o.ip)} ${byAi ? `<span class="ai-tag">AI 判断</span>` : `<span class="ai-tag rule">规则判断</span>`}</div>
-          <div class="si-meta">${escapeHtml(o.ip)} · ${escapeHtml(o.brand_label || "未知设备")} · 端口 ${escapeHtml(portTxt)}${o.hostname ? " · " + escapeHtml(o.hostname) : ""}${o.alive_only ? " · 在线（没开可识别的端口）" : ""}${o.added ? ` · <span class="si-added">已在设备列表里</span>` : ""}</div>
+          <div class="si-meta">${escapeHtml(o.ip)} · ${escapeHtml(o.brand_label || "未知设备")} · 端口 ${escapeHtml(portTxt)}${o.hostname ? " · " + escapeHtml(o.hostname) : ""}</div>
         </div>
       </div>`;
     }
@@ -2626,7 +2241,7 @@ function renderScanResult(data) {
   if (foot) {
     foot.innerHTML = `<button class="btn ghost" data-act="close">关闭</button>
       <button class="btn ghost" data-act="scan">重新扫描</button>
-      <button class="btn primary" data-act="addsel">＋ 添加勾选的设备</button>`;
+      <button class="btn primary" data-act="addsel">＋ 添加选中（${found.length}）</button>`;
   }
   modalActions.addsel = addSelectedDevices;
 }
@@ -2827,16 +2442,6 @@ async function applyMig() {
 
 
 
-// 首屏把当前页写进地址栏（replaceState，不额外压一条历史），
-// 这样第一次按「返回」是回上一页而不是退出站点。
-function _syncInitialRoute() {
-  try {
-    const v = localStorage.getItem("nassafe_view") || "home";
-    const t = v === "settings" ? (localStorage.getItem("nassafe_settings_tab") || "notify") : "";
-    history.replaceState({ view: v, tab: t }, "", "#/" + v + (t ? "/" + t : ""));
-  } catch (e) { /* 忽略 */ }
-}
-
 function applyView() {
   const view = localStorage.getItem("nassafe_view") || "home";
   if (!VIEWS.includes(view)) return;
@@ -2848,37 +2453,10 @@ function applyView() {
   });
 }
 
-/* ---------- 浏览器前进/后退 ----------
-   之前切页只改 DOM、不动 history，于是「返回」直接退出整个站点（连按两下就没了）。
-   现在把「视图 / 设置子菜单」写进地址栏 hash，返回键就能一页一页往回退。 */
-function _routeFromHash() {
-  const h = String(location.hash || "").replace(/^#\/?/, "");
-  const p = h.split("/").filter(Boolean);
-  return p.length ? { view: p[0], tab: p[1] || "" } : null;
-}
-function _pushRoute(view, tab) {
-  const want = "#/" + view + (tab ? "/" + tab : "");
-  if (location.hash === want) return;          // 同一目标不重复压栈
-  try { history.pushState({ view, tab }, "", want); } catch (e) { /* 忽略 */ }
-}
-function _applyRoute(r) {
-  if (!r || !VIEWS.includes(r.view)) return;
-  if (r.view === "settings") {
-    localStorage.setItem("nassafe_view", "settings");
-    applyView();
-    showSettingsTab(r.tab || "notify");
-  } else {
-    showView(r.view);  // 此时 hash 已是目标值，showView 里的 push 会被去重跳过
-  }
-}
-window.addEventListener("popstate", () => { _applyRoute(_routeFromHash()); });
-
 function showView(name) {
   if (!VIEWS.includes(name)) name = "home";
   localStorage.setItem("nassafe_view", name);
   applyView();
-  // 设置页的子菜单由 showSettingsTab 压栈（能记住具体菜单），这里不重复压
-  if (name !== "settings") _pushRoute(name, "");
   onEnterView(name);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -2889,30 +2467,22 @@ function onEnterView(name) {
   if (name === "console") {
     loadConsole();
   } else if (name === "snapshots") {
-    loadSnapDevices();  // 顶部设备条：本机 + 联机设备
-    if (state.snapDevice && state.snapDevice !== "local") { loadRemoteSnapshots(); return; }
     if (!state.activeVolume) autoSelectVolume(); // 没选过卷：自动选第一个
     else if (state.tlLoadedVol !== (state.activeVolume.mountpoint ?? String(state.activeVolume.id)))
       loadSnapshots(); // 卷已恢复但时间轴还没拉过：补拉（幂等，重复调用不会双载）
   } else if (name === "home") {
     loadMetrics();
-  } else if (name === "monitor") {
-    loadDeviceOverview();
   } else if (name === "settings") {
-    let tab = localStorage.getItem("nassafe_settings_tab") || "notify";
+    const tab = localStorage.getItem("nassafe_settings_tab") || "notify";
     showSettingsTab(tab);
-  }
+  } else if (name === "dups") { refreshDupStatus(); loadDupReport(); }
+  else if (name === "migrate") { loadMigrateTargets(); }
+  else if (name === "junk") { refreshJunkStatus(); loadJunkReport(); }
 }
 
 function showSettingsTab(tab) {
   localStorage.setItem("nassafe_settings_tab", tab);
-  _pushRoute("settings", tab);
   if (tab === "account") initAccountPane();
-  if (tab === "kb") initKbPane();
-  if (tab === "dups") { refreshDupStatus(); loadDupReport(); }
-  else if (tab === "junk") { refreshJunkStatus(); loadJunkReport(); }
-  else if (tab === "migrate") { loadMigrateTargets(); }
-  else if (tab === "manage") { renderManage(); }
   document.querySelectorAll(".settings-tab").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   });
@@ -3150,150 +2720,7 @@ async function selectVolume(vol, keepSnapshot) {
   showView("snapshots");
 }
 
-/* ---------- 快照页：设备切换（本机 + 联机设备都能看快照） ---------- */
-
-let _snapDevList = [];   // 快照页设备条用的设备列表（含本机）
-
-// 渲染顶部设备条：本机 + 所有已登记的联机设备
-async function loadSnapDevices() {
-  const bar = $("tlDeviceBar");
-  if (!bar) return;
-  let devs = _snapDevList;
-  try {
-    const data = await api("/api/devices", {}, 20000);
-    _overviewData = data;
-    devs = data.devices || [];
-    _snapDevList = devs;
-  } catch (e) { /* 读不到就沿用上次列表 */ }
-  const local = devs.find((d) => d.type === "local");
-  let html = `<button class="tl-dev${state.snapDevice === "local" ? " active" : ""}" data-sdev="local">🖥 ${escapeHtml((local && local.name) || "本机")}（本机）</button>`;
-  for (const d of devs) {
-    if (d.type === "local") continue;
-    const off = d.status === "offline";
-    html += `<button class="tl-dev${state.snapDevice === d.id ? " active" : ""}${off ? " off" : ""}" data-sdev="${escapeHtml(d.id)}" title="${off ? "这台设备当前离线" : "看这台设备的快照"}">${escapeHtml(deviceDisplayName(d))}${off ? " · 离线" : ""}</button>`;
-  }
-  bar.innerHTML = html;
-  bar.querySelectorAll("[data-sdev]").forEach((b) => {
-    b.onclick = () => selectSnapDevice(b.dataset.sdev);
-  });
-}
-
-// 切换快照页当前查看的设备
-async function selectSnapDevice(id) {
-  state.snapDevice = id || "local";
-  loadSnapDevices();                       // 重绘高亮（不等待）
-  if (state.snapDevice === "local") {
-    state.snapReadonly = false;
-    state.snapVolumes = state.volumes || [];
-    fillVolumeSel(state.snapVolumes);
-    setSnapRemoteUI(false);
-    if (!state.activeVolume) autoSelectVolume();
-    else loadSnapshots();
-    return;
-  }
-  state.snapReadonly = true;
-  setSnapRemoteUI(true);
-  const tl = $("timeline");
-  tl.innerHTML = `<p class="muted"><span class="spinner"></span>正在读取这台设备的快照…</p>`;
-  try {
-    const data = await api(`/api/devices/snapshots?device=${encodeURIComponent(state.snapDevice)}`, {}, 25000);
-    if (!data.ok) throw new Error(data.error || "读取失败");
-    state.snapVolumes = data.volumes || [];
-    fillVolumeSel(state.snapVolumes, data.volume);
-    state.snapshots = data.snapshots || [];
-    renderTimeline((data.device && data.device.name) || "这台设备", data.warning);
-  } catch (e) {
-    tl.innerHTML = `<p class="muted">没读到这台设备的快照：${escapeHtml(e.message || "")}<br>
-      可能它关机了、地址变了，或者还没登记访问地址。可到「功能设置 → 联机设备管控」里检查这台设备。</p>`;
-  }
-}
-
-// 联机设备模式：换卷时重新向本控制台代理拉取
-async function loadRemoteSnapshots() {
-  const tl = $("timeline");
-  const volKey = ($("tlVolumeSel") || {}).value || "";
-  tl.innerHTML = `<p class="muted"><span class="spinner"></span>读取快照列表…</p>`;
-  try {
-    const data = await api(`/api/devices/snapshots?device=${encodeURIComponent(state.snapDevice)}&volume=${encodeURIComponent(volKey)}`, {}, 25000);
-    if (!data.ok) throw new Error(data.error || "读取失败");
-    state.snapVolumes = data.volumes || [];
-    state.snapshots = data.snapshots || [];
-    const volName = ((data.volumes || []).find((v) => String(v.mountpoint ?? v.id) === String(data.volume)) || {}).name || data.volume || "该存储单元";
-    renderTimeline(`${(data.device && data.device.name) || "这台设备"} · ${volName}`, data.warning);
-  } catch (err) {
-    tl.innerHTML = `<p class="muted">读取失败：${escapeHtml(err.message || "")}</p>`;
-  }
-}
-
-// 填充卷下拉框（本机 / 联机设备共用）
-function fillVolumeSel(vols, current) {
-  const sel = $("tlVolumeSel");
-  if (!sel) return;
-  sel.innerHTML = (vols || [])
-    .map((v) => `<option value="${escapeHtml(v.mountpoint ?? String(v.id))}">${escapeHtml(v.name)}</option>`)
-    .join("");
-  if (current) sel.value = current;
-}
-
-// 联机设备模式：拍快照/浏览文件都只在自己机器上做，这里禁用并说明
-function setSnapRemoteUI(remote) {
-  const sb = $("snapBtn");
-  const bb = $("browseBtn");
-  if (sb) {
-    sb.disabled = !!remote;
-    sb.title = remote ? "要给这台设备拍快照，请在它自己的控制台上操作" : "";
-  }
-  if (bb) bb.disabled = true;
-}
-
-// 时间轴渲染（本机 / 联机设备共用）
-function renderTimeline(whoLabel, warning) {
-  const tl = $("timeline");
-  const n = (state.snapshots || []).length;
-  if ($("tlSubtitle")) {
-    $("tlSubtitle").textContent = `当前显示「${whoLabel}」的快照，共 ${n} 张 · 🔒 = 受 TS Safe 保护`;
-  }
-  if (!n) {
-    tl.innerHTML = `<p class="muted">
-      ${warning ? escapeHtml(warning) + "<br>" : ""}
-      ${state.snapReadonly ? "这台设备的这块存储单元还没有快照。" : "该存储单元还没有快照。点击右上角「立即拍一张快照」开始保护。"}
-    </p>`;
-    return;
-  }
-  if (warning) {
-    const w = document.createElement("p");
-    w.className = "muted";
-    w.textContent = warning;
-    tl.innerHTML = "";
-    tl.appendChild(w);
-  } else {
-    tl.innerHTML = "";
-  }
-  const sorted = [...state.snapshots].sort((a, b) => {
-    const ta = a.created_at || a.name;
-    const tb = b.created_at || b.name;
-    return String(ta).localeCompare(String(tb));
-  });
-  sorted.forEach((snap, idx) => {
-    const isLatest = idx === sorted.length - 1;
-    const node = document.createElement("div");
-    node.className = "tl-node" + (isLatest ? " latest" : "");
-    node.innerHTML = `
-      <div class="tl-label">${formatShort(snap.created_at || snap.name)}</div>
-      <div class="tl-dot"></div>
-      <div class="tl-size">${snap.protected ? '<span class="lock" title="受 TS Safe 保护">🔒</span>' : ""}</div>
-    `;
-    node.onclick = () => openSnapshotDetail(snap, state.snapReadonly);
-    tl.appendChild(node);
-  });
-}
-
 async function loadSnapshots() {
-  // 联机设备模式：走本控制台代理，不碰本机的卷
-  if (state.snapDevice && state.snapDevice !== "local") {
-    await loadRemoteSnapshots();
-    return;
-  }
   const vol = state.activeVolume;
   if (!vol) return;
 
@@ -3304,7 +2731,36 @@ async function loadSnapshots() {
     const data = await api(`/api/snapshots?volume=${encodeURIComponent(vol.mountpoint)}`);
     state.snapshots = data.snapshots;
     state.tlLoadedVol = vol.mountpoint ?? String(vol.id); // 记录已加载的卷，防止启动恢复与 selectVolume 双重加载
-    renderTimeline(vol.name);
+    $("tlSubtitle").textContent =
+      `当前显示「${vol.name}」这一个存储卷的快照，共 ${state.snapshots.length} 张 · 🔒 = 受 NAS Safe 保护`;
+
+    if (!state.snapshots.length) {
+      tl.innerHTML = `<p class="muted">
+        该存储单元还没有快照。点击右上角「立即拍一张快照」开始保护。
+      </p>`;
+      return;
+    }
+
+    // 按时间升序排列，最新的在右边
+    const sorted = [...state.snapshots].sort((a, b) => {
+      const ta = a.created_at || a.name;
+      const tb = b.created_at || b.name;
+      return String(ta).localeCompare(String(tb));
+    });
+
+    tl.innerHTML = "";
+    sorted.forEach((snap, idx) => {
+      const isLatest = idx === sorted.length - 1;
+      const node = document.createElement("div");
+      node.className = "tl-node" + (isLatest ? " latest" : "");
+      node.innerHTML = `
+        <div class="tl-label">${formatShort(snap.created_at || snap.name)}</div>
+        <div class="tl-dot"></div>
+        <div class="tl-size">${snap.protected ? '<span class="lock" title="受 NAS Safe 保护">🔒</span>' : ""}</div>
+      `;
+      node.onclick = () => openSnapshotDetail(snap);
+      tl.appendChild(node);
+    });
   } catch (err) {
     tl.innerHTML = `<p class="muted">读取失败：${escapeHtml(err.message)}</p>`;
   }
@@ -3312,7 +2768,7 @@ async function loadSnapshots() {
 
 /* ------------------------- 快照详情 ------------------------- */
 
-function openSnapshotDetail(snap, remote) {
+function openSnapshotDetail(snap) {
   const qnap = isQnapSnap(snap);
   const pathLabel = qnap
     ? (snap.mount_path || "NAS 内部快照")
@@ -3326,25 +2782,21 @@ function openSnapshotDetail(snap, remote) {
       <div class="kv-row"><span class="kv-k">${qnap ? "快照定位" : "实体路径"}</span><span class="kv-v">${escapeHtml(pathLabel)}</span></div>
       ${qnap ? `<div class="kv-row"><span class="kv-k">防勒索锁</span><span class="kv-v">${snap.vital ? "已永久锁定（不会被自动清理）" : "未锁定"}</span></div>` : ""}
     </div>
-    ${remote ? `<div class="notice">
-        这是<b>联机设备</b>上的快照，这里<b>只能查看</b>：要取文件、要回滚，都请到那台设备自己的控制台上操作
-        （本控制台不跨机改动别人的数据，避免误操作）。
-      </div>` : `<div class="notice">
-        这份快照是只读的，勒索软件无法修改其中的数据。恢复数据有两种方式，按情况选：<br>
-        ✅ <b>浏览并取回文件（推荐）</b> —— 非破坏性：从快照里挑文件/目录拷回来，<b>不影响当前任何数据</b>。适合「误删 / 误改了部分文件」。<br>
-        ⚠️ <b>整卷回滚（谨慎）</b> —— 破坏性：整卷回退到快照那一刻，<b>之后新增 / 修改的内容全部丢失</b>，且该快照之后的快照会被一并删除。仅在勒索攻击等大面积中招时才用。
-      </div>`}
+    <div class="notice">
+      这份快照是只读的，勒索软件无法修改其中的数据。恢复数据有两种方式，按情况选：<br>
+      ✅ <b>浏览并取回文件（推荐）</b> —— 非破坏性：从快照里挑文件/目录拷回来，<b>不影响当前任何数据</b>。适合「误删 / 误改了部分文件」。<br>
+      ⚠️ <b>整卷回滚（谨慎）</b> —— 破坏性：整卷回退到快照那一刻，<b>之后新增 / 修改的内容全部丢失</b>，且该快照之后的快照会被一并删除。仅在勒索攻击等大面积中招时才用。
+    </div>
   `;
 
-  // 联机设备快照一律只读预览：浏览/回滚都只能在那台设备自己的控制台上做
-  const canBrowse = !remote && (qnap || (snap.path && snap.path.startsWith("/")));
-  // 仅 TS Safe 托管的 QNAP 快照允许整卷回滚（防误操作系统/无关快照）
-  const canRevert = !remote && qnap && /^(auto-|nassafe_|snap-)/.test(snap.name || "");
+  const canBrowse = qnap || (snap.path && snap.path.startsWith("/"));
+  // 仅 NAS Safe 托管的 QNAP 快照允许整卷回滚（防误操作系统/无关快照）
+  const canRevert = qnap && /^(auto-|nassafe_|snap-)/.test(snap.name || "");
   const foot = `
     <button class="btn ghost" data-act="close">关闭</button>
     ${canRevert ? `<button class="btn danger" data-act="revert">⚠ 整卷回滚到此快照</button>` : ""}
     <button class="btn primary" data-act="browse" ${canBrowse ? "" : "disabled"}>
-      ${remote ? "联机设备快照仅可查看" : canBrowse ? "浏览并取回文件" : "该系统不支持直接浏览"}
+      ${canBrowse ? "浏览并取回文件" : "该系统不支持直接浏览"}
     </button>
   `;
 
@@ -3554,7 +3006,7 @@ function askRestoreDestination(suggest) {
   return new Promise((resolve) => {
     const body = `
       <p class="muted">取回的文件会复制到这里（不会覆盖你当前的数据）。
-      该目录位于「运行 TS Safe 的这台机器」上：若本服务装在 NAS 本机，就是 NAS 共享目录；
+      该目录位于「运行 NAS Safe 的这台机器」上：若本服务装在 NAS 本机，就是 NAS 共享目录；
       若装在其他电脑上远程管理 NAS，就是那台电脑上的目录。</p>
       <input id="destInput" class="text-input"
              value="${escapeAttr(suggest)}"
@@ -3731,7 +3183,7 @@ function renderBanners() {
   state.deepActive = state.deepAlerts.length > 0;
 }
 
-// 受保护快照（被 TS Safe 锁定的）一旦消失或被解锁，后端 /api/alerts 会告警。
+// 受保护快照（被 NAS Safe 锁定的）一旦消失或被解锁，后端 /api/alerts 会告警。
 // 这里定时拉取并顶栏展示，命中「快照被删的那一刻立刻告警」的核心卖点。
 async function pollAlerts() {
   try {
@@ -3836,8 +3288,6 @@ function updateMonitorDot(on) {
 
 // 失败仍提示，便于第一时间发现监控链路异常。
 function startAutoMonitor() {
-  // 未登录不开自动监控：避免匿名用户触发 interval 后反复 403 打扰（控制需登录）
-  if (!currentUser) { stopAutoMonitor(); return; }
   stopAutoMonitor();
   const ms = parseInt($("autoInterval").value, 10) || 300000;
   runIntegrityCheck(true);
@@ -3866,7 +3316,7 @@ function restoreAutoMonitor() {
   const beh = localStorage.getItem("nassafe.autoBehavior") === "1";
   if (iv) $("autoInterval").value = iv;
   $("autoBehavior").checked = beh;
-  if (on && currentUser) {
+  if (on) {
     $("autoMonitor").checked = true;
     startAutoMonitor();
   } else {
@@ -4065,47 +3515,6 @@ function aiProviderChanged() {
   }
 }
 
-// 按当前版本裁剪可选的 AI 接口：用不了的置灰并标注，
-// 免得用户选中后保存才被后端拒绝、还被弹到升级页。
-function applyAiProviderLimits(list, current) {
-  const sel = $("aiProvider");
-  if (!sel || !Array.isArray(list) || !list.length) return;
-  Array.from(sel.options).forEach((o) => {
-    const ok = list.indexOf(o.value) >= 0 || o.value === current;
-    const base = (o.getAttribute("data-label") || o.textContent).replace(/（升级后可用）$/, "");
-    o.setAttribute("data-label", base);
-    o.disabled = !ok;
-    o.textContent = ok ? base : base + "（升级后可用）";
-  });
-  const hint = $("aiEditionHint");
-  if (hint) {
-    const names = Array.from(sel.options)
-      .filter((o) => list.indexOf(o.value) >= 0)
-      .map((o) => o.getAttribute("data-label") || o.textContent).join("、");
-    hint.textContent = `当前版本可用：${names}。其余接口升级后解锁（本地 AI 需家庭版及以上）。`;
-  }
-}
-
-function applyNotifyTypeLimits(list, current) {
-  const sel = $("notifyType");
-  if (!sel || !Array.isArray(list) || !list.length) return;
-  Array.from(sel.options).forEach((o) => {
-    if (!o.value) return;
-    const ok = list.indexOf(o.value) >= 0 || o.value === current;
-    const base = (o.getAttribute("data-label") || o.textContent).replace(/（专业版）$/, "");
-    o.setAttribute("data-label", base);
-    o.disabled = !ok;
-    o.textContent = ok ? base : base + "（专业版）";
-  });
-  const hint = $("notifyEditionHint");
-  if (hint) {
-    const names = Array.from(sel.options)
-      .filter((o) => o.value && list.indexOf(o.value) >= 0)
-      .map((o) => o.getAttribute("data-label") || o.textContent).join("、");
-    hint.textContent = `当前版本可用：${names}。群机器人 / Bark / ntfy 等自定义通道是专业版功能。`;
-  }
-}
-
 async function saveAI() {
   const prov = $("aiProvider").value;
   const keyVal = ($("aiKey").value || "").trim();
@@ -4123,17 +3532,13 @@ async function saveAI() {
   }
   // 空值或脱敏占位 *** 都不传 api_key，由后端保留旧 Key
   if (keyVal && keyVal !== "***") cfg.api_key = keyVal;
-  // 保存类操作被版本卡点挡下时，只在原地提示，不要把用户弹到「版本与升级」菜单
-  window.__suppressUpgradeJump = true;
   try {
     const data = await api("/api/ai/config", { method: "POST", body: JSON.stringify(cfg) });
-    delete window.__suppressUpgradeJump;
     toast(
       data.ready ? "AI 设置已保存，可用" : "AI 设置已保存（未配置密钥，相关功能将隐藏）",
       "ok"
     );
   } catch (e) {
-    delete window.__suppressUpgradeJump;
     toast("保存失败：" + e.message, "err");
   }
 }
@@ -4152,7 +3557,6 @@ async function loadSettings() {
       // 默认推荐：厂商邮件中继（填邮箱即用），零配置入门
       $("notifyType").value = "relay";
     }
-    applyNotifyTypeLimits(nc.allowed_types, ch.type);
     renderNotifyFields($("notifyType").value);
   } catch (e) { /* 忽略 */ }
 
@@ -4163,7 +3567,6 @@ async function loadSettings() {
     if (cfg.provider) $("aiProvider").value = cfg.provider;
     if (cfg.base_url) $("aiBase").value = cfg.base_url;
     if (cfg.model) $("aiModel").value = cfg.model;
-    applyAiProviderLimits(ac.providers, cfg.provider);
     // 已设置的 Key 回显为 *** 占位，避免强刷后空输入框让用户误以为丢失；保存时 *** 不会被覆盖（由 saveAI 判断）
     if (cfg.api_key === "***") $("aiKey").value = "***";
   } catch (e) { /* 忽略 */ }
@@ -4243,23 +3646,45 @@ $("snapBtn").onclick = createSnapshot;
  * 摄入文档 + 列表 + 自然语言提问（向量召回 + LLM 作答）
  * ===================================================================== */
 
-// 知识库已移到设置页「知识库」pane（后台摄入、前端只提问）；点入口直接跳过去
-function openKnowledge() {
-  showSettingsTab("kb");
-}
-
-// 设置页知识库 pane 的按钮只需绑定一次（元素常驻 DOM）
-let _kbPaneBound = false;
-function initKbPane() {
-  if (!_kbPaneBound) {
-    const ingest = $("kbIngestBtn"), refresh = $("kbRefreshBtn"), query = $("kbQueryBtn"), q = $("kbQuery");
-    if (ingest) ingest.onclick = kbIngest;
-    if (refresh) refresh.onclick = kbRefresh;
-    if (query) query.onclick = kbQuery;
-    if (q) q.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); kbQuery(); } });
-    _kbPaneBound = true;
-  }
-  kbRefresh();
+async function openKnowledge() {
+  openModal(
+    "📚 知识库（RAG）",
+    `<div id="kbQuota" class="muted" style="margin-bottom:8px"></div>
+     <div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:10px">
+       <div style="font-weight:600;margin-bottom:6px">① 摄入文档</div>
+       <input id="kbTitle" class="text-input" placeholder="文档标题（可选）" style="width:100%;box-sizing:border-box;margin-bottom:6px">
+       <input id="kbFile" type="file" accept=".txt,.md,.srt,.pdf,.docx" style="margin-bottom:6px;width:100%">
+       <textarea id="kbText" class="text-input" rows="3" placeholder="或直接粘贴文本（txt/md/srt 内容）" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
+       <div class="muted" style="font-size:12px;margin:6px 0">支持 txt/md/srt/pdf/docx。需 AI 供应商支持向量嵌入（阿里云 qwen text-embedding 或本地 Ollama nomic-embed-text）。</div>
+       <button id="kbIngestBtn" class="btn primary" style="margin-top:4px">摄入</button>
+     </div>
+     <div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:10px">
+       <div style="font-weight:600;margin-bottom:6px">② 已摄入文档
+         <button id="kbRefreshBtn" class="btn ghost sm" style="float:right">刷新</button></div>
+       <div id="kbDocList" style="max-height:160px;overflow:auto"></div>
+     </div>
+     <div style="border:1px solid var(--border);border-radius:10px;padding:10px">
+       <div style="font-weight:600;margin-bottom:6px">③ 提问</div>
+       <div style="display:flex;gap:8px">
+         <input id="kbQuery" class="text-input" placeholder="例如：服务到期怎么续费？" style="flex:1;box-sizing:border-box">
+         <button id="kbQueryBtn" class="btn primary">提问</button>
+       </div>
+       <div id="kbAnswer" style="margin-top:10px;white-space:pre-wrap;line-height:1.7"></div>
+     </div>`,
+    `<button class="btn ghost" data-act="close">关闭</button>`,
+    {},
+    { stay: true }
+  );
+  const box = $("modalBox");
+  if (box) { box.style.maxWidth = "760px"; box.style.width = "94vw"; box.style.maxHeight = "90vh"; box.style.height = "90vh"; }
+  const mbody = $("modalBody");
+  if (mbody) { mbody.style.display = "flex"; mbody.style.flexDirection = "column"; mbody.style.overflowY = "auto"; }
+  $("kbIngestBtn").onclick = kbIngest;
+  $("kbRefreshBtn").onclick = kbRefresh;
+  $("kbQueryBtn").onclick = kbQuery;
+  const q = $("kbQuery");
+  if (q) q.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); kbQuery(); } });
+  await kbRefresh();
 }
 
 async function kbRefresh() {
@@ -4370,12 +3795,16 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-// 知识库入口已并入设置页 pane；仪表盘只保留「问 AI」一个 AI 按钮（问答/管家合一）
-$("integrityBtn").onclick = () => { if (!currentUser) { requireLoginFor("monitor"); return; } runIntegrityCheck(); };
-$("behaviorBtn").onclick = () => { if (!currentUser) { requireLoginFor("monitor"); return; } runBehaviorScan(); };
+if ($("kbBtn")) $("kbBtn").onclick = openKnowledge;
+
+
+$("integrityBtn").onclick = runIntegrityCheck;
+$("behaviorBtn").onclick = runBehaviorScan;
 $("aiInterpretBtn").onclick = aiInterpret;
 $("aiDiagnoseBtn").onclick = aiDiagnose;
 $("aiAskBtn").onclick = aiAsk;
+// 仪表盘「AI 管家」按钮：直接以管家模式（工具调用）打开弹窗
+if ($("aiButlerBtn")) $("aiButlerBtn").onclick = () => aiAsk("butler");
 // AI 全页悬浮窗：任意页面点击即可提问（复用 aiAsk 弹窗）
 if ($("aiFabBtn")) $("aiFabBtn").onclick = aiAsk;
 $("notifyType").onchange = () => renderNotifyFields($("notifyType").value);
@@ -4397,11 +3826,6 @@ function persistAutoMonitor() {
 }
 
 $("autoMonitor").onchange = (e) => {
-  if (!currentUser) {
-    e.target.checked = false;          // 未登录：还原勾选并提示去登录
-    requireLoginFor("monitor");
-    return;
-  }
   if (e.target.checked) {
     startAutoMonitor();
     toast("已开启自动持续监控", "ok");
@@ -4476,24 +3900,15 @@ if (themeChk) {
 applyAutoTheme();
 setInterval(applyAutoTheme, 60000); // 每分钟检查一次，跨过日出/日落自动换肤
 
-// 主导航：绑定标签页点击。
-// 数据查看类（设备控制台/本机数据/联机数据/快照预览）免登录直接看；
-// 「告警信息」复用现有异常弹窗（看异常免登录）；
-// 只有「功能设置」是受保护入口，未登录点它会先要求注册/登录。
+// 主导航：绑定标签页点击并恢复上次所在视图（localStorage 持久化）
 document.querySelectorAll("#mainTabs .tab").forEach((t) => {
-  t.onclick = () => {
-    const v = t.dataset.view;
-    if (v === "settings") requireLoginFor("settings");
-    else if (v === "alerts") openAnomalyModal();
-    else showView(v);
-  };
+  t.onclick = () => showView(t.dataset.view);
 });
 applyView();
-_syncInitialRoute();
 
 // 跨品牌多设备总控制台：按钮绑定
+$("addDeviceBtn").onclick = addDevice;
 $("consoleRefreshBtn").onclick = () => loadConsole(true);
-$("monRefreshBtn").onclick = () => loadDeviceOverview(true);
 $("exportMigBtn").onclick = exportConfig;
 $("importMigFile").onchange = (e) => { if (e.target.files[0]) onPickMigFile(e.target.files[0]); };
 $("migPreviewBtn").onclick = previewMig;
@@ -4605,9 +4020,9 @@ function showDesktopAgentGuide() {
      <ol class="perm-steps">
        <li>点右下角 <b>「⬇ 下载安装包（zip）」</b>，得到 <code>桌面助手.zip</code>（已内置本机 NAS 地址）</li>
        <li><b>右键解压</b>到任意文件夹，双击里面的 <code>桌面助手.exe</code></li>
-       <li>自动弹出「安装 TS Safe 助手」窗口并显示进度，几秒后提示「安装完成」——
+       <li>自动弹出「安装 NAS Safe 助手」窗口并显示进度，几秒后提示「安装完成」——
            <b>不用选地址、不用填任何东西</b></li>
-       <li>右下角出现绿色盾牌图标（和软件同色），鼠标放上去显示「TS Safe · 快照保护中」</li>
+       <li>右下角出现绿色盾牌图标（和软件同色），鼠标放上去显示「NAS Safe · 快照保护中」</li>
      </ol>
      <p class="muted">不需要安装 Python，也不需要管理员权限。<br>
        若 Windows 提示「已保护你的电脑」：点 <b>更多信息 → 仍要运行</b>（未签名软件的正常提示）。<br>
@@ -4822,7 +4237,7 @@ $("pushTestBtn").onclick = async () => {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            title: "TS Safe 测试提醒",
+            title: "NAS Safe 测试提醒",
             detail: "这是一条异常提醒通道的测试消息",
             level: "warn",
             key: "test-" + Date.now()
@@ -4837,7 +4252,7 @@ $("pushTestBtn").onclick = async () => {
     try {
       const r = await api("/api/notify/alert", {
         method: "POST",
-        body: JSON.stringify({ title: "TS Safe 测试提醒", detail: "这是一条异常提醒通道的测试消息", level: "warn" })
+        body: JSON.stringify({ title: "NAS Safe 测试提醒", detail: "这是一条异常提醒通道的测试消息", level: "warn" })
       }, 8000);
       if (r && r.ok) {
         toast(`已推送（桌面助手 + ${channelLabel(r.channel)}）`, "ok");
@@ -4865,8 +4280,6 @@ $("pushTestBtn").onclick = async () => {
 // 时间轴页：卷切换下拉框 —— 不用回总览，直接换卷看时间轴
 $("tlVolumeSel").onchange = () => {
   const key = $("tlVolumeSel").value;
-  // 联机设备模式：下拉里是那台设备的卷，走代理重新拉
-  if (state.snapDevice && state.snapDevice !== "local") { loadRemoteSnapshots(); return; }
   const vol = state.volumes.find((v) => (v.mountpoint ?? String(v.id)) === key);
   if (vol) selectVolume(vol);
 };
@@ -4904,128 +4317,62 @@ const UPGRADE_ROWS = [
   ["防勒索 / 快照 / 取回", "全有", "全有", "全有"],
 ];
 
-// 升级入口：跳到「版本与升级」pane 看三档对比；若指定版本则直接弹微信支付
-function openUpgradeModal(edition) {
-  showSettingsTab("license");
-  if (edition === "home" || edition === "business") {
-    const price = LIC_PRICES[edition] || 0;
-    const name = { home: "家庭版", business: "专业版" }[edition] || edition;
-    openWeChatPayModal(edition, price, name);
-  }
+function openUpgradeModal() {
+  const pricesFallback = api("/api/license/prices").catch(() => ({ ok: false, prices: null }));
+  Promise.all([api("/api/license"), pricesFallback]).then(([lic, pr]) => {
+    const price = (pr && pr.ok && pr.prices) ? pr.prices : { home: 8, business: 18 };
+    const cur = (lic && lic.ok) ? (lic.label + (lic.licensed ? "（已激活）" : "（免费）")) : "免费版";
+    let tbl = '<div class="notice" style="margin-bottom:10px">您现在使用的是 <b>' + escapeHtml(cur) + "</b></div>";
+    tbl += '<p class="muted" style="margin:0 0 8px">本项目开源，免费版永久免费、本机功能全开。付费 = 省去折腾 + 持续更新 + 支持开发者。</p>';
+    tbl += '<table class="cmp-table" style="width:100%;border-collapse:collapse;font-size:13px">';
+    tbl += "<tr>" + ["", "免费版", "家庭版", "专业版"].map((h, i) =>
+      "<th style='padding:6px 8px;text-align:left;border-bottom:2px solid var(--line)'>" + (i ? escapeHtml(h) : "") + "</th>").join("") + "</tr>";
+    UPGRADE_ROWS.forEach((r) => {
+      tbl += "<tr>" + r.map((c, i) =>
+        "<td style='padding:6px 8px;border-bottom:1px solid var(--line);color:" +
+        (i === 2 ? "var(--ok)" : i === 3 ? "var(--accent)" : "inherit") +
+        (i === 0 ? ";font-weight:600" : "") + "'>" + escapeHtml(c) + "</td>").join("") + "</tr>";
+    });
+    const priceCell = (p) => p > 0 ? "¥" + p : "永久免费";
+    tbl += "<tr>" + ["价格（实时）", priceCell(0), priceCell(price.home), priceCell(price.business)].map((c, i) =>
+      "<td style='padding:6px 8px;font-weight:600;color:" +
+      (i === 2 ? "var(--ok)" : i === 3 ? "var(--accent)" : "inherit") + "'>" + escapeHtml(c) + "</td>").join("") + "</tr>";
+    tbl += "</table>";
+    tbl += '<div class="set-row" style="margin-top:12px"><input id="upKey" class="text-input" type="text" placeholder="粘贴激活码（向厂商购买后获得）" style="flex:1">'
+      + '<button class="btn primary" data-act="doUpgrade" style="margin-left:8px">激活</button></div>';
+    tbl += '<div id="upMsg" class="notice" style="display:none;margin-top:8px"></div>';
+    openModal("升级 NAS Safe", tbl, "", {
+      doUpgrade: () => {
+        const key = ($("upKey").value || "").trim();
+        const msg = $("upMsg");
+        if (!key) { toast("先把激活码粘贴进来", "warn"); return; }
+        msg.style.display = "block";
+        api("/api/license/activate", { method: "POST", body: JSON.stringify({ key }) })
+          .then((d) => {
+            msg.className = "notice ok";
+            msg.textContent = d.message || "激活成功";
+            loadLicense();
+            toast(d.message || "激活成功", "ok");
+          })
+          .catch((e) => {
+            msg.className = "notice warn";
+            msg.textContent = e.message || "激活失败";
+          });
+      },
+    }, { stay: true });
+  }).catch(() => {});
 }
-
-// ---- 版本与升级 ----
-// 三档能力对照表（与后端 editions.py 同步；价格由 /api/license/prices 实时覆盖）
-const LIC_MATRIX = {
-  rows: [
-    { label: "可管理设备数", free: "2 台", home: "5 台", business: "不限" },
-    { label: "数据保护功能", free: "全开", home: "全开", business: "全开" },
-    { label: "消息通知", free: "邮件 + 微信", home: "邮件 + 微信", business: "邮件 + 微信 + 自定义" },
-    { label: "云端 AI", free: "3 种", home: "全部常见 + 本地", business: "全部 + 自定义接口" },
-    { label: "换机迁移", free: "—", home: "✓", business: "✓" },
-    { label: "异地组网设备", free: "—", home: "—", business: "✓" },
-    { label: "知识库 (RAG)", free: "—", home: "✓", business: "✓（不限）" },
-    { label: "应急响应自动化", free: "—", home: "—", business: "✓" },
-    { label: "照片语义搜索", free: "—", home: "—", business: "✓" },
-  ],
-  cols: [["free", "免费版"], ["home", "家庭版"], ["business", "专业版"]],
-  level: { free: 0, home: 1, business: 2 },
-};
-let LIC_PRICES = { home: 8, business: 18 };
+$("licUpgradeBtn").onclick = () => openUpgradeModal();
 
 function loadLicense() {
-  Promise.all([api("/api/license"), api("/api/license/prices")]).then(([d, p]) => {
+  api("/api/license").then((d) => {
     if (!d || !d.ok) return;
-    window.__lic = d;
-    if (p && p.ok && p.prices) LIC_PRICES = p.prices;
     $("licFp").textContent = d.fingerprint || "—";
     let label = d.label || d.edition || "—";
     if (d.licensed) label += d.permanent ? "（永久有效）" : "（已激活）";
     $("licEdition").textContent = label;
-    renderLicenseCompare(d.edition || "free");
+    $("licDeactivateBtn").style.display = d.licensed ? "" : "none";
   }).catch(() => {});
-}
-
-function renderLicenseCompare(current) {
-  const box = $("licCompare");
-  if (!box) return;
-  const cols = LIC_MATRIX.cols;
-  const cls = { free: "c0", home: "c1", business: "c2" };
-  // 表头：版本名 + 价格 + 当前版本标记 + 升级按钮
-  let head = `<div class="lc-row lc-head"><div class="lc-cell lc-feat">功能区别</div>`;
-  for (const [key, name] of cols) {
-    const isCur = key === current;
-    const lv = LIC_MATRIX.level[key], clv = LIC_MATRIX.level[current];
-    let btn = "";
-    if (isCur) btn = `<button class="up-btn cur" disabled>当前版本</button>`;
-    else if (lv > clv) btn = `<button class="up-btn" data-up="${key}">升级 ¥${LIC_PRICES[key] || 0}</button>`;
-    else btn = `<span class="up-btn na">—</span>`;
-    head += `<div class="lc-cell lc-col ${cls[key]}${isCur ? " cur" : ""}"><div class="lc-colname">${name}</div>${isCur ? '<div class="lc-curtag">当前</div>' : ""}${btn}</div>`;
-  }
-  head += `</div>`;
-  // 数据行（隔行变色）
-  let rows = LIC_MATRIX.rows.map((r, i) => {
-    const cls2 = i % 2 ? " odd" : "";
-    let cells = `<div class="lc-cell lc-feat${cls2}">${r.label}</div>`;
-    for (const [key] of cols) {
-      const v = r[key];
-      const mark = (v === "✓") ? " ok" : (v === "—" ? " no" : "");
-      cells += `<div class="lc-cell lc-col ${cls[key]}${cls2}${key === current ? " cur" : ""}"><span class="lc-val${mark}">${v}</span></div>`;
-    }
-    return `<div class="lc-row${cls2}">${cells}</div>`;
-  }).join("");
-  box.innerHTML = `<div class="lc-table">${head}${rows}</div>`;
-  box.querySelectorAll("button[data-up]").forEach((b) => {
-    b.onclick = () => upgradeTo(b.dataset.up);
-  });
-}
-
-function upgradeTo(edition) {
-  const price = LIC_PRICES[edition] || 0;
-  const name = { home: "家庭版", business: "专业版" }[edition] || edition;
-  openWeChatPayModal(edition, price, name);
-}
-
-// 模拟微信支付窗口：真实项目里这里会展示由发卡端生成的微信支付二维码；
-// 本机演示版点「我已支付」后由服务端按本机机器码实时签一张激活码，自动填入激活框。
-function openWeChatPayModal(edition, price, name) {
-  const fp = ($("licFp").textContent || "").trim();
-  openModal(
-    "微信支付 · 升级到" + name,
-    `<div class="wx-pay">
-       <div class="wx-pay-head"><span class="wx-logo">💚</span> 微信支付</div>
-       <div class="wx-amount">¥${price}<small> .00</small></div>
-       <div class="wx-qrtitle">请使用微信扫码支付（演示）</div>
-       <div class="wx-qr" id="wxQr"></div>
-       <div class="wx-scanline"></div>
-       <p class="muted" style="font-size:12px;margin:8px 0 0">本项目开源，付费用于持续开发与专属服务。<br>演示环境点「我已支付」即可模拟支付成功。</p>
-       <div class="wx-machine">本机机器码：<code>${escapeHtml(fp)}</code></div>
-     </div>`,
-    `<button class="btn ghost" data-act="close">取消</button>
-     <button class="btn primary" data-act="paid">我已支付</button>`,
-    {
-      paid: async () => {
-        try {
-          const r = await api("/api/license/issue", { method: "POST", body: JSON.stringify({ edition }) });
-          if (!r || !r.ok) { toast("发码失败：" + (r && r.error || ""), "err"); return; }
-          closeModal();
-          $("licKey").value = r.code;
-          toast(`已获取 ${name} 授权码，点击「激活」完成升级`, "ok");
-          const st = $("licStatus");
-          if (st) { st.style.display = "block"; st.className = "notice"; st.textContent = `已自动填入 ${name} 授权码，点击下方「激活」即可升级。`; }
-        } catch (e) { toast("支付/发码失败：" + (e.message || e), "err"); }
-      },
-    }
-  );
-  // 画一个装饰性二维码（演示用，非真实可扫）
-  const qr = $("wxQr");
-  if (qr) {
-    let cells = "";
-    for (let i = 0; i < 169; i++) cells += `<i class="${Math.random() > 0.5 ? "on" : ""}"></i>`;
-    qr.innerHTML = cells;
-  }
-  const box = $("modalBox");
-  if (box) { box.style.maxWidth = "420px"; }
 }
 $("licCopyFp").onclick = () => {
   const fp = $("licFp").textContent || "";
@@ -5057,17 +4404,17 @@ $("licActivateBtn").onclick = () => {
       toast("激活失败：" + (e.message || e), "err");
     });
 };
+$("licDeactivateBtn").onclick = () => {
+  if (!confirm("确定取消授权？取消后会回到免费版（设备数、快照份数重新受限）。")) return;
+  api("/api/license/deactivate", { method: "POST", body: "{}" })
+    .then((d) => { loadLicense(); toast(d.message || "已取消授权", "ok"); })
+    .catch((e) => toast("取消失败：" + (e.message || e), "err"));
+};
 loadLicense();
 
 // ---- 设置页菜单切换 ----
-// 所有子菜单都在设置页右侧 pane 内显示（含工具类：重复文件/磁盘清理/换机迁移），
-// 不再单独跳出全屏视图，避免每次弄完又要重新点「功能设置」进来。
 document.querySelectorAll(".settings-tab").forEach((btn) => {
-  btn.onclick = () => {
-    const tab = btn.dataset.tab;
-    if (tab === "devices") { addDevice(); return; }   // 添加设备是弹窗操作，已在登录态设置页内，直接开
-    showSettingsTab(tab);
-  };
+  btn.onclick = () => showSettingsTab(btn.dataset.tab);
 });
 const savedTab = localStorage.getItem("nassafe_settings_tab") || "notify";
 showSettingsTab(savedTab);
@@ -5747,7 +5094,7 @@ function renderJunkReport(d) {
       const extra = cat.key === "docker"
         ? `清理方式：清除<b>悬空镜像</b>与<b>构建缓存</b>（docker image/builder prune），<b>不会触碰任何在运行的容器和正在使用的镜像</b>。`
         : cat.key === "thumbs"
-          ? `这只是系统自动生成的<b>缓存</b>，删掉后下次看图片会自动重新生成，<b>不会动你的照片和视频本身</b>。`
+          ? `缩略图删除后，浏览图片时 QTS 会<b>自动重新生成</b>；HMP 海报在应用目录（黑名单内），不受任何影响。`
           : cat.key === "logs"
             ? `只删除 <b>30 天前</b>的轮转/压缩日志，活动日志一律不碰。`
             : `回收站里的文件本来就是已删除状态，清空后彻底释放。`;

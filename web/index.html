@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/style-20261002x.css">
+<link rel="stylesheet" href="/style-20261003a.css">
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
 </head>
 <body>
@@ -36,20 +36,21 @@
     <span class="dot"></span><span id="statusText">连接中</span>
   </div>
   <div class="auth-status" id="authStatus" title="未登录时只能查看，功能按钮需登录后使用">
-    <button class="btn ghost sm" data-act="login" id="authBtn">登录</button>
+    <button class="btn ghost sm" id="authBtn">登录</button>
   </div>
 </header>
 
 <!-- 主导航：分区查看，避免单页过长 -->
+<!-- 主导航（六菜单）：前五个都是「看数据」，免登录直接看；
+     只有「功能设置」是受保护入口，未登录点它会先要求注册/登录。
+     动系统的工具（重复文件清理/磁盘清理/换机迁移）和各项配置都收进「功能设置」里面。 -->
 <nav class="tabs" id="mainTabs" aria-label="主导航">
   <button class="tab active" data-view="console">🖥 设备控制台</button>
-  <button class="tab" data-view="home">▦ 本机总览</button>
-  <button class="tab" data-view="snapshots">◷ 快照时间轴</button>
-  <button class="tab" data-view="monitor"><span id="monitorDot" class="monitor-dot monitor-dot-off">◉</span> 实时监控</button>
-  <button class="tab" data-view="dups">⧉ 重复文件</button>
-  <button class="tab" data-view="junk">🧹 磁盘清理</button>
-  <button class="tab" data-view="migrate">⇄ 换机迁移</button>
-  <button class="tab" data-view="settings">⚙ 设置</button>
+  <button class="tab" data-view="home">▦ 本机数据</button>
+  <button class="tab" data-view="monitor">◉ 联机设备</button>
+  <button class="tab" data-view="alerts">⚠ 告警信息</button>
+  <button class="tab" data-view="snapshots">◷ 快照预览</button>
+  <button class="tab" data-view="settings">⚙ 功能设置</button>
 </nav>
 
 <main class="layout">
@@ -75,7 +76,6 @@
       </div>
       <div class="panel-actions">
         <button class="btn ghost" id="consoleRefreshBtn">刷新</button>
-        <button class="btn primary" id="addDeviceBtn">＋ 添加设备</button>
       </div>
     </div>
 
@@ -102,81 +102,6 @@
 
   </section>
 
-  <!-- 换机迁移（独立菜单页） -->
-  <section class="panel zone zone-monitor" id="migratePanel" data-view="migrate">
-    <div class="panel-head">
-      <div class="zone-head">
-        <span class="zone-ico">⇄</span>
-        <div>
-          <h2>换机迁移</h2>
-          <p class="sub">把这台设备的设置打包搬到新设备 · 可跨品牌，换过盘符就填路径映射自动改写</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="migrate-card">
-      <div class="mig-step">
-        <span class="mig-step-no">1</span>
-        <div class="mig-step-body">
-          <b>导出这台设备的配置</b>
-          <p>把通知、自动快照、日报、AI、受保护路径这些设置打包成一个文件。</p>
-          <button class="btn ghost" id="exportMigBtn">⬇ 导出配置包</button>
-        </div>
-      </div>
-      <div class="mig-step">
-        <span class="mig-step-no">2</span>
-        <div class="mig-step-body">
-          <b>选择迁移包</b>
-          <p>在要搬过去的设备上打开这一页，选中刚才导出的文件。</p>
-          <label class="btn primary" for="importMigFile">⬆ 选择迁移包</label>
-          <input type="file" id="importMigFile" accept=".json,application/json" hidden>
-        </div>
-      </div>
-      <div id="migPathMap" class="mig-pathmap" hidden>
-        <div class="mig-step">
-          <span class="mig-step-no">3</span>
-          <div class="mig-step-body">
-            <b>迁移到哪台设备</b>
-            <p>选好目标设备，品牌会自动带出来；换过盘符就填路径映射。</p>
-            <div class="set-row">
-              <span class="set-label">目标设备</span>
-              <select id="migTargetDevice" class="sel-input">
-                <option value="">— 请选择目标设备 —</option>
-              </select>
-            </div>
-            <div class="set-row">
-              <span class="set-label">旧共享根</span>
-              <input id="migOldRoot" class="text-input" placeholder="如 /share/CACHEDEV2_DATA">
-            </div>
-            <div class="set-row">
-              <span class="set-label">新共享根</span>
-              <input id="migNewRoot" class="text-input" placeholder="如 /volume1">
-            </div>
-            <div class="set-row">
-              <span class="set-label">目标品牌</span>
-              <select id="migTargetBrand" class="sel-input">
-                <option value="">自动识别本机</option>
-                <option value="qnap">威联通 QNAP</option>
-                <option value="synology">群晖 Synology</option>
-                <option value="ugreen">绿联 UGOS</option>
-                <option value="feiniu">飞牛 fnOS</option>
-                <option value="truenas">TrueNAS</option>
-                <option value="omv">OpenMediaVault</option>
-                <option value="unraid">Unraid</option>
-                <option value="generic_linux">通用 Linux / 自建设备</option>
-              </select>
-            </div>
-            <div class="set-actions">
-              <button class="btn ghost" id="migPreviewBtn">预览变更</button>
-              <button class="btn primary" id="migApplyBtn">应用导入</button>
-            </div>
-            <div id="migPreview" class="mig-preview notice" hidden></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <!-- 系统仪表盘（本机总览顶部，按能力渲染，15s 自动刷新） -->
   <section class="panel zone zone-monitor" id="dashboardPanel" data-view="home">
     <div class="panel-head">
@@ -188,9 +113,7 @@
         </div>
       </div>
       <div class="panel-actions">
-        <button class="btn ghost" id="aiAskBtn" title="用大白话问 NAS 的状态">🤖 问 AI</button>
-        <button class="btn ghost" id="aiButlerBtn" title="让 AI 直接操作：建快照/查文件/看健康">🤖 AI 管家</button>
-        <button class="btn ghost" id="kbBtn" title="把说明书/笔记喂给 AI，用自然语言提问（家庭版起）">📚 知识库</button>
+        <button class="btn ghost" id="aiAskBtn" title="用大白话问 TS Safe 的状态">🤖 问 AI</button>
         <button class="btn primary" id="aiDiagnoseBtn" title="AI 汇总全机状态出一份体检报告">🤖 AI 体检</button>
         <button class="btn ghost" id="metricsRefreshBtn">刷新</button>
       </div>
@@ -266,6 +189,8 @@
       </div>
     </div>
 
+    <div class="tl-devbar" id="tlDeviceBar"></div>
+
     <div class="timeline-wrap">
       <div class="timeline-line"></div>
       <div class="timeline" id="timeline">
@@ -279,85 +204,47 @@
     </div>
   </section>
 
-  <!-- 功能区三：实时监控 -->
-  <section class="panel zone zone-monitor" id="monitorPanel" data-view="monitor">
+  <!-- 功能区三：联机设备状态总览 -->
+  <section class="panel zone zone-monitor" id="monitorPanel" data-view="monitor" hidden>
     <div class="panel-head">
       <div class="zone-head">
         <span class="zone-ico">◉</span>
         <div>
-          <h2>实时监控</h2>
-          <p class="sub">防勒索巡检：深度校验受保护快照内容是否被篡改（v2）+ 扫描目录勒索行为迹象（v3）</p>
+          <h2>联机设备状态总览</h2>
+          <p class="sub">所有已联机设备的健康与防护总览 · 点击单台看详情 · 功能性设置到「功能设置」里单独配</p>
         </div>
       </div>
-    </div>
-    <div class="monitor-auto">
-      <label class="switch">
-        <input type="checkbox" id="autoMonitor">
-        <span class="switch-track"></span>
-      </label>
-      <span class="auto-label">自动持续监控</span>
-      <select id="autoInterval" class="sel-input">
-        <option value="300000">每 5 分钟</option>
-        <option value="600000">每 10 分钟</option>
-        <option value="1800000">每 30 分钟</option>
-      </select>
-      <label class="chk-inline"><input type="checkbox" id="autoBehavior"> 同时扫描勒索迹象</label>
-    </div>
-    <div class="monitor-controls">
-      <input id="watchPaths" class="text-input" placeholder="监控路径（逗号分隔，留空则用当前选中的卷）">
-      <button class="btn ghost" id="pickPathsBtn">📁 选择路径</button>
-      <button class="btn ghost" id="integrityBtn">校验快照是否被改动</button>
-      <button class="btn ghost" id="behaviorBtn">扫描勒索迹象</button>
-      <button class="btn ghost" id="aiInterpretBtn">AI 解读报告</button>
-    </div>
-    <div id="monitorResults" class="monitor-results">
-      <p class="muted">点击上方按钮给 NAS 做一次主动体检：「校验快照」核对锁定快照里的文件有没有被偷偷改动（越早开始核对，可对照的时间点越多）；「扫描勒索迹象」检查文件有没有被大批量加密、改名的典型勒索病毒动作。</p>
-    </div>
-  </section>
-
-  <!-- 功能区四：重复文件清理 -->
-  <section class="panel zone zone-snapshot" id="dupsPanel" data-view="dups" hidden>
-    <div class="panel-head">
-      <div class="zone-head">
-        <span class="zone-ico">⧉</span>
-        <div>
-          <h2>重复文件清理</h2>
-          <p class="sub">按内容逐字节比对，只有完全一样的文件才算重复 · 清理走隔离区，随时可恢复</p>
-        </div>
+      <div class="panel-actions">
+        <button class="btn ghost" id="monRefreshBtn">刷新</button>
       </div>
     </div>
-    <div class="monitor-controls">
-      <input id="dupRoot" class="text-input" placeholder="要扫描的目录（如 /share/影视）">
-      <button class="btn ghost" id="dupPickBtn">📁 选择路径</button>
-      <button class="btn primary" id="dupScanBtn">开始扫描</button>
-    </div>
-    <p class="muted" style="margin:6px 0 0">只扫 1MB 以上、且 7 天内没有改动过的文件；隐藏目录、回收站和系统目录自动跳过。扫描只读取文件做比对，不会改动任何数据。</p>
-    <div id="dupStatus" class="notice" style="display:none"></div>
-    <div id="dupResults" class="monitor-results">
-      <p class="muted">选一个目录点「开始扫描」。报告出来后勾选要清理的（每组自动保留一份），点「移入隔离区」—— 文件只是被移到隔离目录，随时可以在下方一键恢复。</p>
-    </div>
-    <div id="dupQuarantine" class="monitor-results"></div>
-  </section>
-
-  <!-- 功能区五：磁盘垃圾清理 -->
-  <section class="panel zone zone-snapshot" id="junkPanel" data-view="junk" hidden>
-    <div class="panel-head">
-      <div class="zone-head">
-        <span class="zone-ico">🧹</span>
-        <div>
-          <h2>磁盘垃圾清理</h2>
-          <p class="sub">回收站 · 缩略图缓存 · Docker 悬空镜像 · 30 天前旧日志 —— 只读扫描出报告，确认后再清</p>
-        </div>
+    <div id="deviceOverview" class="device-overview"><p class="muted">正在汇总联机设备…</p></div>
+    <details class="monitor-local">
+      <summary>本机实时监控（防勒索巡检）</summary>
+      <div class="monitor-auto">
+        <label class="switch">
+          <input type="checkbox" id="autoMonitor">
+          <span class="switch-track"></span>
+        </label>
+        <span class="auto-label">自动持续监控</span>
+        <select id="autoInterval" class="sel-input">
+          <option value="300000">每 5 分钟</option>
+          <option value="600000">每 10 分钟</option>
+          <option value="1800000">每 30 分钟</option>
+        </select>
+        <label class="chk-inline"><input type="checkbox" id="autoBehavior"> 同时扫描勒索迹象</label>
       </div>
-    </div>
-    <div class="monitor-controls">
-      <button class="btn primary" id="junkScanBtn">开始扫描</button>
-      <span class="muted">HMP 海报、MoviePilot、Docker 数据卷等应用目录在黑名单里，永远不会被碰。</span>
-    </div>
-    <div id="junkStatus" class="notice" style="display:none"></div>
-    <div id="junkResults" class="monitor-results">
-      <p class="muted">点「开始扫描」清点可回收空间。扫描只读取目录大小，不会改动任何数据；每类垃圾单独确认后才会清理。</p>
-    </div>
+      <div class="monitor-controls">
+        <input id="watchPaths" class="text-input" placeholder="监控路径（逗号分隔，留空则用当前选中的卷）">
+        <button class="btn ghost" id="pickPathsBtn">📁 选择路径</button>
+        <button class="btn ghost" id="integrityBtn">校验快照是否被改动</button>
+        <button class="btn ghost" id="behaviorBtn">扫描勒索迹象</button>
+        <button class="btn ghost" id="aiInterpretBtn">AI 解读报告</button>
+      </div>
+      <div id="monitorResults" class="monitor-results">
+        <p class="muted">点击上方按钮给 NAS 做一次主动体检：「校验快照」核对锁定快照里的文件有没有被偷偷改动；「扫描勒索迹象」检查文件有没有被大批量加密、改名的典型勒索病毒动作。</p>
+      </div>
+    </details>
   </section>
 
   <section class="panel zone zone-monitor" id="settingsPanel" data-view="settings">
@@ -365,15 +252,15 @@
       <div class="zone-head">
         <span class="zone-ico">⚙</span>
         <div>
-          <h2>设置</h2>
-          <p class="sub">按类别管理通知、快照、日报、AI 和外观</p>
+          <h2>功能设置</h2>
+          <p class="sub">按类别管理通知、快照、日报、AI、外观与工具</p>
         </div>
       </div>
     </div>
 
     <div class="settings-layout">
       <nav class="settings-menu">
-        <button class="settings-tab" data-tab="license">版本与激活</button>
+        <button class="settings-tab" data-tab="license">版本与升级</button>
         <button class="settings-tab active" data-tab="notify">通知</button>
         <button class="settings-tab" data-tab="autosnap">自动快照</button>
         <button class="settings-tab" data-tab="daily">日报</button>
@@ -381,24 +268,30 @@
         <button class="settings-tab" data-tab="appearance">外观</button>
         <button class="settings-tab" data-tab="agent">桌面提醒</button>
         <button class="settings-tab" data-tab="account">账号安全</button>
+        <div class="settings-menu-sep" style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(128,128,128,.25);color:#9aa;font-size:12px">管理</div>
+        <button class="settings-tab settings-tab-tool" data-tab="devices" style="border-left:3px solid #4aa3ff">＋ 添加设备</button>
+        <button class="settings-tab settings-tab-tool" data-tab="manage" style="border-left:3px solid #4aa3ff">🛰 联机设备管控</button>
+        <div class="settings-menu-sep" style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(128,128,128,.25);color:#9aa;font-size:12px">工具（读取系统目录 / 删除文件）</div>
+        <button class="settings-tab settings-tab-tool" data-tab="dups" style="border-left:3px solid #f0a020">⧉ 重复文件清理</button>
+        <button class="settings-tab settings-tab-tool" data-tab="junk" style="border-left:3px solid #f0a020">🧹 磁盘清理</button>
+        <button class="settings-tab settings-tab-tool" data-tab="migrate" style="border-left:3px solid #f0a020">⇄ 换机迁移</button>
       </nav>
 
       <div class="settings-body">
-        <!-- 版本与激活 -->
+        <!-- 版本与升级 -->
         <div class="settings-pane" data-pane="license">
-          <h3 class="sub-h">版本与激活</h3>
+          <h3 class="sub-h">版本与升级</h3>
           <div class="set-row"><span class="set-label">当前版本</span><span id="licEdition">—</span></div>
           <div class="set-row"><span class="set-label">本机机器码</span><span id="licFp" style="font-family:monospace">—</span>
             <button class="btn ghost" id="licCopyFp" style="margin-left:8px">复制</button></div>
           <div id="licStatus" class="notice" style="display:none"></div>
-          <div class="set-row"><span class="set-label">激活码</span>
+          <p class="muted" style="margin:8px 0 6px;line-height:1.8">本项目开源，免费版永久免费：管理2台设备，所有数据保护功能全开、消息通知为邮件 + 微信推送、可设置3 种云端 AI。家庭版：可管 5 台设备、一键备份并迁移换机、全部常见云端 AI+。专业版：联机管控设备无限制、增加管控异地组网设备、增加自定义通知和 AI 接口。具体区别可见下面内容</p>
+          <div id="licCompare" class="lic-compare"></div>
+          <div class="set-row" style="margin-top:12px"><span class="set-label">激活码</span>
             <input id="licKey" class="text-input" type="text" placeholder="粘贴厂商给你的激活码" style="flex:1"></div>
           <div class="set-actions">
             <button class="btn primary" id="licActivateBtn">激活</button>
-            <button class="btn ghost" id="licUpgradeBtn">查看升级</button>
-            <button class="btn ghost" id="licDeactivateBtn" style="display:none">取消授权</button>
           </div>
-          <p class="muted" style="margin:6px 0 0">本项目开源，免费版永久免费：本机功能全开、邮件 + 微信推送、3 种云端 AI。家庭版：管 5 台设备、一键换机、全部常见云端 AI。专业版：设备不限、异地组网、自定义通知和 AI 接口。价格以「查看升级」页实时显示为准（默认家庭版 8 元 / 专业版 18 元）。付费 = 省去折腾 + 支持开发者。</p>
         </div>
 
         <!-- 通知 -->
@@ -419,6 +312,7 @@
             </select>
           </div>
           <p class="muted" style="margin:6px 0 0">微信没开通前会自动走邮件。多数用户只填邮箱就够了。</p>
+          <p class="muted" id="notifyEditionHint" style="margin:4px 0 0; line-height:1.8"></p>
           <div id="relayHint" class="notice" style="display:none"></div>
           <div id="notifyFields"></div>
           <div class="set-actions">
@@ -497,6 +391,7 @@
             <input id="aiModel" class="text-input" placeholder="qwen2.5:7b">
           </div>
           <p class="muted" id="aiHint" style="margin:8px 0 0; line-height:1.8"></p>
+          <p class="muted" id="aiEditionHint" style="margin:6px 0 0; line-height:1.8"></p>
           <div class="set-actions">
             <button class="btn ghost" id="aiDiscoverBtn">自动搜索本地 AI</button>
             <button class="btn primary" id="aiSaveBtn">保存 AI 设置</button>
@@ -549,6 +444,138 @@
           <div id="accEmailMsg" class="notice" style="display:none"></div>
           <div class="set-actions"><button class="btn primary" id="accSaveEmailBtn">保存邮箱</button></div>
           <p class="muted" style="margin-top:10px">邮箱用于「忘记密码」时接收验证码；没绑邮箱则只能走管理员重设。</p>
+        </div>
+
+        <!-- 联机设备管控（设置后台）：在线统计 + 每台设备状态/代理/功能开关 -->
+        <div class="settings-pane" data-pane="manage">
+          <h3 class="sub-h">联机设备管控</h3>
+          <div id="manageSummary" class="muted" style="margin:6px 0 10px">正在加载联机设备…</div>
+          <div id="manageList"></div>
+          <p class="muted" style="margin-top:10px; line-height:1.8">未安装轻量代理的设备只能查看预览，不能开启功能开关——先点「安装轻量代理」装好代理再设置。配置（如自动快照）会在代理已装时自动下发到那台设备。</p>
+        </div>
+
+        <!-- 知识库（后台摄入，前端只提问） -->
+        <div class="settings-pane" data-pane="kb">
+          <h3 class="sub-h">知识库（RAG，家庭版起）</h3>
+          <p class="muted" style="line-height:1.8">把产品说明书、运维笔记、常见问题等文档喂给 AI，之后用自然语言提问，AI 会结合这些文档作答。文档只在「本机」摄入，不会外传；提问可在任意页面用「问 AI」时勾选「结合知识库」。教程：① 准备 txt/md/srt/pdf/docx 文档；② 在下方「摄入文档」上传或粘贴；③ 到任意页面的「问 AI」里勾选结合知识库后提问。</p>
+          <div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin:8px 0">
+            <div style="font-weight:600;margin-bottom:6px">① 摄入文档（后台录入，仅本机）</div>
+            <input id="kbTitle" class="text-input" placeholder="文档标题（可选）" style="width:100%;box-sizing:border-box;margin-bottom:6px">
+            <input id="kbFile" type="file" accept=".txt,.md,.srt,.pdf,.docx" style="margin-bottom:6px;width:100%">
+            <textarea id="kbText" class="text-input" rows="3" placeholder="或直接粘贴文本（txt/md/srt 内容）" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
+            <div class="muted" style="font-size:12px;margin:6px 0">支持 txt/md/srt/pdf/docx。需 AI 供应商支持向量嵌入（如阿里云 qwen text-embedding 或本地 Ollama nomic-embed-text）。</div>
+            <button id="kbIngestBtn" class="btn primary" style="margin-top:4px">摄入</button>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:10px">
+            <div style="font-weight:600;margin-bottom:6px">② 已摄入文档 <button id="kbRefreshBtn" class="btn ghost sm" style="float:right">刷新</button></div>
+            <div id="kbDocList" style="max-height:160px;overflow:auto"></div>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:10px;padding:10px">
+            <div style="font-weight:600;margin-bottom:6px">③ 提问</div>
+            <div style="display:flex;gap:8px">
+              <input id="kbQuery" class="text-input" placeholder="例如：服务到期怎么续费？" style="flex:1;box-sizing:border-box">
+              <button id="kbQueryBtn" class="btn primary">提问</button>
+            </div>
+            <div id="kbAnswer" style="margin-top:10px;white-space:pre-wrap;line-height:1.7"></div>
+          </div>
+        </div>
+
+        <!-- 工具：重复文件清理（在设置页右侧显示） -->
+        <div class="settings-pane" data-pane="dups">
+          <h3 class="sub-h">重复文件清理</h3>
+          <p class="sub">按内容逐字节比对，只有完全一样的文件才算重复 · 清理走隔离区，随时可恢复</p>
+          <div class="monitor-controls">
+            <input id="dupRoot" class="text-input" placeholder="要扫描的目录（如 /share/影视）">
+            <button class="btn ghost" id="dupPickBtn">📁 选择路径</button>
+            <button class="btn primary" id="dupScanBtn">开始扫描</button>
+          </div>
+          <p class="muted" style="margin:6px 0 0">只扫 1MB 以上、且 7 天内没有改动过的文件；隐藏目录、回收站和系统目录自动跳过。扫描只读取文件做比对，不会改动任何数据。</p>
+          <div id="dupStatus" class="notice" style="display:none"></div>
+          <div id="dupResults" class="monitor-results">
+            <p class="muted">选一个目录点「开始扫描」。报告出来后勾选要清理的（每组自动保留一份），点「移入隔离区」—— 文件只是被移到隔离目录，随时可以在下方一键恢复。</p>
+          </div>
+          <div id="dupQuarantine" class="monitor-results"></div>
+        </div>
+
+        <!-- 工具：磁盘垃圾清理 -->
+        <div class="settings-pane" data-pane="junk">
+          <h3 class="sub-h">磁盘垃圾清理</h3>
+          <p class="sub">回收站 · 缩略图缓存 · Docker 悬空镜像 · 30 天前旧日志 —— 只读扫描出报告，确认后再清</p>
+          <div class="monitor-controls">
+            <button class="btn primary" id="junkScanBtn">开始扫描</button>
+            <span class="muted">各类应用自己的目录（影音、下载、Docker 数据卷等）都在黑名单里，永远不会被碰，只清没用的缓存和垃圾。</span>
+          </div>
+          <div id="junkStatus" class="notice" style="display:none"></div>
+          <div id="junkResults" class="monitor-results">
+            <p class="muted">点「开始扫描」清点可回收空间。扫描只读取目录大小，不会改动任何数据；每类垃圾单独确认后才会清理。</p>
+          </div>
+        </div>
+
+        <!-- 工具：换机迁移 -->
+        <div class="settings-pane" data-pane="migrate">
+          <h3 class="sub-h">换机迁移</h3>
+          <p class="sub">把这台设备的设置打包搬到新设备 · 可跨品牌，换过盘符就填路径映射自动改写</p>
+          <div class="migrate-card">
+            <div class="mig-step">
+              <span class="mig-step-no">1</span>
+              <div class="mig-step-body">
+                <b>导出这台设备的配置</b>
+                <p>把通知、自动快照、日报、AI、受保护路径这些设置打包成一个文件。</p>
+                <button class="btn ghost" id="exportMigBtn">⬇ 导出配置包</button>
+              </div>
+            </div>
+            <div class="mig-step">
+              <span class="mig-step-no">2</span>
+              <div class="mig-step-body">
+                <b>选择迁移包</b>
+                <p>在要搬过去的设备上打开这一页，选中刚才导出的文件。</p>
+                <label class="btn primary" for="importMigFile">⬆ 选择迁移包</label>
+                <input type="file" id="importMigFile" accept=".json,application/json" hidden>
+              </div>
+            </div>
+            <div id="migPathMap" class="mig-pathmap" hidden>
+              <div class="mig-step">
+                <span class="mig-step-no">3</span>
+                <div class="mig-step-body">
+                  <b>迁移到哪台设备</b>
+                  <p>选好目标设备，品牌会自动带出来；换过盘符就填路径映射。</p>
+                  <div class="set-row">
+                    <span class="set-label">目标设备</span>
+                    <select id="migTargetDevice" class="sel-input">
+                      <option value="">— 请选择目标设备 —</option>
+                    </select>
+                  </div>
+                  <div class="set-row">
+                    <span class="set-label">旧共享根</span>
+                    <input id="migOldRoot" class="text-input" placeholder="如 /share/CACHEDEV2_DATA">
+                  </div>
+                  <div class="set-row">
+                    <span class="set-label">新共享根</span>
+                    <input id="migNewRoot" class="text-input" placeholder="如 /volume1">
+                  </div>
+                  <div class="set-row">
+                    <span class="set-label">目标品牌</span>
+                    <select id="migTargetBrand" class="sel-input">
+                      <option value="">自动识别本机</option>
+                      <option value="qnap">威联通 QNAP</option>
+                      <option value="synology">群晖 Synology</option>
+                      <option value="ugreen">绿联 UGOS</option>
+                      <option value="feiniu">飞牛 fnOS</option>
+                      <option value="truenas">TrueNAS</option>
+                      <option value="omv">OpenMediaVault</option>
+                      <option value="unraid">Unraid</option>
+                      <option value="generic_linux">通用 Linux / 自建设备</option>
+                    </select>
+                  </div>
+                  <div class="set-actions">
+                    <button class="btn ghost" id="migPreviewBtn">预览变更</button>
+                    <button class="btn primary" id="migApplyBtn">应用导入</button>
+                  </div>
+                  <div id="migPreview" class="mig-preview notice" hidden></div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -611,6 +638,6 @@
 
 <div class="toast-root" id="toastRoot"></div>
 
-<script src="/app-20261003e.js"></script>
+<script src="/app-20261003s.js"></script>
 </body>
 </html>

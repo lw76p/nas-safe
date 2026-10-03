@@ -538,7 +538,8 @@ def list_all_volumes() -> list[Volume]:
         from qnap import default_client
         if default_client().host:
             volumes.extend(list_qnap_volumes())
-    except StorageError:
+    except Exception:
+        # 远程 SSH/凭证/网络任一环节失败都不该让本接口 500，降级为空即可
         pass
     # 阿里云 ECS 云盘快照后端（雏形）：仅在真实 ECS 环境纳入管理。
     # 非 ECS / 缺凭证 / 网络不可达都会安全降级（抛 StorageError 被吞掉）。

@@ -1,10 +1,10 @@
-"""联网设备自动扫描 —— 找出局域网和异地组网里运行 NAS Safe 的设备。
+"""联网设备自动扫描 —— 找出局域网和异地组网里运行 TS Safe 的设备。
 
 场景：家里和办公室通过异地组网（Tailscale / WireGuard / ZeroTier / 各种 VPN）打通后，
 对端设备并不在本地局域网里，手动一台台加地址很麻烦。本模块自动：
   1. 读出本机所有网卡的网段（含异地组网虚拟网卡，如 tailscale0 / wg0 / utun / tun0）；
   2. 在这些网段里并发探测指定端口（默认 8848）；
-  3. 对端口开放的主机拉一次 /api/system，确认是不是 NAS Safe 并读出品牌与主机名。
+  3. 对端口开放的主机拉一次 /api/system，确认是不是 TS Safe 并读出品牌与主机名。
 
 设计红线（安全）：
 - 纯只读：只做 TCP 连接 + 一次 GET，绝不往对端写任何东西。
@@ -255,7 +255,7 @@ def _http_get(url: str, user: str, pwd: str, timeout: float):
 
 def probe_host(ip: str, port: int, timeout: float = CONNECT_TIMEOUT,
                user: str = "", pwd: str = "") -> dict | None:
-    """探测单个主机；命中 NAS Safe 返回摘要，否则返回 None。"""
+    """探测单个主机；命中 TS Safe 返回摘要，否则返回 None。"""
     if not _tcp_open(ip, port, timeout):
         return None
     info = {"ip": ip, "port": port, "nassafe": False, "brand": "generic_linux",
@@ -269,7 +269,7 @@ def probe_host(ip: str, port: int, timeout: float = CONNECT_TIMEOUT,
         info["brand_label"] = sysinfo.get("os_name") or ""
         info["hostname"] = sysinfo.get("hostname") or sysinfo.get("host") or ""
     except Exception as exc:  # noqa: BLE001
-        # 端口开着但拿不到 /api/system：可能是需要账号、或不是 NAS Safe
+        # 端口开着但拿不到 /api/system：可能是需要账号、或不是 TS Safe
         code = getattr(exc, "code", None)
         if code in (401, 403):
             info["nassafe"] = True
@@ -337,6 +337,25 @@ def _grab_banner(ip: str, port: int, timeout: float = 1.6) -> str:
         return ""
 
 
+def _icmp_alive(ip: str, timeout: float = 1.0) -> bool:
+    """ICMP 探活兜底。
+
+    很多电脑（尤其是开着防火墙的 Windows）一个对外端口都不开，
+    只按端口采指纹会把它判成「不存在」，用户就会觉得「扫不到我的电脑」。
+    这里 ping 一次确认在线；ping 不通就当不存在，不影响其它逻辑。
+    """
+    try:
+        if platform.system().lower().startswith("win"):
+            cmd = ["ping", "-n", "1", "-w", str(max(1, int(timeout * 1000))), ip]
+        else:
+            cmd = ["ping", "-c", "1", "-W", str(max(1, int(timeout))), ip]
+        r = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=timeout + 3)
+        return r.returncode == 0
+    except Exception:  # noqa: BLE001 无 ping 权限 / 超时都当不在线
+        return False
+
+
 def fingerprint(ip: str, ports: list | None = None, timeout: float = CONNECT_TIMEOUT) -> dict:
     """采一台主机的指纹：开放端口 + HTTP 标题 + 主机名。只读探测。"""
     ports = ports or FINGER_PORTS
@@ -395,7 +414,7 @@ def _rule_identify(fp: dict) -> dict:
            "suggest_group": "", "confidence": 0.3, "by": "rule"}
     host = (fp.get("hostname") or "").lower()
     if 8848 in ports:
-        out.update({"device_type": "nas_safe", "brand_label": "NAS Safe", "confidence": 0.9})
+        out.update({"device_type": "nas_safe", "brand_label": "TS Safe", "confidence": 0.9})
     elif 7000 in ports:
         # AirPlay 接收器（Apple TV / HomePod / 带隔空播放的电视）：AirTunes 服务在 7000
         out.update({"device_type": "media", "brand_label": "苹果投屏设备", "confidence": 0.75})
@@ -502,7 +521,7 @@ def scan(payload: dict | None = None) -> dict:
         ports = list(DEFAULT_PORTS)
     include_vpn = bool(p.get("include_vpn", True))
     include_lan = bool(p.get("include_lan", True))
-    # discover：没装 NAS Safe 的主机也采集指纹列出来；use_ai：用 AI 判断这些是什么设备
+    # discover：没装 TS Safe 的主机也采集指纹列出来；use_ai：用 AI 判断这些是什么设备
     discover = bool(p.get("discover", True))
     use_ai = bool(p.get("ai", True))
     timeout = float(p.get("timeout") or CONNECT_TIMEOUT)
@@ -554,16 +573,33 @@ def scan(payload: dict | None = None) -> dict:
                 if r:
                     found.append(r)
                     hit_ips.add(r["ip"])
-    # 去重（同 IP 多端口命中保留第一个）
+    # 已经登记过的设备：扫描结果里打上标记，前端默认不勾选并提示，
+    # 否则用户再扫一次就会加出「名字后面多个 1」的重复设备。
+    known: dict = {}
+    try:
+        import devices as _devmod  # 延迟导入，避免模块循环
+        for _d in _devmod.load_devices():
+            _h = str(_d.get("host") or "").strip()
+            if _h:
+                known[_h] = _d.get("name") or _h
+    except Exception:  # noqa: BLE001 读不到设备表就退化成「不标记」
+        known = {}
+
+    # 去重（同 IP 多端口命中保留第一个）；本机设备已在控制台，无需再添加
     seen, uniq = set(), []
     for f in found:
+        if f.get("is_self"):
+            continue
         k = f["ip"]
         if k in seen:
             continue
         seen.add(k)
+        f["added"] = k in known
+        if f["added"]:
+            f["added_name"] = known[k]
         uniq.append(f)
 
-    # 其余主机：采指纹 + AI 识别，告诉用户「网络里还有谁，装了 NAS Safe 就能纳管」
+    # 其余主机：采指纹 + AI 识别，告诉用户「网络里还有谁，装了 TS Safe 就能纳管」
     others: list[dict] = []
     ai_used = False
     ai_note = ""
@@ -586,11 +622,29 @@ def scan(payload: dict | None = None) -> dict:
             ai_map = _ai_identify(fps)
             ai_used = bool(ai_map)
             if not ai_map:
-                ai_note = "AI 未启用或没返回结果，已用内置规则判断"
+                ai_note = ("没用上 AI 识别（还没配置 AI，或没返回结果），这次的类型是内置规则判断的。"
+                           "想让 AI 帮忙认设备：到「功能设置 → AI 配置」里启用并填好接口密钥。")
+        # 一个端口都不开的主机：ping 一下确认在线（并行），避免「扫不到我的电脑」
+        alive_map = {}
+        _need = [fp for fp in fps if not fp.get("open_ports")]
+        if _need:
+            with ThreadPoolExecutor(max_workers=min(32, len(_need))) as ex:
+                for fp, ok in zip(_need, ex.map(lambda f: _icmp_alive(f["ip"], timeout=1.0), _need)):
+                    alive_map[fp["ip"]] = ok
         for fp in fps:
             info = ai_map.get(fp["ip"]) or _rule_identify(fp)
             if not info.get("brand_label") and not fp.get("open_ports"):
-                continue
+                if not alive_map.get(fp["ip"]):
+                    continue
+                fp = dict(fp)
+                fp["alive_only"] = True
+                info = dict(info)
+                info.setdefault("device_type", "pc")
+                info.setdefault("brand_label", "在线的设备")
+                info.setdefault("suggest_name", "在线的设备")
+            info["added"] = fp["ip"] in known
+            if info["added"]:
+                info["added_name"] = known[fp["ip"]]
             others.append({**fp, **info})
 
     return {

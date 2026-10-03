@@ -1329,15 +1329,12 @@ function healthClass(h) {
 
 async function loadConsole(force) {
   const box = $("consoleGroups");
-  // 无感刷新：页面已经渲染过就不再清空内容转圈，后台拉到新数据后原位更新；
-  // 只有第一次进入（还没内容）才显示加载动画，之后刷新用户基本无感知。
-  const firstLoad = !box || !box.querySelector(".net-tile, .topo-stage");
-  if (box && firstLoad) box.innerHTML = `<p class="muted"><span class="spinner"></span>正在汇总各品牌设备状态…</p>`;
+  if (box) box.innerHTML = `<p class="muted"><span class="spinner"></span>正在汇总各品牌设备状态…</p>`;
   try {
     const data = await api("/api/devices" + (force ? "?force=1" : ""), {}, 20000);
     renderConsole(data);
   } catch (e) {
-    if (box && firstLoad) box.innerHTML = `<p class="muted">汇总失败：${escapeHtml(e.message)}</p>`;
+    if (box) box.innerHTML = `<p class="muted">汇总失败：${escapeHtml(e.message)}</p>`;
   }
 }
 
@@ -1384,20 +1381,6 @@ function withDemoDevices(data) {
 }
 
 
-/* 无感刷新：记录上次渲染的「设备指纹」，新数据进来先对比——
-   指纹没变（设备没增减/没改名/状态字段没变）就只原位改文字与颜色，
-   不重建 DOM：卡片不闪、拓扑粒子动画不中断、滚动位置不丢。 */
-let _consoleSig = "";
-let _selectedDevId = "";
-function consoleSig(devs) {
-  return devs.map((d) => [
-    d.id, deviceDisplayName(d), d.status, d.health || 0,
-    (d.agent && d.agent.status) || "",
-    d.smart && d.smart.available ? `${d.smart.disk_count}-${d.smart.bad || 0}-${d.smart.warn || 0}` : "na",
-    `${(d.snapshot && d.snapshot.protected_units) || 0}/${(d.snapshot && d.snapshot.total_units) || 0}`,
-  ].join(":")).join("|");
-}
-
 function renderConsole(data) {
   const totals = data.totals || {};
   const set = (id, v) => { const el = $(id); if (el) el.textContent = (v == null ? "—" : v); };
@@ -1416,20 +1399,6 @@ function renderConsole(data) {
     return;
   }
   const remotes = all.filter((d) => d.type !== "local");
-  // 无感刷新路径：设备列表结构没变，只原位更新卡片与拓扑状态
-  const sig = consoleSig(all);
-  if (sig === _consoleSig && wrap.querySelector(".net-tile")) {
-    for (const d of remotes) updateNetTile(d);
-    const cnt = wrap.querySelector(".dev-group-count");
-    if (cnt) cnt.textContent = `${remotes.length} 台`;
-    _consoleData = withDemoDevices(data);
-    updateTopoStatus(_consoleData.devices || []);
-    const localNow = (_consoleData.devices || []).find((d) => d.type === "local") || (_consoleData.devices || [])[0];
-    const selDev = findDev(_consoleData, _selectedDevId) || localNow;
-    if (selDev) selectDevice(selDev.id, { quiet: true });
-    return;
-  }
-  _consoleSig = sig;
   // 本机不再在这里重复出卡片：顶部详情区已展示本机状态并带「进入本机」按钮
   let html = "";
   // 联网设备：图标框排列，一眼看到每台的监控状态
@@ -1487,45 +1456,7 @@ function renderConsole(data) {
   _consoleData = dataEff;
   renderTopology(dataEff);
   const localDev = (data.devices || []).find((d) => d.type === "local") || (data.devices || [])[0];
-  const selDev = (_selectedDevId && findDev(dataEff, _selectedDevId)) || localDev;
-  if (selDev) selectDevice(selDev.id);
-}
-
-/* 原位更新一张联网设备卡片（不重建 DOM）：只改健康色、在线状态、硬盘/快照两行 */
-function updateNetTile(d) {
-  const t = document.querySelector(`.net-tile[data-net="${CSS.escape(d.id)}"]`);
-  if (!t) return;
-  const hc = healthClass(d.health);
-  const offline = d.status === "offline";
-  const hLabel = HEALTH_LABEL[d.health] || "正常";
-  const sm = d.smart || {}, sn = d.snapshot || {};
-  t.className = `net-tile ${hc} ${offline ? "offline" : ""}`;
-  t.style.setProperty("--col", topoHealthColor(d));
-  const st = t.querySelector(".nt-state");
-  if (st) st.innerHTML = `<span class="nt-dot"></span>${offline ? "离线" : escapeHtml(hLabel)}`;
-  const mt = t.querySelector(".nt-metrics");
-  if (mt) mt.innerHTML = `<span>${netDiskText(sm)}</span><span>⛨ ${sn.protected_units || 0}/${sn.total_units || 0} 卷受保护</span>`;
-}
-
-/* 原位更新拓扑节点/连线的颜色与状态文字（不重建画面，粒子动画不中断） */
-function updateTopoStatus(devs) {
-  for (const d of devs) {
-    const id = CSS.escape(d.id);
-    const col = topoHealthColor(d);
-    const off = d.status === "offline";
-    const node = document.querySelector(`.topo-node[data-id="${id}"]`);
-    if (node) {
-      const st = off ? "off" : ((d.health || 0) >= 2 ? "warn" : "ok");
-      node.className = `topo-node ${st}${off ? " off" : ""}`;
-      node.style.setProperty("--col", col);
-      const s = node.querySelector(".tn-status");
-      if (s) s.textContent = off ? "离线" : (d.health_label || "正常");
-      const ico = node.querySelector(".tn-badge");
-      if (ico) ico.style.background = col;
-    }
-    const link = document.querySelector(`.topo-link[data-id="${id}"]`);
-    if (link) { link.setAttribute("stroke", col); link.classList.toggle("off", off); }
-  }
+  if (localDev) selectDevice(localDev.id);
 }
 
 /* ---------- 设备拓扑思维导图（中心总控台 + 环绕设备节点） ---------- */
@@ -1990,14 +1921,13 @@ function renderTopology(data) {
   startTopoDrift(stage, items, { W, H, cx, cy, rx, ry, n, gaps });
 }
 
-function selectDevice(id, opts) {
+function selectDevice(id) {
   const dev = findDev(_consoleData, id);
   if (!dev) return;
-  _selectedDevId = id;
   document.querySelectorAll(".topo-node").forEach((n) => {
     const sel = n.dataset.id === id;
     n.classList.toggle("selected", sel);
-    if (sel && !(opts && opts.quiet)) { n.classList.remove("flip"); void n.offsetWidth; n.classList.add("flip"); }  // 立体翻转
+    if (sel) { n.classList.remove("flip"); void n.offsetWidth; n.classList.add("flip"); }  // 立体翻转
   });
   renderDeviceDetail(dev);
 }
@@ -2197,13 +2127,6 @@ function topoKindFromBrand(brand) {
   return "chip";
 }
 
-/* 硬盘监测一行文案：netTile 与无感刷新的原位更新共用，保证两边永远一致 */
-function netDiskText(sm) {
-  return sm.available
-    ? `💽 ${sm.disk_count} 块${sm.bad ? " · " + sm.bad + " 块异常" : sm.warn ? " · " + sm.warn + " 块注意" : " · 全部良好"}`
-    : "💽 硬盘监测不可用";
-}
-
 /* 联网设备用「图标框」排列：一眼看到每台的机型、名字与监控状态 */
 function netTile(d) {
   const hc = healthClass(d.health);
@@ -2213,13 +2136,15 @@ function netTile(d) {
   const ring = TOPO_KIND_COLORS[kind] || TOPO_KIND_COLORS.chip;
   const offline = d.status === "offline";
   const sm = d.smart || {}, sn = d.snapshot || {};
-  const diskTxt = netDiskText(sm);
+  const diskTxt = sm.available
+    ? `💽 ${sm.disk_count} 块${sm.bad ? " · " + sm.bad + " 块异常" : sm.warn ? " · " + sm.warn + " 块注意" : " · 全部良好"}`
+    : "💽 硬盘监测不可用";
   const snapTxt = `⛨ ${sn.protected_units || 0}/${sn.total_units || 0} 卷受保护`;
   const gname = (d.group && d.group !== "本地设备" && d.group !== "远程设备") ? d.group : "";
   return `<div class="net-tile ${hc} ${offline ? "offline" : ""}" data-net="${escapeHtml(d.id)}" style="--col:${col};--ring:${ring}">
       ${gname ? `<span class="nt-tag">${escapeHtml(gname)}</span>` : ""}
       <div class="nt-badge">${topoDeviceGlyph(kind)}</div>
-      <div class="nt-name" title="${escapeHtml(deviceDisplayName(d))}">${escapeHtml(deviceDisplayName(d))}<button class="nm-edit" data-rename="${escapeHtml(d.id)}" title="给这台改名">✎</button></div>
+      <div class="nt-name">${escapeHtml(deviceDisplayName(d))}<button class="nm-edit" data-rename="${escapeHtml(d.id)}" title="给这台改名">✎</button></div>
       <div class="nt-state"><span class="nt-dot"></span>${offline ? "离线" : escapeHtml(hLabel)}</div>
       <div class="nt-metrics"><span>${diskTxt}</span><span>${snapTxt}</span></div>
       <div class="nt-foot"><button class="btn ghost sm" data-net-open="${escapeHtml(d.id)}">设备管控</button></div>
@@ -2296,20 +2221,17 @@ function openDeviceControl(dev) {
 // 联机设备总览：复用 /api/devices 的聚合结果，按卡片网格呈现所有已联机设备
 async function loadDeviceOverview(force) {
   const box = $("deviceOverview");
-  // 无感刷新：已渲染过就不清空转圈，拉到新数据原位更新
-  const firstLoad = !box || !box.querySelector(".ov-card");
-  if (box && firstLoad) box.innerHTML = `<p class="muted"><span class="spinner"></span>正在汇总联机设备…</p>`;
+  if (box) box.innerHTML = `<p class="muted"><span class="spinner"></span>正在汇总联机设备…</p>`;
   try {
     const data = await api("/api/devices" + (force ? "?force=1" : ""), {}, 20000);
     _overviewData = data;
     renderDeviceOverview(data);
   } catch (e) {
-    if (box && firstLoad) box.innerHTML = `<p class="muted">加载失败：${escapeHtml(e.message || "")}</p>`;
+    if (box) box.innerHTML = `<p class="muted">加载失败：${escapeHtml(e.message || "")}</p>`;
   }
 }
 
 let _overviewData = null;
-let _overviewSig = "";
 let _manageFocus = "";   // 从总览「功能设置」跳过来时高亮的设备
 
 function renderDeviceOverview(data) {
@@ -2320,19 +2242,8 @@ function renderDeviceOverview(data) {
   const online = all.filter((d) => d.status === "online").length;
   if (!all.length) {
     box.innerHTML = `<p class="muted">还没有登记任何设备。到「功能设置 → 添加设备」里添加后这里会显示。</p>`;
-    _overviewSig = "";
     return;
   }
-  const ovSig = all.map((d) => [d.id, deviceDisplayName(d), d.status, d.health || 0,
-    (d.agent && d.agent.status) || "", d.brand_label || d.brand || ""].join(":")).join("|");
-  if (ovSig === _overviewSig && box.querySelector(".ov-card")) {
-    // 无感刷新：卡片没增减，只原位更新状态与代理徽标
-    for (const d of all) updateOverviewCard(d);
-    const barCnt = box.querySelector(".ov-bar span");
-    if (barCnt) barCnt.innerHTML = `共 <b>${all.length}</b> 台 · 在线 <b>${online}</b> 台`;
-    return;
-  }
-  _overviewSig = ovSig;
   let html = `<div class="ov-bar">
       <span>共 <b>${all.length}</b> 台 · 在线 <b>${online}</b> 台</span>
       <span class="ov-hint">点击任一台看详情 · 功能设置到「功能设置」里单独配</span>
@@ -2377,26 +2288,6 @@ function renderDeviceOverview(data) {
       openDeviceControl(d);
     };
   });
-}
-
-/* 原位更新一张总览卡片：健康色 / 在线状态 / 代理徽标（不动按钮，绑定不丢） */
-function updateOverviewCard(d) {
-  const c = document.querySelector(`.ov-card[data-ov="${CSS.escape(d.id)}"]`);
-  if (!c) return;
-  const offline = d.status === "offline";
-  const hc = healthClass(d.health);
-  const hLabel = HEALTH_LABEL[d.health] || "正常";
-  const ag = d.agent || {};
-  const agState = ag.status === "installed" ? "installed" : ag.status === "pending" ? "pending" : "none";
-  const agChip = d.type === "local" ? `<span class="ov-agent ok">代理 已装</span>`
-    : `<span class="ov-agent ${agState}">${agState === "installed" ? "代理 已装" : agState === "pending" ? "代理 待装" : "代理 未装"}</span>`;
-  c.className = `ov-card ${hc} ${offline ? "offline" : ""}`;
-  const stEl = c.querySelector(".ov-card-head .dev-status");
-  if (stEl) { stEl.className = `dev-status ${offline ? "off" : "on"}`; stEl.textContent = offline ? "离线" : "在线"; }
-  const hEl = c.querySelector(".ov-card-health");
-  if (hEl) hEl.innerHTML = `<span class="dev-health-dot ${hc}"></span><span>${hLabel}</span>`;
-  const fEl = c.querySelector(".ov-card-foot");
-  if (fEl) fEl.innerHTML = agChip;
 }
 
 // 单台设备详情：复用 renderDeviceDetail，装进弹窗方便从总览直接看具体数据

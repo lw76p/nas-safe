@@ -1,7 +1,7 @@
 """跨品牌多设备总控制台 —— 设备注册与分层聚合（只读探测，绝不改系统状态）。
 
-设计（与 NAS Safe 部署形态一致）：
-- 每个 NAS 都运行一个 NAS Safe 代理（容器 / 脚本），暴露同一套 /api 接口。
+设计（与 TS Safe 部署形态一致）：
+- 每个 NAS 都运行一个 TS Safe 代理（容器 / 脚本），暴露同一套 /api 接口。
 - 其中一台被指定为「总控制台」（本模块所在实例），它把本机当作 local 设备，
   并把其它 NAS 的访问地址登记为 remote 设备，统一拉取健康快照。
 - 远程设备通过 HTTP 调其 /api/system/metrics + /api/system 聚合，离线/超时安全降级。
@@ -15,7 +15,10 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote
 
 import storage  # noqa: E402
 import brands as brandmod  # noqa: E402  品牌识别
@@ -73,7 +76,8 @@ def _local_template() -> dict:
         "port": 0,
         "token": "",
         "enabled": True,
-        "note": "当前这台运行 NAS Safe 控制台的设备",
+        "note": "当前这台运行 TS Safe 控制台的设备",
+        "agent": {"status": "installed", "label": "监控中心"},
     }
 
 
@@ -192,7 +196,7 @@ def collect_local_summary(dev: dict) -> dict:
 
 
 def collect_remote_summary(dev: dict) -> dict:
-    """远程设备健康汇总：HTTP 拉取对端 NAS Safe 的接口，超时安全降级。"""
+    """远程设备健康汇总：HTTP 拉取对端 TS Safe 的接口，超时安全降级。"""
     brand = dev.get("brand") or "generic_linux"
     out = {
         "id": dev.get("id"), "name": dev.get("name", "远程设备"),
@@ -219,7 +223,9 @@ def collect_remote_summary(dev: dict) -> dict:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
-        m = _http_get(base + "/api/system/metrics", headers, timeout=5)
+        # 探测超时 2.5s：局域网设备毫秒级返回，离线设备快速失败；
+        # 避免单台离线把控制台首屏拖到 N×5s（原 5s，实测冷启动 ~6s -> ~2.5s）
+        m = _http_get(base + "/api/system/metrics", headers, timeout=2.5)
         if m.get("ok"):
             data = m.get("metrics", m)
             smart = data.get("smart") or {}
@@ -256,20 +262,120 @@ def _http_get(url: str, headers: dict, timeout: int = 5):
 
 
 # ---------------------------------------------------------------------------
+# 联机设备的快照预览（快照页切到某台联机设备时，由本控制台代理拉取）
+# ---------------------------------------------------------------------------
+
+def remote_snapshots(dev_id: str, volume: str = "") -> dict:
+    """读取某台设备的快照列表，供快照页做「联机设备快照预览」。
+
+    远程设备走 HTTP 代理对端的公开 GET 接口（对端 GET 数据接口默认免登录），
+    只读、不做任何写操作，连不上就安全降级并说明原因。
+    """
+    devs = load_devices()
+    dev = next((d for d in devs if d.get("id") == dev_id), None)
+    if dev is None:
+        return {"ok": False, "error": "找不到这台设备"}
+    if dev.get("type") == "local" or dev.get("id") == LOCAL_ID:
+        return {"ok": False, "local": True, "error": "本机快照请走 /api/snapshots"}
+
+    host = (dev.get("host") or "").strip()
+    port = int(dev.get("port") or 0)
+    if not host or not port:
+        return {"ok": False, "error": "这台设备还没登记访问地址，连不上"}
+    base = f"http{'s' if dev.get('https') else ''}://{host}:{port}"
+    token = (dev.get("token") or "").strip()
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        v = _http_get(base + "/api/volumes", headers, timeout=8)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"连不上这台设备（{type(exc).__name__}），可能已关机或地址变了"}
+    vols = v.get("volumes") or []
+    if not volume and vols:
+        volume = str(vols[0].get("mountpoint") or vols[0].get("id") or "")
+
+    snaps: list = []
+    err = ""
+    if volume:
+        try:
+            s = _http_get(base + "/api/snapshots?volume=" + quote(volume, safe=""),
+                          headers, timeout=15)
+            snaps = s.get("snapshots") or []
+        except Exception as exc:  # noqa: BLE001
+            err = f"这台设备的卷列表拿到了，但快照没读出来（{type(exc).__name__}）"
+
+    return {
+        "ok": True,
+        "device": {"id": dev.get("id"), "name": dev.get("name") or "远程设备",
+                   "brand_label": dev.get("brand_label") or "",
+                   "host": host, "port": port},
+        "volumes": vols,
+        "snapshots": snaps,
+        "volume": volume,
+        "readonly": True,          # 联机设备快照在这里只看不动，避免跨机破坏性操作
+        "warning": err,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 全量聚合（分层分级）
 # ---------------------------------------------------------------------------
 
+# 轻量缓存：重复进入控制台时不重复探测（远程设备串行探测很慢）。
+# 仅缓存非 force 的结果，TTL 内直接返回，首次/强刷仍实时拉取。
+_COLLECT_LOCK = threading.Lock()
+_COLLECT_CACHE = {"data": None, "ts": 0.0}
+_COLLECT_TTL = 8.0
+
+
 def collect_all(force: bool = False) -> dict:
-    """汇总所有设备，按 group 分层，返回树 + 总体统计。"""
+    """汇总所有设备，按 group 分层，返回树 + 总体统计。
+
+    性能优化：本机直接采集；远程设备用线程池并行探测，避免逐台串行
+    超时（每台最多 2.5s）把控制台拖到 N×2.5s。配合 8s 缓存，重复进入秒开。
+    """
+    if not force:
+        with _COLLECT_LOCK:
+            if _COLLECT_CACHE["data"] is not None and (time.time() - _COLLECT_CACHE["ts"]) < _COLLECT_TTL:
+                return _COLLECT_CACHE["data"]
+
     devs = load_devices()
-    summaries = []
+    local_summaries = []
+    remote_devs = []
     for dev in devs:
         if not dev.get("enabled", True):
             continue
         if dev.get("type") == "local" or dev.get("id") == LOCAL_ID:
-            summaries.append(collect_local_summary(dev))
+            local_summaries.append(collect_local_summary(dev))
         else:
-            summaries.append(collect_remote_summary(dev))
+            remote_devs.append(dev)
+
+    # 远程设备并行探测
+    remote_summaries = []
+    if remote_devs:
+        with ThreadPoolExecutor(max_workers=min(16, len(remote_devs))) as ex:
+            futs = {ex.submit(collect_remote_summary, d): d for d in remote_devs}
+            for fut in as_completed(futs):
+                try:
+                    remote_summaries.append(fut.result())
+                except Exception:  # noqa: BLE001 兜底：单台异常不影响整体
+                    d = futs[fut]
+                    remote_summaries.append({
+                        "id": d.get("id"), "name": d.get("name", "远程设备"), "type": "remote",
+                        "status": "offline", "health": 1, "health_label": "注意",
+                        "agent": d.get("agent") or {}, "smart": {"available": False},
+                        "snapshot": {"total_units": 0, "protected_units": 0,
+                                     "unprotected_units": 0, "snap_count": 0},
+                        "guard": {"level": "ok", "label": "未知"},
+                        "caps": {}, "brand": d.get("brand", "generic_linux"),
+                        "brand_label": d.get("brand_label") or brandmod.BRAND_LABELS.get(d.get("brand") or "generic_linux", d.get("brand") or "generic_linux"),
+                        "group": d.get("group", "远程设备"), "host": d.get("host", ""),
+                        "port": d.get("port", 0), "enabled": True,
+                        "last_seen": d.get("last_seen", 0), "note": "探测失败",
+                    })
+    summaries = local_summaries + remote_summaries
 
     # 分层：group -> 设备
     groups: dict[str, list] = {}
@@ -290,7 +396,12 @@ def collect_all(force: bool = False) -> dict:
         "health_bad": sum(1 for s in summaries if s["health"] >= 3),
         "health_warn": sum(1 for s in summaries if s["health"] in (1, 2)),
     }
-    return {"devices": summaries, "groups": groups, "totals": totals}
+    result = {"devices": summaries, "groups": groups, "totals": totals}
+    # 写入缓存（仅非强刷路径使用）
+    with _COLLECT_LOCK:
+        _COLLECT_CACHE["data"] = result
+        _COLLECT_CACHE["ts"] = time.time()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +431,7 @@ def add_device(payload: dict) -> dict:
             d["enabled"] = True
             d["net_kind"] = (payload.get("net_kind") or d.get("net_kind") or "").strip()
             d["brand_label"] = (payload.get("brand_label") or d.get("brand_label") or "").strip()
-            if payload.get("agent_request"):
+            if payload.get("agent_request") or payload.get("install_agent"):
                 d["agent"] = _agent_pending(d.get("agent"))
             save_devices(devs)
             return {"ok": True, "id": d.get("id"), "updated": True}
@@ -340,7 +451,7 @@ def add_device(payload: dict) -> dict:
         "note": "",
         "net_kind": (payload.get("net_kind") or "").strip(),
         "brand_label": (payload.get("brand_label") or "").strip(),
-        "agent": _agent_pending(None) if payload.get("agent_request") else {},
+        "agent": _agent_pending(None) if (payload.get("agent_request") or payload.get("install_agent")) else {},
     })
     save_devices(devs)
     return {"ok": True, "id": dev_id}
@@ -434,7 +545,7 @@ def agent_heartbeat(token: str) -> dict:
 
 
 AGENT_INSTALL_TEMPLATE = """#!/bin/sh
-# NAS Safe 轻量代理（v0）：只做「回连注册 + 每分钟心跳」，只读，不改系统配置
+# TS Safe 轻量代理（v0）：只做「回连注册 + 每分钟心跳」，只读，不改系统配置
 CENTER="__CENTER__"
 TOKEN="__TOKEN__"
 echo "{\\"token\\":\\"$TOKEN\\"}" > /tmp/.nassafe_hb.json 2>/dev/null || exit 1
@@ -447,7 +558,7 @@ if command -v crontab >/dev/null 2>&1; then
   ( crontab -l 2>/dev/null | grep -v nassafe-agent; echo "* * * * * $HB >/dev/null 2>&1 # nassafe-agent" ) | crontab - >/dev/null 2>&1 || true
 fi
 ( while :; do $HB >/dev/null 2>&1; sleep 60; done ) >/dev/null 2>&1 &
-echo "[NAS Safe] 代理已安装，已回连中控。"
+echo "[TS Safe] 代理已安装，已回连中控。"
 """
 
 
@@ -461,7 +572,7 @@ def agent_install_script(token: str, center: str) -> str:
 
 
 # Windows 版轻量代理：PowerShell 注册 + schtasks 每分钟心跳计划任务（重启也在）
-AGENT_INSTALL_PS_TEMPLATE = r'''# NAS Safe Windows agent: register + per-minute heartbeat scheduled task (read-only)
+AGENT_INSTALL_PS_TEMPLATE = r'''# TS Safe Windows agent: register + per-minute heartbeat scheduled task (read-only)
 $ErrorActionPreference = "SilentlyContinue"
 $Center = "__CENTER__"
 $Token  = "__TOKEN__"
@@ -491,7 +602,7 @@ $act = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -F
 schtasks /Create /F /SC MINUTE /MO 1 /TN "NassafeAgent" /TR $act | Out-Null
 # Run once right now so the console flips to 已装 immediately
 & (Join-Path $Dir "heartbeat.ps1")
-Write-Host "[NAS Safe] Windows agent installed OK. Heartbeat task: NassafeAgent (every minute)."
+Write-Host "[TS Safe] Windows agent installed OK. Heartbeat task: NassafeAgent (every minute)."
 '''
 
 
@@ -543,3 +654,109 @@ def remove_device(dev_id: str) -> dict:
         raise storage.StorageError("设备不存在")
     save_devices(new)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# 联机设备管控（设置后台）：动态展示在线/离线数量与状态，并配置每台设备的功能开关
+# ---------------------------------------------------------------------------
+
+# 每台设备可在控制台集中配置的「功能」：重复文件清理 / 磁盘清理 / 换机迁移 / 自动快照
+DEVICE_FEATURES = ["dups", "junk", "migrate", "autosnap"]
+
+
+def _online_status(dev: dict) -> str:
+    """基于最近心跳/采集估计设备在线状态（不实时探测，避免拖慢接口）。"""
+    ag = dev.get("agent") or {}
+    if dev.get("type") == "local":
+        return "online"
+    # 已安装代理：5 分钟内有心跳即在線
+    lc = ag.get("last_checkin") or ag.get("installed_at") or dev.get("last_seen") or 0
+    if ag.get("status") == "installed" and (time.time() - float(lc or 0)) < 360:
+        return "online"
+    if dev.get("host"):
+        return "offline"
+    return "unknown"
+
+
+def get_manage() -> dict:
+    """返回联机设备管控视图：在线统计 + 每台设备的状态、代理、功能开关。"""
+    devs = load_devices()
+    rows = []
+    online = 0
+    for d in devs:
+        if not d.get("enabled", True):
+            continue
+        ag = d.get("agent") or {}
+        st = _online_status(d)
+        if st == "online":
+            online += 1
+        feats = dict(d.get("features") or {})
+        rows.append({
+            "id": d.get("id"),
+            "name": d.get("name") or "设备",
+            "type": d.get("type") or "remote",
+            "brand": d.get("brand") or "generic_linux",
+            "brand_label": d.get("brand_label") or brandmod.BRAND_LABELS.get(d.get("brand") or "", d.get("brand") or ""),
+            "host": d.get("host", ""),
+            "port": d.get("port", 0),
+            "status": st,
+            "agent_status": "installed" if (d.get("type") == "local" or d.get("id") == LOCAL_ID)
+                           else (ag.get("status") or "none"),
+            "features": {k: bool(feats.get(k)) for k in DEVICE_FEATURES},
+        })
+    return {"ok": True, "online": online, "total": len(rows), "devices": rows}
+
+
+def set_manage(payload: dict) -> dict:
+    """配置单台设备的功能开关；可选补装轻量代理。"""
+    dev_id = (payload.get("id") or "").strip()
+    if not dev_id:
+        raise storage.StorageError("缺少 id 参数")
+    devs = load_devices()
+    hit = next((d for d in devs if d.get("id") == dev_id), None)
+    if hit is None:
+        raise storage.StorageError("设备不存在")
+
+    feats = dict(hit.get("features") or {})
+    changed = False
+    for k in DEVICE_FEATURES:
+        if k in payload:
+            feats[k] = bool(payload[k])
+            changed = True
+    if changed:
+        hit["features"] = feats
+
+    # 自动快照：已装代理的设备，最好努力把配置推到对端实例（同源接口）
+    if "autosnap" in payload and feats.get("autosnap") and hit.get("agent", {}).get("status") == "installed":
+        _push_remote_autosnap(hit)
+
+    if payload.get("install_agent"):
+        hit["agent"] = _agent_pending(hit.get("agent"))
+    save_devices(devs)
+    return {"ok": True, "id": dev_id, "features": {k: bool(feats.get(k)) for k in DEVICE_FEATURES}}
+
+
+def _push_remote_autosnap(dev: dict) -> None:
+    """尽力把自动快照开关推到对端 TS Safe（同源 /api/autosnapshot）。失败静默。"""
+    host = (dev.get("host") or "").strip()
+    port = int(dev.get("port") or 0)
+    if not host or not port:
+        return
+    base = f"http{'s' if dev.get('https') else ''}://{host}:{port}"
+    token = (dev.get("token") or "").strip()
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        _http_post(base + "/api/autosnapshot", headers,
+                   {"enabled": True, "interval_hours": 1, "keep": 48, "volumes": []}, timeout=5)
+    except Exception:  # noqa: BLE001 尽力而为，失败不影响本机
+        pass
+
+
+def _http_post(url: str, headers: dict, body: dict, timeout: int = 5):
+    import urllib.request
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
+                                headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", "ignore"))

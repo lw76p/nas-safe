@@ -95,7 +95,7 @@ async function api(path, options = {}, timeoutMs = 60000) {
     }
     if (!data.ok) {
       // 服务端卡点（设备数/迁移等）返回 upgrade:true——这正是展示升级页的时机
-      if (data.upgrade && !window.__suppressUpgradeJump && typeof openUpgradeModal === "function") openUpgradeModal();
+      if (data.upgrade && typeof openUpgradeModal === "function") openUpgradeModal();
       throw new Error(data.error || "未知错误");
     }
     return data;
@@ -1329,15 +1329,12 @@ function healthClass(h) {
 
 async function loadConsole(force) {
   const box = $("consoleGroups");
-  // 无感刷新：页面已经渲染过就不再清空内容转圈，后台拉到新数据后原位更新；
-  // 只有第一次进入（还没内容）才显示加载动画，之后刷新用户基本无感知。
-  const firstLoad = !box || !box.querySelector(".net-tile, .topo-stage");
-  if (box && firstLoad) box.innerHTML = `<p class="muted"><span class="spinner"></span>正在汇总各品牌设备状态…</p>`;
+  if (box) box.innerHTML = `<p class="muted"><span class="spinner"></span>正在汇总各品牌设备状态…</p>`;
   try {
     const data = await api("/api/devices" + (force ? "?force=1" : ""), {}, 20000);
     renderConsole(data);
   } catch (e) {
-    if (box && firstLoad) box.innerHTML = `<p class="muted">汇总失败：${escapeHtml(e.message)}</p>`;
+    if (box) box.innerHTML = `<p class="muted">汇总失败：${escapeHtml(e.message)}</p>`;
   }
 }
 
@@ -1384,20 +1381,6 @@ function withDemoDevices(data) {
 }
 
 
-/* 无感刷新：记录上次渲染的「设备指纹」，新数据进来先对比——
-   指纹没变（设备没增减/没改名/状态字段没变）就只原位改文字与颜色，
-   不重建 DOM：卡片不闪、拓扑粒子动画不中断、滚动位置不丢。 */
-let _consoleSig = "";
-let _selectedDevId = "";
-function consoleSig(devs) {
-  return devs.map((d) => [
-    d.id, deviceDisplayName(d), d.status, d.health || 0,
-    (d.agent && d.agent.status) || "",
-    d.smart && d.smart.available ? `${d.smart.disk_count}-${d.smart.bad || 0}-${d.smart.warn || 0}` : "na",
-    `${(d.snapshot && d.snapshot.protected_units) || 0}/${(d.snapshot && d.snapshot.total_units) || 0}`,
-  ].join(":")).join("|");
-}
-
 function renderConsole(data) {
   const totals = data.totals || {};
   const set = (id, v) => { const el = $(id); if (el) el.textContent = (v == null ? "—" : v); };
@@ -1416,20 +1399,6 @@ function renderConsole(data) {
     return;
   }
   const remotes = all.filter((d) => d.type !== "local");
-  // 无感刷新路径：设备列表结构没变，只原位更新卡片与拓扑状态
-  const sig = consoleSig(all);
-  if (sig === _consoleSig && wrap.querySelector(".net-tile")) {
-    for (const d of remotes) updateNetTile(d);
-    const cnt = wrap.querySelector(".dev-group-count");
-    if (cnt) cnt.textContent = `${remotes.length} 台`;
-    _consoleData = withDemoDevices(data);
-    updateTopoStatus(_consoleData.devices || []);
-    const localNow = (_consoleData.devices || []).find((d) => d.type === "local") || (_consoleData.devices || [])[0];
-    const selDev = findDev(_consoleData, _selectedDevId) || localNow;
-    if (selDev) selectDevice(selDev.id, { quiet: true });
-    return;
-  }
-  _consoleSig = sig;
   // 本机不再在这里重复出卡片：顶部详情区已展示本机状态并带「进入本机」按钮
   let html = "";
   // 联网设备：图标框排列，一眼看到每台的监控状态
@@ -1487,45 +1456,7 @@ function renderConsole(data) {
   _consoleData = dataEff;
   renderTopology(dataEff);
   const localDev = (data.devices || []).find((d) => d.type === "local") || (data.devices || [])[0];
-  const selDev = (_selectedDevId && findDev(dataEff, _selectedDevId)) || localDev;
-  if (selDev) selectDevice(selDev.id);
-}
-
-/* 原位更新一张联网设备卡片（不重建 DOM）：只改健康色、在线状态、硬盘/快照两行 */
-function updateNetTile(d) {
-  const t = document.querySelector(`.net-tile[data-net="${CSS.escape(d.id)}"]`);
-  if (!t) return;
-  const hc = healthClass(d.health);
-  const offline = d.status === "offline";
-  const hLabel = HEALTH_LABEL[d.health] || "正常";
-  const sm = d.smart || {}, sn = d.snapshot || {};
-  t.className = `net-tile ${hc} ${offline ? "offline" : ""}`;
-  t.style.setProperty("--col", topoHealthColor(d));
-  const st = t.querySelector(".nt-state");
-  if (st) st.innerHTML = `<span class="nt-dot"></span>${offline ? "离线" : escapeHtml(hLabel)}`;
-  const mt = t.querySelector(".nt-metrics");
-  if (mt) mt.innerHTML = `<span>${netDiskText(sm)}</span><span>⛨ ${sn.protected_units || 0}/${sn.total_units || 0} 卷受保护</span>`;
-}
-
-/* 原位更新拓扑节点/连线的颜色与状态文字（不重建画面，粒子动画不中断） */
-function updateTopoStatus(devs) {
-  for (const d of devs) {
-    const id = CSS.escape(d.id);
-    const col = topoHealthColor(d);
-    const off = d.status === "offline";
-    const node = document.querySelector(`.topo-node[data-id="${id}"]`);
-    if (node) {
-      const st = off ? "off" : ((d.health || 0) >= 2 ? "warn" : "ok");
-      node.className = `topo-node ${st}${off ? " off" : ""}`;
-      node.style.setProperty("--col", col);
-      const s = node.querySelector(".tn-status");
-      if (s) s.textContent = off ? "离线" : (d.health_label || "正常");
-      const ico = node.querySelector(".tn-badge");
-      if (ico) ico.style.background = col;
-    }
-    const link = document.querySelector(`.topo-link[data-id="${id}"]`);
-    if (link) { link.setAttribute("stroke", col); link.classList.toggle("off", off); }
-  }
+  if (localDev) selectDevice(localDev.id);
 }
 
 /* ---------- 设备拓扑思维导图（中心总控台 + 环绕设备节点） ---------- */
@@ -1990,14 +1921,13 @@ function renderTopology(data) {
   startTopoDrift(stage, items, { W, H, cx, cy, rx, ry, n, gaps });
 }
 
-function selectDevice(id, opts) {
+function selectDevice(id) {
   const dev = findDev(_consoleData, id);
   if (!dev) return;
-  _selectedDevId = id;
   document.querySelectorAll(".topo-node").forEach((n) => {
     const sel = n.dataset.id === id;
     n.classList.toggle("selected", sel);
-    if (sel && !(opts && opts.quiet)) { n.classList.remove("flip"); void n.offsetWidth; n.classList.add("flip"); }  // 立体翻转
+    if (sel) { n.classList.remove("flip"); void n.offsetWidth; n.classList.add("flip"); }  // 立体翻转
   });
   renderDeviceDetail(dev);
 }
@@ -2117,11 +2047,6 @@ async function openAgentModal(dev) {
   const base = `${location.protocol}//${location.host}`;
   const cmd = token ? `curl -sS "${base}/api/agent/install.sh?t=${token}" | sh` : "";
   const cmdPs = token ? `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm '${base}/api/agent/install.ps1?t=${token}' | iex"` : "";
-  // 不想登到目标设备上去敲命令时：在自己这台电脑上用 SSH 远程执行（Linux/NAS/云服务器可用）
-  const devHost = (dev.host || "").trim();
-  const cmdSsh = token && devHost
-    ? `ssh 用户名@${devHost} "curl -sS '${base}/api/agent/install.sh?t=${token}' | sh"`
-    : "";
   const cmdRow = (label, c, id) => c
     ? `<div class="set-row" style="align-items:flex-start"><span class="set-label" style="min-width:56px">${label}</span>
        <div class="agent-cmd" style="flex:1"><code id="${id}">${escapeHtml(c)}</code><button class="btn ghost sm" data-act="copy_${id}">复制</button></div></div>`
@@ -2131,14 +2056,7 @@ async function openAgentModal(dev) {
     `<p class="muted" style="margin:0 0 8px">给 <b>${escapeHtml(deviceDisplayName(dev))}</b> 装上轻量代理后，中控就能帮它做快照防勒索、换机迁移等完整控制。<br>
      装法：登到那台设备（Windows 用 PowerShell，NAS/群晖/云服务器用 SSH），粘贴运行对应的命令。代理只回连报到（每分钟一次），不会改对端的任何配置。</p>
      ${cmdRow("Linux/Mac", cmd, "agentCmdSh") || `<p class="muted">安装命令生成失败（令牌没拿到），请关掉重试。</p>`}
-     ${cmdRow("Windows", cmdPs, "agentCmdPs")}
-     ${cmdRow("远程装", cmdSsh, "agentCmdSsh")}
-     <p class="muted" style="margin:10px 0 0;line-height:1.8">
-       <b>能不能由这台电脑帮别的设备装？</b><br>
-       · Linux / 群晖 / 威联通 / 云服务器：能。用上面「远程装」那条，把「用户名」换成对方的 SSH 账号，在<b>这台电脑</b>上执行一次就行，不用登到对方机器。<br>
-       · Windows：不行。Windows 没有对外开放的远程执行通道，必须<b>在那台电脑的 PowerShell 里</b>跑一次「Windows」那条命令（建议管理员身份）。<br>
-       这是有意的安全设计：中控不能凭空拿到别人设备的控制权，总得有一次「本机同意」。
-     </p>`,
+     ${cmdRow("Windows", cmdPs, "agentCmdPs")}`,
     `<button class="btn ghost" data-act="close">关闭</button>
      ${cmd ? `<button class="btn primary" data-act="checkagent">我已运行，检测一下</button>` : ""}`,
     {
@@ -2148,10 +2066,6 @@ async function openAgentModal(dev) {
       },
       copy_agentCmdPs: async () => {
         try { await navigator.clipboard.writeText(cmdPs); toast("Windows 命令已复制，到 PowerShell 里粘贴运行（建议管理员身份）", "ok"); }
-        catch (e) { toast("自动复制失败，请手动选中命令复制", "warn"); }
-      },
-      copy_agentCmdSsh: async () => {
-        try { await navigator.clipboard.writeText(cmdSsh); toast("已复制：把「用户名」换成对方的 SSH 账号后，在这台电脑上执行", "ok"); }
         catch (e) { toast("自动复制失败，请手动选中命令复制", "warn"); }
       },
       checkagent: async () => {
@@ -2197,13 +2111,6 @@ function topoKindFromBrand(brand) {
   return "chip";
 }
 
-/* 硬盘监测一行文案：netTile 与无感刷新的原位更新共用，保证两边永远一致 */
-function netDiskText(sm) {
-  return sm.available
-    ? `💽 ${sm.disk_count} 块${sm.bad ? " · " + sm.bad + " 块异常" : sm.warn ? " · " + sm.warn + " 块注意" : " · 全部良好"}`
-    : "💽 硬盘监测不可用";
-}
-
 /* 联网设备用「图标框」排列：一眼看到每台的机型、名字与监控状态 */
 function netTile(d) {
   const hc = healthClass(d.health);
@@ -2213,13 +2120,15 @@ function netTile(d) {
   const ring = TOPO_KIND_COLORS[kind] || TOPO_KIND_COLORS.chip;
   const offline = d.status === "offline";
   const sm = d.smart || {}, sn = d.snapshot || {};
-  const diskTxt = netDiskText(sm);
+  const diskTxt = sm.available
+    ? `💽 ${sm.disk_count} 块${sm.bad ? " · " + sm.bad + " 块异常" : sm.warn ? " · " + sm.warn + " 块注意" : " · 全部良好"}`
+    : "💽 硬盘监测不可用";
   const snapTxt = `⛨ ${sn.protected_units || 0}/${sn.total_units || 0} 卷受保护`;
   const gname = (d.group && d.group !== "本地设备" && d.group !== "远程设备") ? d.group : "";
   return `<div class="net-tile ${hc} ${offline ? "offline" : ""}" data-net="${escapeHtml(d.id)}" style="--col:${col};--ring:${ring}">
       ${gname ? `<span class="nt-tag">${escapeHtml(gname)}</span>` : ""}
       <div class="nt-badge">${topoDeviceGlyph(kind)}</div>
-      <div class="nt-name" title="${escapeHtml(deviceDisplayName(d))}">${escapeHtml(deviceDisplayName(d))}<button class="nm-edit" data-rename="${escapeHtml(d.id)}" title="给这台改名">✎</button></div>
+      <div class="nt-name">${escapeHtml(deviceDisplayName(d))}<button class="nm-edit" data-rename="${escapeHtml(d.id)}" title="给这台改名">✎</button></div>
       <div class="nt-state"><span class="nt-dot"></span>${offline ? "离线" : escapeHtml(hLabel)}</div>
       <div class="nt-metrics"><span>${diskTxt}</span><span>${snapTxt}</span></div>
       <div class="nt-foot"><button class="btn ghost sm" data-net-open="${escapeHtml(d.id)}">设备管控</button></div>
@@ -2296,20 +2205,17 @@ function openDeviceControl(dev) {
 // 联机设备总览：复用 /api/devices 的聚合结果，按卡片网格呈现所有已联机设备
 async function loadDeviceOverview(force) {
   const box = $("deviceOverview");
-  // 无感刷新：已渲染过就不清空转圈，拉到新数据原位更新
-  const firstLoad = !box || !box.querySelector(".ov-card");
-  if (box && firstLoad) box.innerHTML = `<p class="muted"><span class="spinner"></span>正在汇总联机设备…</p>`;
+  if (box) box.innerHTML = `<p class="muted"><span class="spinner"></span>正在汇总联机设备…</p>`;
   try {
     const data = await api("/api/devices" + (force ? "?force=1" : ""), {}, 20000);
     _overviewData = data;
     renderDeviceOverview(data);
   } catch (e) {
-    if (box && firstLoad) box.innerHTML = `<p class="muted">加载失败：${escapeHtml(e.message || "")}</p>`;
+    if (box) box.innerHTML = `<p class="muted">加载失败：${escapeHtml(e.message || "")}</p>`;
   }
 }
 
 let _overviewData = null;
-let _overviewSig = "";
 let _manageFocus = "";   // 从总览「功能设置」跳过来时高亮的设备
 
 function renderDeviceOverview(data) {
@@ -2320,19 +2226,8 @@ function renderDeviceOverview(data) {
   const online = all.filter((d) => d.status === "online").length;
   if (!all.length) {
     box.innerHTML = `<p class="muted">还没有登记任何设备。到「功能设置 → 添加设备」里添加后这里会显示。</p>`;
-    _overviewSig = "";
     return;
   }
-  const ovSig = all.map((d) => [d.id, deviceDisplayName(d), d.status, d.health || 0,
-    (d.agent && d.agent.status) || "", d.brand_label || d.brand || ""].join(":")).join("|");
-  if (ovSig === _overviewSig && box.querySelector(".ov-card")) {
-    // 无感刷新：卡片没增减，只原位更新状态与代理徽标
-    for (const d of all) updateOverviewCard(d);
-    const barCnt = box.querySelector(".ov-bar span");
-    if (barCnt) barCnt.innerHTML = `共 <b>${all.length}</b> 台 · 在线 <b>${online}</b> 台`;
-    return;
-  }
-  _overviewSig = ovSig;
   let html = `<div class="ov-bar">
       <span>共 <b>${all.length}</b> 台 · 在线 <b>${online}</b> 台</span>
       <span class="ov-hint">点击任一台看详情 · 功能设置到「功能设置」里单独配</span>
@@ -2377,26 +2272,6 @@ function renderDeviceOverview(data) {
       openDeviceControl(d);
     };
   });
-}
-
-/* 原位更新一张总览卡片：健康色 / 在线状态 / 代理徽标（不动按钮，绑定不丢） */
-function updateOverviewCard(d) {
-  const c = document.querySelector(`.ov-card[data-ov="${CSS.escape(d.id)}"]`);
-  if (!c) return;
-  const offline = d.status === "offline";
-  const hc = healthClass(d.health);
-  const hLabel = HEALTH_LABEL[d.health] || "正常";
-  const ag = d.agent || {};
-  const agState = ag.status === "installed" ? "installed" : ag.status === "pending" ? "pending" : "none";
-  const agChip = d.type === "local" ? `<span class="ov-agent ok">代理 已装</span>`
-    : `<span class="ov-agent ${agState}">${agState === "installed" ? "代理 已装" : agState === "pending" ? "代理 待装" : "代理 未装"}</span>`;
-  c.className = `ov-card ${hc} ${offline ? "offline" : ""}`;
-  const stEl = c.querySelector(".ov-card-head .dev-status");
-  if (stEl) { stEl.className = `dev-status ${offline ? "off" : "on"}`; stEl.textContent = offline ? "离线" : "在线"; }
-  const hEl = c.querySelector(".ov-card-health");
-  if (hEl) hEl.innerHTML = `<span class="dev-health-dot ${hc}"></span><span>${hLabel}</span>`;
-  const fEl = c.querySelector(".ov-card-foot");
-  if (fEl) fEl.innerHTML = agChip;
 }
 
 // 单台设备详情：复用 renderDeviceDetail，装进弹窗方便从总览直接看具体数据
@@ -2449,10 +2324,6 @@ async function renderManage() {
     const agentBtn = noAgent
       ? `<button class="btn primary sm" data-m-agent="${escapeHtml(d.id)}">安装轻量代理</button>`
       : `<span class="mg-agent ok">代理 已装</span>`;
-    // 删除设备：本机不能被删（后端同样拒绝），其余设备（在线/离线都行）随时可移除
-    const delBtn = d.type === "local"
-      ? ""
-      : `<button class="btn ghost sm mg-del" data-m-del="${escapeHtml(d.id)}" title="把这台设备从列表里移除，以后可以重新添加">删除设备</button>`;
     html += `<div class="mg-device${focused}" data-mid="${escapeHtml(d.id)}">
         <div class="mg-head">
           <span class="mg-name">${escapeHtml(d.name)}</span>
@@ -2461,7 +2332,7 @@ async function renderManage() {
         </div>
         <div class="mg-body">
           <div class="mg-feats">${feats}</div>
-          <div class="mg-actions">${agentBtn}${enterBtn}${delBtn}</div>
+          <div class="mg-actions">${agentBtn}${enterBtn}</div>
         </div>
       </div>`;
   }
@@ -2494,27 +2365,6 @@ async function renderManage() {
     b.onclick = () => {
       showView("snapshots");
       selectSnapDevice(b.dataset.mSnap);
-    };
-  });
-  listEl.querySelectorAll("[data-m-del]").forEach((b) => {
-    b.onclick = async () => {
-      const id = b.dataset.mDel;
-      const box = b.closest(".mg-device");
-      const nmEl = box && box.querySelector(".mg-name");
-      const name = (nmEl && nmEl.textContent) || "这台设备";
-      if (!confirm(`确定要从设备列表里删除「${name}」吗？\n\n删除后控制台不再纳管它，需要时可以重新添加。`)) return;
-      b.disabled = true;
-      try {
-        await api("/api/devices/remove", { method: "POST", body: JSON.stringify({ id }) });
-        toast("已删除设备", "ok");
-        // 快照页若正看这台设备，回落到本机，避免指向已删设备
-        if (state.snapDevice === id) { state.snapDevice = "local"; _snapDevList = []; }
-        try { await loadDeviceOverview(true); } catch (e) { /* 刷新总览失败不影响删除结果 */ }
-        renderManage();
-      } catch (e) {
-        b.disabled = false;
-        toast("删除失败：" + (e.message || ""), "err");
-      }
     };
   });
 }
@@ -2577,9 +2427,7 @@ function renderScanResult(data) {
   const found = data.found || [];
   if (!found.length) {
     box.innerHTML = `<p class="muted">扫了 ${data.scanned || 0} 个地址，没找到已装 TS Safe 的设备。<br>
-      可能是对端还没装、端口不一样，或者被防火墙挡了。可以先点「手动添加」直接填地址；未装 TS Safe 的设备也能作为监控设备加入。</p>
-    <p class="muted scan-note">没扫到你的电脑？先确认它和这台设备在<b>同一个网段</b>；Windows 默认防火墙会挡掉探测，
-      放行「文件和打印机共享（回显请求 - ICMPv4-In）」后再扫一次。也可以直接在「额外网段」里填它的地址，例如 <code>192.168.8.100/32</code>。</p>`;
+      可能是对端还没装、端口不一样，或者被防火墙挡了。可以先点「手动添加」直接填地址；未装 TS Safe 的设备也能作为监控设备加入。</p>`;
     return;
   }
   let html = `<div class="scan-sum">扫了 ${data.scanned} 个地址，找到 ${found.length} 台（用时 ${data.seconds}s）。给每台起个好认的名字，之后随时能改：</div>`;
@@ -2590,23 +2438,20 @@ function renderScanResult(data) {
     const defName = `${brandTxt} ${f.ip}`;
     const kind = (f.kind === "vpn") ? "chip" : topoKindFromBrand(f.brand);
     const isSelf = !!f.is_self;
-    const isAdded = !!f.added;                       // 已经加过：不再默认勾选，避免加出重复设备
-    const skip = isSelf || isAdded;
-    html += `<div class="scan-item${isSelf ? " self" : ""}${isAdded ? " added" : ""}">
-      <label class="si-pick"><input type="checkbox"${skip ? "" : " checked"}
+    html += `<div class="scan-item${isSelf ? " self" : ""}">
+      <label class="si-pick"><input type="checkbox"${isSelf ? "" : " checked"}
         data-ip="${escapeHtml(f.ip)}" data-port="${f.port}" data-brand="${escapeHtml(f.brand || "generic_linux")}" data-kind="${escapeHtml(f.kind || "")}"></label>
       <div class="si-ico">${topoDeviceGlyph(kind)}</div>
       <div class="si-main">
         <input class="text-input si-name" value="${escapeHtml(defName)}" maxlength="24">
-        <div class="si-meta">${escapeHtml(f.ip)}:${f.port} · ${escapeHtml(brandTxt)} · ${escapeHtml(netTxt)}${f.need_auth ? " · 需要账号" : ""}${isSelf ? " · 就是这台（已在控制台里，不用再加）" : ""}${isAdded ? ` · <span class="si-added">已经在设备列表里${f.added_name ? `（${escapeHtml(f.added_name)}）` : ""}，别再加了</span>` : ""}</div>
+        <div class="si-meta">${escapeHtml(f.ip)}:${f.port} · ${escapeHtml(brandTxt)} · ${escapeHtml(netTxt)}${f.need_auth ? " · 需要账号" : ""}${isSelf ? " · 就是这台（已在控制台里，不用再加）" : ""}</div>
       </div>
     </div>`;
   }
   if (data.truncated) html += `<p class="muted scan-note">网段太大，只扫了一部分；可以在「额外网段」里填更小的网段（如 192.168.8.0/24）缩小范围。</p>`;
   const others = data.others || [];
   if (others.length) {
-    html += `<div class="scan-others"><div class="scan-sum">网络里还发现 ${others.length} 台设备（还没装 TS Safe，装了就能纳管）：</div>
-      <div class="scan-sum muted" style="font-weight:400">没看到你的电脑？确认它在同一网段，且防火墙没挡住探测（Windows 需放行 ICMP 回显）；也可以把它的 IP 直接填进「额外网段」。</div>`;
+    html += `<div class="scan-others"><div class="scan-sum">网络里还发现 ${others.length} 台设备（还没装 TS Safe，装了就能纳管）：</div>`;
     for (const o of others) {
       const portTxt = (o.open_ports || []).slice(0, 6).join(",") || "无开放端口";
       const byAi = o.by === "ai";
@@ -2614,7 +2459,7 @@ function renderScanResult(data) {
         <div class="si-ico">${topoDeviceGlyph(o.device_type === "pc" ? (o.brand_label || "").includes("Mac") ? "laptop" : "pc" : o.device_type === "camera" ? "camera" : o.device_type === "router" ? "router" : o.device_type === "server" ? "server" : o.device_type === "nas" || o.device_type === "nas_safe" ? "nas" : "chip")}</div>
         <div class="si-main">
           <div class="si-name2">${escapeHtml(o.suggest_name || o.brand_label || o.ip)} ${byAi ? `<span class="ai-tag">AI 判断</span>` : `<span class="ai-tag rule">规则判断</span>`}</div>
-          <div class="si-meta">${escapeHtml(o.ip)} · ${escapeHtml(o.brand_label || "未知设备")} · 端口 ${escapeHtml(portTxt)}${o.hostname ? " · " + escapeHtml(o.hostname) : ""}${o.alive_only ? " · 在线（没开可识别的端口）" : ""}${o.added ? ` · <span class="si-added">已在设备列表里</span>` : ""}</div>
+          <div class="si-meta">${escapeHtml(o.ip)} · ${escapeHtml(o.brand_label || "未知设备")} · 端口 ${escapeHtml(portTxt)}${o.hostname ? " · " + escapeHtml(o.hostname) : ""}</div>
         </div>
       </div>`;
     }
@@ -2626,7 +2471,7 @@ function renderScanResult(data) {
   if (foot) {
     foot.innerHTML = `<button class="btn ghost" data-act="close">关闭</button>
       <button class="btn ghost" data-act="scan">重新扫描</button>
-      <button class="btn primary" data-act="addsel">＋ 添加勾选的设备</button>`;
+      <button class="btn primary" data-act="addsel">＋ 添加选中（${found.length}）</button>`;
   }
   modalActions.addsel = addSelectedDevices;
 }
@@ -2827,16 +2672,6 @@ async function applyMig() {
 
 
 
-// 首屏把当前页写进地址栏（replaceState，不额外压一条历史），
-// 这样第一次按「返回」是回上一页而不是退出站点。
-function _syncInitialRoute() {
-  try {
-    const v = localStorage.getItem("nassafe_view") || "home";
-    const t = v === "settings" ? (localStorage.getItem("nassafe_settings_tab") || "notify") : "";
-    history.replaceState({ view: v, tab: t }, "", "#/" + v + (t ? "/" + t : ""));
-  } catch (e) { /* 忽略 */ }
-}
-
 function applyView() {
   const view = localStorage.getItem("nassafe_view") || "home";
   if (!VIEWS.includes(view)) return;
@@ -2848,37 +2683,10 @@ function applyView() {
   });
 }
 
-/* ---------- 浏览器前进/后退 ----------
-   之前切页只改 DOM、不动 history，于是「返回」直接退出整个站点（连按两下就没了）。
-   现在把「视图 / 设置子菜单」写进地址栏 hash，返回键就能一页一页往回退。 */
-function _routeFromHash() {
-  const h = String(location.hash || "").replace(/^#\/?/, "");
-  const p = h.split("/").filter(Boolean);
-  return p.length ? { view: p[0], tab: p[1] || "" } : null;
-}
-function _pushRoute(view, tab) {
-  const want = "#/" + view + (tab ? "/" + tab : "");
-  if (location.hash === want) return;          // 同一目标不重复压栈
-  try { history.pushState({ view, tab }, "", want); } catch (e) { /* 忽略 */ }
-}
-function _applyRoute(r) {
-  if (!r || !VIEWS.includes(r.view)) return;
-  if (r.view === "settings") {
-    localStorage.setItem("nassafe_view", "settings");
-    applyView();
-    showSettingsTab(r.tab || "notify");
-  } else {
-    showView(r.view);  // 此时 hash 已是目标值，showView 里的 push 会被去重跳过
-  }
-}
-window.addEventListener("popstate", () => { _applyRoute(_routeFromHash()); });
-
 function showView(name) {
   if (!VIEWS.includes(name)) name = "home";
   localStorage.setItem("nassafe_view", name);
   applyView();
-  // 设置页的子菜单由 showSettingsTab 压栈（能记住具体菜单），这里不重复压
-  if (name !== "settings") _pushRoute(name, "");
   onEnterView(name);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -2906,7 +2714,6 @@ function onEnterView(name) {
 
 function showSettingsTab(tab) {
   localStorage.setItem("nassafe_settings_tab", tab);
-  _pushRoute("settings", tab);
   if (tab === "account") initAccountPane();
   if (tab === "kb") initKbPane();
   if (tab === "dups") { refreshDupStatus(); loadDupReport(); }
@@ -4065,47 +3872,6 @@ function aiProviderChanged() {
   }
 }
 
-// 按当前版本裁剪可选的 AI 接口：用不了的置灰并标注，
-// 免得用户选中后保存才被后端拒绝、还被弹到升级页。
-function applyAiProviderLimits(list, current) {
-  const sel = $("aiProvider");
-  if (!sel || !Array.isArray(list) || !list.length) return;
-  Array.from(sel.options).forEach((o) => {
-    const ok = list.indexOf(o.value) >= 0 || o.value === current;
-    const base = (o.getAttribute("data-label") || o.textContent).replace(/（升级后可用）$/, "");
-    o.setAttribute("data-label", base);
-    o.disabled = !ok;
-    o.textContent = ok ? base : base + "（升级后可用）";
-  });
-  const hint = $("aiEditionHint");
-  if (hint) {
-    const names = Array.from(sel.options)
-      .filter((o) => list.indexOf(o.value) >= 0)
-      .map((o) => o.getAttribute("data-label") || o.textContent).join("、");
-    hint.textContent = `当前版本可用：${names}。其余接口升级后解锁（本地 AI 需家庭版及以上）。`;
-  }
-}
-
-function applyNotifyTypeLimits(list, current) {
-  const sel = $("notifyType");
-  if (!sel || !Array.isArray(list) || !list.length) return;
-  Array.from(sel.options).forEach((o) => {
-    if (!o.value) return;
-    const ok = list.indexOf(o.value) >= 0 || o.value === current;
-    const base = (o.getAttribute("data-label") || o.textContent).replace(/（专业版）$/, "");
-    o.setAttribute("data-label", base);
-    o.disabled = !ok;
-    o.textContent = ok ? base : base + "（专业版）";
-  });
-  const hint = $("notifyEditionHint");
-  if (hint) {
-    const names = Array.from(sel.options)
-      .filter((o) => o.value && list.indexOf(o.value) >= 0)
-      .map((o) => o.getAttribute("data-label") || o.textContent).join("、");
-    hint.textContent = `当前版本可用：${names}。群机器人 / Bark / ntfy 等自定义通道是专业版功能。`;
-  }
-}
-
 async function saveAI() {
   const prov = $("aiProvider").value;
   const keyVal = ($("aiKey").value || "").trim();
@@ -4123,17 +3889,13 @@ async function saveAI() {
   }
   // 空值或脱敏占位 *** 都不传 api_key，由后端保留旧 Key
   if (keyVal && keyVal !== "***") cfg.api_key = keyVal;
-  // 保存类操作被版本卡点挡下时，只在原地提示，不要把用户弹到「版本与升级」菜单
-  window.__suppressUpgradeJump = true;
   try {
     const data = await api("/api/ai/config", { method: "POST", body: JSON.stringify(cfg) });
-    delete window.__suppressUpgradeJump;
     toast(
       data.ready ? "AI 设置已保存，可用" : "AI 设置已保存（未配置密钥，相关功能将隐藏）",
       "ok"
     );
   } catch (e) {
-    delete window.__suppressUpgradeJump;
     toast("保存失败：" + e.message, "err");
   }
 }
@@ -4152,7 +3914,6 @@ async function loadSettings() {
       // 默认推荐：厂商邮件中继（填邮箱即用），零配置入门
       $("notifyType").value = "relay";
     }
-    applyNotifyTypeLimits(nc.allowed_types, ch.type);
     renderNotifyFields($("notifyType").value);
   } catch (e) { /* 忽略 */ }
 
@@ -4163,7 +3924,6 @@ async function loadSettings() {
     if (cfg.provider) $("aiProvider").value = cfg.provider;
     if (cfg.base_url) $("aiBase").value = cfg.base_url;
     if (cfg.model) $("aiModel").value = cfg.model;
-    applyAiProviderLimits(ac.providers, cfg.provider);
     // 已设置的 Key 回显为 *** 占位，避免强刷后空输入框让用户误以为丢失；保存时 *** 不会被覆盖（由 saveAI 判断）
     if (cfg.api_key === "***") $("aiKey").value = "***";
   } catch (e) { /* 忽略 */ }
@@ -4489,7 +4249,6 @@ document.querySelectorAll("#mainTabs .tab").forEach((t) => {
   };
 });
 applyView();
-_syncInitialRoute();
 
 // 跨品牌多设备总控制台：按钮绑定
 $("consoleRefreshBtn").onclick = () => loadConsole(true);
