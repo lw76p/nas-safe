@@ -265,6 +265,7 @@
         <button class="settings-tab" data-tab="autosnap">自动快照</button>
         <button class="settings-tab" data-tab="daily">日报</button>
         <button class="settings-tab" data-tab="ai">AI 配置</button>
+        <button class="settings-tab" data-tab="kb">📚 知识库</button>
         <button class="settings-tab" data-tab="appearance">外观</button>
         <button class="settings-tab" data-tab="agent">桌面提醒</button>
         <button class="settings-tab" data-tab="account">账号安全</button>
@@ -459,7 +460,9 @@
         <div class="settings-pane" data-pane="kb">
           <h3 class="sub-h">知识库（RAG，家庭版起）</h3>
           <p class="muted" style="line-height:1.8">把产品说明书、运维笔记、常见问题等文档喂给 AI，之后用自然语言提问，AI 会结合这些文档作答。文档只在「本机」摄入，不会外传；提问可在任意页面用「问 AI」时勾选「结合知识库」。教程：① 准备 txt/md/srt/pdf/docx 文档；② 在下方「摄入文档」上传或粘贴；③ 到任意页面的「问 AI」里勾选结合知识库后提问。</p>
-          <div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin:8px 0">
+          <div id="kbFreeTip" class="notice" style="display:none">📌 知识库是 <b>家庭版起</b> 的功能，当前是免费版。升级后这里可以上传产品说明书、运维笔记等文档，AI 会照着这些文档回答问题。到「版本与升级」页可查看对比与升级。</div>
+          <div id="kbPaneBody">
+          <div class="kb-block" style="border:1px solid var(--border);border-radius:10px;padding:10px;margin:8px 0">
             <div style="font-weight:600;margin-bottom:6px">① 摄入文档（后台录入，仅本机）</div>
             <input id="kbTitle" class="text-input" placeholder="文档标题（可选）" style="width:100%;box-sizing:border-box;margin-bottom:6px">
             <input id="kbFile" type="file" accept=".txt,.md,.srt,.pdf,.docx" style="margin-bottom:6px;width:100%">
@@ -467,17 +470,18 @@
             <div class="muted" style="font-size:12px;margin:6px 0">支持 txt/md/srt/pdf/docx。需 AI 供应商支持向量嵌入（如阿里云 qwen text-embedding 或本地 Ollama nomic-embed-text）。</div>
             <button id="kbIngestBtn" class="btn primary" style="margin-top:4px">摄入</button>
           </div>
-          <div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:10px">
+          <div class="kb-block" style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:10px">
             <div style="font-weight:600;margin-bottom:6px">② 已摄入文档 <button id="kbRefreshBtn" class="btn ghost sm" style="float:right">刷新</button></div>
             <div id="kbDocList" style="max-height:160px;overflow:auto"></div>
           </div>
-          <div style="border:1px solid var(--border);border-radius:10px;padding:10px">
+          <div class="kb-block" style="border:1px solid var(--border);border-radius:10px;padding:10px">
             <div style="font-weight:600;margin-bottom:6px">③ 提问</div>
             <div style="display:flex;gap:8px">
               <input id="kbQuery" class="text-input" placeholder="例如：服务到期怎么续费？" style="flex:1;box-sizing:border-box">
               <button id="kbQueryBtn" class="btn primary">提问</button>
             </div>
             <div id="kbAnswer" style="margin-top:10px;white-space:pre-wrap;line-height:1.7"></div>
+          </div>
           </div>
         </div>
 
@@ -639,6 +643,6 @@
 
 <div class="toast-root" id="toastRoot"></div>
 
-<script src="/app-20261003u.js"></script>
+<script src="/app-20261003v.js"></script>
 </body>
 </html>
