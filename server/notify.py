@@ -1,5 +1,5 @@
 """
-NAS Safe — 多渠道告警通知分发器（仅标准库，零第三方依赖）
+TS Safe — 多渠道告警通知分发器（仅标准库，零第三方依赖）
 
 设计原则（见 PRODUCT.md §九）：
   - A 类零门槛：企业微信 / 飞书 / 钉钉 群机器人 Webhook（粘一条 URL 即用）
@@ -14,6 +14,9 @@ NAS Safe — 多渠道告警通知分发器（仅标准库，零第三方依赖�
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import smtplib
@@ -52,7 +55,7 @@ def save_config(cfg: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _plain(alerts: list, events: list) -> str:
-    lines = ["【NAS Safe 安全动态】"]
+    lines = ["【TS Safe 安全动态】"]
     if events:
         lines.append("— 变动 —")
         for e in events:
@@ -80,7 +83,7 @@ def _http_post_json(url: str, payload: dict, token: str = "", timeout: int = 10)
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     # 必须伪装常规 UA：Python 默认 "Python-urllib/x.y" 会被 Cloudflare WAF 判为机器人并 403
-    req.add_header("User-Agent", "Mozilla/5.0 (compatible; NAS Safe/1.0)")
+    req.add_header("User-Agent", "Mozilla/5.0 (compatible; TS Safe/1.0)")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
@@ -103,6 +106,33 @@ def _send_webhook(ch: dict, text: str, *_) -> (bool, str):
     return _http_post_json(url, payload)
 
 
+def _send_feishu(ch: dict, text: str, *_) -> (bool, str):
+    """飞书自定义机器人：粘贴 Webhook 即用；开了「签名校验」时自动补 timestamp + sign。"""
+    url = ch.get("url", "").strip()
+    if not url:
+        return False, "缺少飞书机器人 Webhook 地址"
+    secret = (ch.get("secret") or "").strip()
+    payload = {"msg_type": "text", "content": {"text": text}}
+    if secret:
+        ts = str(int(time.time()))
+        digest = hmac.new(secret.encode("utf-8"), f"{ts}\n{secret}".encode("utf-8"),
+                          hashlib.sha256).digest()
+        payload["timestamp"] = ts
+        payload["sign"] = base64.b64encode(digest).decode("utf-8")
+    ok, info = _http_post_json(url, payload)
+    if not ok:
+        return False, info
+    try:
+        d = json.loads(info)
+        if isinstance(d, dict):
+            code = d.get("code", d.get("StatusCode", 0))
+            if str(code) not in ("0", ""):
+                return False, f"飞书返回: {d.get('msg') or d.get('StatusMessage') or d}"
+    except Exception:  # noqa: BLE001  # 非 JSON 回执按成功处理
+        pass
+    return True, info[:120]
+
+
 def _send_bark(ch: dict, text: str, *_) -> (bool, str):
     url = ch.get("url", "").strip()
     if not url:
@@ -117,7 +147,7 @@ def _send_bark(ch: dict, text: str, *_) -> (bool, str):
     # 支持直接填完整 key URL 或 分开填
     if key and "day.app" not in endpoint:
         endpoint = f"https://api.day.app/{key}"
-    payload = {"title": "NAS Safe 安全动态", "body": text}
+    payload = {"title": "TS Safe 安全动态", "body": text}
     return _http_post_json(endpoint, payload)
 
 
@@ -128,7 +158,7 @@ def _send_ntfy(ch: dict, text: str, *_) -> (bool, str):
         return False, "缺少 ntfy topic"
     url = f"{base}/{topic}"
     req = urllib.request.Request(url, data=text.encode("utf-8"), method="POST")
-    req.add_header("Title", "NAS Safe 安全动态")
+    req.add_header("Title", "TS Safe 安全动态")
     req.add_header("Priority", "high")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -174,7 +204,7 @@ def get_wechat_access_token(appid: str, secret: str) -> (str, str):
 
 def _wechat_template_data(alerts: list, events: list, text: str) -> dict:
     """经典模板消息字段（first/keyword1/keyword2/remark）。"""
-    first = "NAS Safe 检测到新的安全动态" if (alerts or events) else "NAS Safe 心跳"
+    first = "TS Safe 检测到新的安全动态" if (alerts or events) else "TS Safe 心跳"
     keyword1 = "告警" if alerts else "信息"
     keyword2 = time.strftime("%Y-%m-%d %H:%M:%S")
     remark = text[:200]
@@ -292,7 +322,7 @@ def _send_email(ch: dict, text: str, *_) -> (bool, str):
     if not all([host, user, to]):
         return False, "缺少 SMTP host/user/to"
     msg = MIMEText(text, "plain", "utf-8")
-    msg["Subject"] = ch.get("subject") or "NAS Safe 安全动态"
+    msg["Subject"] = ch.get("subject") or "TS Safe 安全动态"
     msg["From"] = user
     msg["To"] = to
     try:
@@ -309,7 +339,7 @@ def _send_email(ch: dict, text: str, *_) -> (bool, str):
 #   NASSAFE_RELAY_PROVIDER  resend | brevo  （默认 resend）
 #   NASSAFE_RELAY_APIKEY    厂商邮件 API Key
 #   NASSAFE_RELAY_FROM      已验证发件人，如 alerts@tsetch.com
-#   NASSAFE_RELAY_FROM_NAME 发件人显示名（默认 NAS Safe）
+#   NASSAFE_RELAY_FROM_NAME 发件人显示名（默认 TS Safe）
 
 def relay_configured() -> bool:
     return bool(os.environ.get("NASSAFE_RELAY_APIKEY", "").strip())
@@ -343,8 +373,8 @@ def _send_relay(ch: dict, text: str, *_) -> (bool, str):
         return False, "未设置接收邮箱（请在通道中填写接收邮箱）"
     provider = os.environ.get("NASSAFE_RELAY_PROVIDER", "resend").strip().lower()
     sender = os.environ.get("NASSAFE_RELAY_FROM", "alerts@tsetch.com").strip()
-    sender_name = os.environ.get("NASSAFE_RELAY_FROM_NAME", "NAS Safe").strip()
-    subject = ch.get("subject") or "NAS Safe 安全动态"
+    sender_name = os.environ.get("NASSAFE_RELAY_FROM_NAME", "TS Safe").strip()
+    subject = ch.get("subject") or "TS Safe 安全动态"
     if provider == "brevo":
         payload = {
             "sender": {"name": sender_name, "email": sender},
@@ -387,6 +417,7 @@ def send_system_mail(recipient: str, subject: str, text: str) -> (bool, str):
 _CHANNEL_DISPATCH = {
     "relay": _send_relay,
     "webhook": _send_webhook,
+    "feishu": _send_feishu,
     "bark": _send_bark,
     "ntfy": _send_ntfy,
     "wechat_service_account": _send_wechat_sa,
@@ -426,7 +457,7 @@ def dispatch(alerts: list = None, events: list = None) -> dict:
 
 
 # 触达速度优先级：越靠前越能让用户第一时间看到（微信服务号=微信内强提醒 > 手机推送 > 群机器人 > 邮件）
-_SPEED_ORDER = ["wechat_service_account", "bark", "ntfy", "webhook", "relay", "email"]
+_SPEED_ORDER = ["wechat_service_account", "feishu", "bark", "ntfy", "webhook", "relay", "email"]
 
 
 def push_alert(title: str, detail: str = "", level: str = "warn") -> dict:
@@ -465,8 +496,8 @@ def send_test(channel: dict) -> dict:
     fn = _CHANNEL_DISPATCH.get(kind)
     if not fn:
         return {"ok": False, "msg": "未知通道类型"}
-    ok, msg = fn(channel, _plain([], [{"title": "测试消息", "detail": "这是一条来自 NAS Safe 的测试推送"}]), [],
-                 [{"title": "测试消息", "detail": "这是一条来自 NAS Safe 的测试推送"}])
+    ok, msg = fn(channel, _plain([], [{"title": "测试消息", "detail": "这是一条来自 TS Safe 的测试推送"}]), [],
+                 [{"title": "测试消息", "detail": "这是一条来自 TS Safe 的测试推送"}])
     return {"ok": ok, "msg": msg}
 
 

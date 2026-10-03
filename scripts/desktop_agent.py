@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.16"
+AGENT_VER = "1.0.6.17"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -1362,6 +1362,8 @@ class TrayIcon:
     NIF_INFO = 0x00000010
     NIIF_INFO = 0x00000001
     NIIF_WARNING = 0x00000002
+    NIIF_USER = 0x00000004           # 气泡用自定义图标
+    NIIF_LARGE_ICON = 0x00000020     # 气泡里显示 32x32 大图标
     IMAGE_ICON = 1
     LR_LOADFROMFILE = 0x00000010
 
@@ -1450,6 +1452,22 @@ class TrayIcon:
             return None
 
     @staticmethod
+    def _load_hicon_sized(alert: bool, size: int):
+        """按指定尺寸加载 ICO（气泡提示用 32x32 大图标，与托盘同款图标文件）。"""
+        try:
+            u32 = ctypes.windll.user32
+            name = "nassafe_agent_alert.ico" if alert else "nassafe_agent.ico"
+            path = _res_path(name)
+            if not os.path.isfile(path):
+                return None
+            hicon = u32.LoadImageW(None, path, TrayIcon.IMAGE_ICON,
+                                   size, size,
+                                   TrayIcon.LR_LOADFROMFILE)
+            return hicon or None
+        except Exception:
+            return None
+
+    @staticmethod
     def _make_hicon(alert: bool, size: int = 16):
         try:
             u32 = ctypes.windll.user32
@@ -1485,7 +1503,7 @@ class TrayIcon:
             cx = cy = (size - 1) / 2.0
             r_out = size / 2.0 - 0.8
             r_in = size * 0.30
-            green = (34, 197, 94)     # 正常：绿色盾牌
+            brand = (74, 141, 240)    # 正常：品牌蓝盾牌（与托盘图标同色系）
             red = (239, 68, 68)       # 告警底色
             white = (255, 255, 255)   # 感叹号
             for y in range(size):
@@ -1496,7 +1514,7 @@ class TrayIcon:
                     if a <= 0:
                         continue
                     a = 1.0 if a > 1 else a
-                    r, g, b = (red if alert else green)
+                    r, g, b = (red if alert else brand)
                     # 告警：红色盾牌中间画一个白色感叹号
                     if alert:
                         bw = max(2.5, size * 0.13)
@@ -1577,6 +1595,10 @@ class TrayIcon:
             hicon_ok = self._load_hicon(False) or self._make_hicon(False)
             hicon_alert = self._load_hicon(True) or self._make_hicon(True)
             self._icons = [hicon_ok, hicon_alert]
+            # 气泡提示里显示的图标：跟托盘用同一个 ICO，只是取 32x32，
+            # 不再出现「托盘是自家盾牌、气泡是 Windows 自带蓝 i / 黄 !」的割裂感
+            self._balloon_icons = [self._load_hicon_sized(False, 32) or hicon_ok,
+                                   self._load_hicon_sized(True, 32) or hicon_alert]
 
             def _wndproc(hwnd, msg, wparam, lparam):
                 try:
@@ -1608,8 +1630,16 @@ class TrayIcon:
                         nid.uFlags = self.NIF_INFO
                         nid.szInfoTitle = getattr(self, "_balloon_title", "")[:63]
                         nid.szInfo = getattr(self, "_balloon_body", "")[:255]
-                        nid.dwInfoFlags = getattr(self, "_balloon_flags", self.NIIF_INFO)
                         nid.uTimeout = 12000
+                        # 气泡图标统一用自家盾牌：告警用带红点那版，普通用常规版
+                        _warn = getattr(self, "_balloon_flags", self.NIIF_INFO) == self.NIIF_WARNING
+                        _bicon = (self._balloon_icons[1] if _warn else self._balloon_icons[0]) \
+                            if getattr(self, "_balloon_icons", None) else None
+                        if _bicon:
+                            nid.dwInfoFlags = self.NIIF_USER | self.NIIF_LARGE_ICON
+                            nid.hBalloonIcon = _bicon
+                        else:
+                            nid.dwInfoFlags = getattr(self, "_balloon_flags", self.NIIF_INFO)
                         s32.Shell_NotifyIconW(1, ctypes.byref(nid))   # NIM_MODIFY
                     elif msg == 0x0111:                     # WM_COMMAND
                         if wparam == self.ID_OPEN and self.on_open:
