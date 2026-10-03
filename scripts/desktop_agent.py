@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.6.17"
+AGENT_VER = "1.0.7.18"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -876,12 +876,14 @@ def _self_cmd():
     return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
 
 
-def ensure_autostart(base, interval, exe=None):
+def ensure_autostart(base, interval, exe=None, token=""):
     if os.name != "nt":
         return False
     try:
         import winreg
         cmd = (f'"{exe}"' if exe else _self_cmd()) + f' --nas "{base}" --interval {interval}'
+        if token:
+            cmd += f' --token "{token}"'
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                              r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
         winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, cmd)
@@ -1043,7 +1045,7 @@ def install_dir() -> str:
     return os.path.join(base or os.path.expanduser("~"), APP_DIR)
 
 
-def self_install_flow(base_hint=""):
+def self_install_flow(base_hint="", token=""):
     """双击下载的 EXE 时：把自己安装到固定目录并启动守护。
 
     步骤：确定 NAS 地址 → 停掉旧实例 → 复制自身 → 写开机自启与协议 →
@@ -1100,16 +1102,22 @@ def self_install_flow(base_hint=""):
         return False
 
     # 4) 写配置 / 开机自启 / 协议（都指向安装后的副本）
-    interval = int(load_config().get("interval") or DEFAULT_INTERVAL)
-    save_config({"nas": base, "interval": interval})
-    ensure_autostart(base, interval, exe=dst)
+    cfg0 = load_config()
+    interval = int(cfg0.get("interval") or DEFAULT_INTERVAL)
+    cfg0.update({"nas": base, "interval": interval})
+    if token:
+        cfg0["agent_token"] = token
+    save_config(cfg0)
+    ensure_autostart(base, interval, exe=dst, token=token)
     register_protocol(exe=dst)
 
     # 5) 进度窗口 + 启动副本，自身退出
     install_progress(base)
     try:
-        subprocess.Popen([dst, "--nas", base, "--interval", str(interval)],
-                         close_fds=True, creationflags=CREATE_NO_WINDOW)
+        cmd_extra = [dst, "--nas", base, "--interval", str(interval)]
+        if token:
+            cmd_extra += ["--token", token]
+        subprocess.Popen(cmd_extra, close_fds=True, creationflags=CREATE_NO_WINDOW)
     except Exception as e:
         print("启动小助手失败：", e, file=sys.stderr)
         return False
@@ -2141,12 +2149,40 @@ def handle_protocol(raw):
     run_agent(base, interval, first=True)
 
 
-def run_agent(base, interval, first=False, once=False, no_ui=False):
+def _device_agent_loop(base, token):
+    """轻量代理心跳（与托盘 UI 一体）：注册一次，每 60s 心跳一次，静默重试。"""
+    def _post(path, obj):
+        try:
+            req = urllib.request.Request(base + path,
+                                         data=json.dumps(obj).encode("utf-8"),
+                                         method="POST",
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10).read()
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+    hostname = os.environ.get("COMPUTERNAME") or socket.gethostname()
+    osname = "Windows"
+    try:
+        _post("/api/agent/register", {"token": token, "hostname": hostname, "os": osname})
+    except Exception:
+        pass
+    while not STOP_EVENT.is_set():
+        if _post("/api/agent/heartbeat", {"token": token}):
+            agent_log("agent heartbeat ok")
+        else:
+            agent_log("agent heartbeat failed")
+        STOP_EVENT.wait(60)
+
+
+def run_agent(base, interval, first=False, once=False, no_ui=False, token=""):
     repair_protocol()  # 守护启动前自愈协议注册（重装/清理后指向可能错误）
     start_control_server()
     _TOAST.start()     # 启动 Win32 弹窗后台线程（与托盘同源，保证提醒可见）
     atexit.register(report_offline, base)  # 任何退出路径都上报离线，让 NAS 接管微信提醒
     report_online(base, force=True)
+    if token:
+        threading.Thread(target=_device_agent_loop, args=(base, token), daemon=True).start()
     seen = set()
     print(f"NAS Safe 小助手已启动：{base}（每 {interval}s 检查一次）")
     if once:
@@ -2209,6 +2245,7 @@ def main():
     ap.add_argument("--install", action="store_true", help="一键安装：探测 NAS + 弹窗确认 + 开机自启")
     ap.add_argument("--protocol", default="", help=argparse.SUPPRESS)
     ap.add_argument("--no-ui", action="store_true", help="纯后台模式，不显示右下角图标")
+    ap.add_argument("--token", default="", help="设备轻量代理令牌（中控安装命令下发，带 UI 守护 + 代理心跳一体）")
     ap.add_argument("--once", action="store_true", help="只检测一次（调试用）")
     args = ap.parse_args()
 
@@ -2219,7 +2256,7 @@ def main():
     # 双击下载的 EXE：自己完成安装（复制到固定目录 + 开机自启 + 启动托盘副本）
     if getattr(sys, "frozen", False) and \
             os.path.abspath(os.path.dirname(sys.executable)) != os.path.abspath(install_dir()):
-        if self_install_flow(args.nas.rstrip("/")):
+        if self_install_flow(args.nas.rstrip("/"), token=args.token):
             return
 
     if agent_online():
@@ -2246,14 +2283,19 @@ def main():
         return
 
     interval = args.interval or int(cfg.get("interval") or DEFAULT_INTERVAL)
+    token = args.token or (cfg.get("agent_token") or "")
     if args.install or first_run:
-        save_config({"nas": base, "interval": interval})
-        ensure_autostart(base, interval)
+        cfg2 = load_config()
+        cfg2.update({"nas": base, "interval": interval})
+        if token:
+            cfg2["agent_token"] = token
+        save_config(cfg2)
+        ensure_autostart(base, interval, token=token)
         register_protocol()
         if auto_install:
             install_progress(base)  # 只显示进度，不弹选择窗口
     run_agent(base, interval, first=args.install or first_run,
-              once=args.once, no_ui=args.no_ui)
+              once=args.once, no_ui=args.no_ui, token=token)
 
 
 if __name__ == "__main__":

@@ -572,13 +572,36 @@ def agent_install_script(token: str, center: str) -> str:
 
 
 # Windows 版轻量代理：PowerShell 注册 + schtasks 每分钟心跳计划任务（重启也在）
-AGENT_INSTALL_PS_TEMPLATE = r'''# TS Safe Windows agent: register + per-minute heartbeat scheduled task (read-only)
+AGENT_INSTALL_PS_TEMPLATE = r'''# TS Safe Windows agent v2: UI form (tray helper with built-in agent heartbeat), fallback to hidden heartbeat task
 $ErrorActionPreference = "SilentlyContinue"
 $Center = "__CENTER__"
 $Token  = "__TOKEN__"
 $Dir = Join-Path $env:ProgramData "NassafeAgent"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 
+# 0) Register with hostname + OS info (console flips to installed immediately)
+$os = "Windows"
+try { $os = "Windows " + (Get-CimInstance Win32_OperatingSystem).Caption } catch {}
+$reg = @{ token = $Token; hostname = $env:COMPUTERNAME; os = $os } | ConvertTo-Json
+try {
+  Invoke-RestMethod -Method Post -Uri "$Center/api/agent/register" -ContentType "application/json" -Body $reg -TimeoutSec 8 | Out-Null
+} catch {}
+
+# 1) UI form: download the tray helper EXE (notification + tray + agent heartbeat in one)
+$exe = Join-Path $Dir "NASSafeAgent.exe"
+$dl = $false
+try {
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  Invoke-WebRequest -Uri "$Center/agent/NASSafeAgent.exe" -OutFile $exe -UseBasicParsing -TimeoutSec 180
+  if ((Get-Item $exe).Length -gt 1MB) { $dl = $true }
+} catch {}
+if ($dl) {
+  Start-Process -FilePath $exe -ArgumentList @("--nas", $Center, "--token", $Token)
+  Write-Host "[TS Safe] 桌面助手已下载并启动：右下角托盘会出现蓝紫色盾牌图标，代理心跳由它负责（含开机自启）。"
+  exit 0
+}
+
+# 2) Fallback: hidden heartbeat task (when EXE download failed)
 # 1) Heartbeat payload + script
 ('{""token"":""__TOKEN__""}') | Set-Content -Encoding ASCII -Path (Join-Path $Dir "hb.json")
 $hb = @'
