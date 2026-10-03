@@ -754,13 +754,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, **response.report()})
 
             elif route == "/api/ai/photo/status":
-                # 照片语义搜索状态（专业版，脚手架）
+                # 照片语义搜索状态（专业版）
                 if not editions.limits().get("photo_search"):
                     self._send_json({"ok": False, "upgrade": True,
                                      "error": "照片语义搜索为专业版专属功能"})
                     return
-                self._send_json({"ok": True, "status": photo_search.STATUS,
-                                 "message": "照片语义搜索脚手架已就位，图像 embedding 接入后开放。"})
+                self._send_json(photo_search.status())
+
+            elif route == "/api/ai/photo/thumb":
+                # 照片缩略图（原图按浏览器缩放显示）：只放行索引里登记过的文件
+                if not editions.limits().get("photo_search"):
+                    self._send_json({"ok": False, "upgrade": True,
+                                     "error": "照片语义搜索为专业版专属功能"})
+                    return
+                path = unquote((query.get("path") or [""])[0])
+                ext = os.path.splitext(path)[1].lower()
+                if ext not in photo_search._MIME:
+                    self._send_json({"ok": False, "error": "不支持的图片类型"}, 400)
+                    return
+                if not photo_search.thumb_ok(path) or not os.path.isfile(path):
+                    self._send_json({"ok": False, "error": "图片不在索引中"}, 404)
+                    return
+                with open(path, "rb") as f:
+                    self._send_bytes(f.read(), 200, ctype=photo_search._MIME[ext])
 
             elif route == "/api/anomalies":
                 # 统一异常列表（硬件/容量/趋势/防勒索告警），供网页端与桌面小助手共用同一套规则
@@ -1547,18 +1563,20 @@ class Handler(BaseHTTPRequestHandler):
                     raise StorageError("未知的应急接口")
 
             elif route.startswith("/api/ai/photo/"):
-                # 三期：照片语义搜索（专业版专属，脚手架）
+                # 三期：照片语义搜索（专业版专属）
                 if not editions.limits().get("photo_search"):
                     self._send_json({"ok": False, "upgrade": True,
                                      "error": "照片语义搜索为专业版专属功能，请升级专业版。"})
                     return
                 if route == "/api/ai/photo/index":
                     root = (payload.get("root") or "").strip()
-                    res = photo_search.index_gallery(root)
+                    batch = int(payload.get("batch") or 10)
+                    res = photo_search.index_gallery(root, batch=batch)
                     self._send_json(res)
                 elif route == "/api/ai/photo/search":
                     q = (payload.get("query") or "").strip()
-                    res = photo_search.semantic_search(q)
+                    top_k = int(payload.get("top_k") or 12)
+                    res = photo_search.semantic_search(q, top_k=top_k)
                     self._send_json(res)
                 else:
                     raise StorageError("未知的照片检索接口")

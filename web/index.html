@@ -267,6 +267,7 @@
         <button class="settings-tab" data-tab="daily">日报</button>
         <button class="settings-tab" data-tab="ai">AI 配置</button>
         <button class="settings-tab" data-tab="kb">📚 知识库</button>
+        <button class="settings-tab" data-tab="photo" style="display:none">🔍 照片搜索</button>
         <button class="settings-tab" data-tab="appearance">外观</button>
         <button class="settings-tab" data-tab="agent">桌面提醒</button>
         <button class="settings-tab" data-tab="account">账号安全</button>
@@ -460,6 +461,23 @@
         </div>
 
         <!-- 知识库（后台摄入，前端只提问） -->
+        <div class="settings-pane" data-pane="photo">
+          <h3 class="sub-h">照片语义搜索</h3>
+          <p class="muted" style="line-height:1.8">用自然语言找照片，例如「海边日落」「有猫的桌子」「雪景」。
+             第一次使用先在下方填照片文件夹路径、点「开始建索引」（AI 会逐张看图并记住内容，每张约几秒，中途可随时关页面、下次继续）。</p>
+          <div class="set-row">
+            <span class="set-label">照片目录</span>
+            <input id="psRoot" class="text-input" placeholder="例如 /share/照片 或 D:\Photos" style="flex:1">
+            <button id="psIndexBtn" class="btn primary">开始建索引</button>
+          </div>
+          <p class="muted" id="psProgress" style="margin:6px 0 0"></p>
+          <div class="set-row" style="margin-top:12px">
+            <span class="set-label">搜照片</span>
+            <input id="psQuery" class="text-input" placeholder="例如：海边日落 / 有狗的草地" style="flex:1">
+            <button id="psSearchBtn" class="btn primary">搜索</button>
+          </div>
+          <div id="psResults" style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px"></div>
+        </div>
         <div class="settings-pane" data-pane="kb">
           <h3 class="sub-h">知识库（RAG，家庭版起）</h3>
           <p class="muted" style="line-height:1.8">把产品说明书、运维笔记、常见问题等文档喂给 AI，之后用自然语言提问，AI 会结合这些文档作答。文档只在「本机」摄入，不会外传；提问可在任意页面用「问 AI」时勾选「结合知识库」。教程：① 准备 txt/md/srt/pdf/docx 文档；② 在下方「摄入文档」上传或粘贴；③ 到任意页面的「问 AI」里勾选结合知识库后提问。</p>
@@ -647,6 +665,6 @@
 <div class="toast-root" id="toastRoot"></div>
 
 <script src="/qrcode.min.js"></script>
-<script src="/app-20261004a.js"></script>
+<script src="/app-20261004b.js"></script>
 </body>
 </html>
