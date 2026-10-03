@@ -845,7 +845,9 @@ class Handler(BaseHTTPRequestHandler):
                 })
             elif route == "/api/license":
                 # 授权信息：机器码 / 当前版本 / 是否已激活（设置页「版本与激活」用）
-                self._send_json({"ok": True, **licensing.info()})
+                # issue_demo：在线支付未接前默认 False；仅演示环境设 NASSAFE_ISSUE_DEMO=1 打开
+                self._send_json({"ok": True, **licensing.info(),
+                                 "issue_demo": os.environ.get("NASSAFE_ISSUE_DEMO") == "1"})
             elif route == "/api/license/prices":
                 # 升级价格：服务端实时读取（state/prices.json 可覆盖默认值，供发卡后台同步）
                 self._send_json({"ok": True, "prices": licensing.get_prices()})
@@ -1685,7 +1687,12 @@ class Handler(BaseHTTPRequestHandler):
             # ---------- 版本与激活 ----------
             elif route == "/api/license/issue":
                 # 模拟「支付成功」后由发卡端下发激活码：本机按机器码实时签一张码。
-                # 仅本机可用（机器码即本机），等同官方发卡给本机出的码。
+                # 安全收口：默认关闭（否则任何人 POST 一下就能免费拿真码）。
+                # 仅演示环境设环境变量 NASSAFE_ISSUE_DEMO=1 才放行。
+                if os.environ.get("NASSAFE_ISSUE_DEMO") != "1":
+                    self._send_json({"ok": False, "pay_closed": True,
+                                     "error": "在线支付尚未开通。请把本机机器码发给卖家，支付后获取激活码"}, 403)
+                    return
                 ed = (payload.get("edition") or "").strip()
                 if ed not in ("home", "business"):
                     self._send_json({"ok": False, "error": "无效版本"}, 400)
