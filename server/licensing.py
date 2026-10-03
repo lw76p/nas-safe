@@ -29,6 +29,11 @@ import time
 import urllib.request
 import uuid
 
+try:
+    import rsa as _rsa
+except Exception:  # noqa: BLE001
+    _rsa = None
+
 import editions
 
 _LICENSE_FILE = "license.json"
@@ -69,6 +74,57 @@ def _license_path() -> str:
 
 def _secret_path() -> str:
     return os.path.join(_state_dir(), _SECRET_FILE)
+
+
+# 升级激活采用 RSA 非对称签名：私钥只在官方签发环境（NASSAFE_LICENSE_SIGN_KEY），
+# 公钥硬编码下发到所有客户端，客户端本地独立验签，不再信任云端返回值，消除 MITM 伪造风险。
+_KEY_PREFIX2 = "NS2"
+_PUBKEY_PEM = """-----BEGIN RSA PUBLIC KEY-----
+MIIBCgKCAQEAmtLJ5sM5pi5FRH3hnQgzuo855sEOVC7ikKw1odo+ti4G8IMfuaDb
+eSzCP65O8pCFdW+thEQwOm8/5csVOoyJMYbEq23udMyoSTwRvs0bFOD4Fh3BLxGX
+JYr0imK3ONZxqOKFogqR4JZXiZ/5IIRGSPGx6AjQ8Vf+FaG/Qy45QE2VEnwWavHY
+QtD/ncGM08VegFjI+8ru2J3vRJGqY5JaZUYnvQbNzdqNcD5P2eO3B1JZ49u6g2A1
+POKoxHJnTFpBjDn5wJKbU09VcwbgXYe+el3dugdkQENB8iXgJj/i8jjTHT7T4AzI
+YrH57K/ix9Grv5Cr/LOb5uWc51LQFAE1IwIDAQAB
+-----END RSA PUBLIC KEY-----
+"""
+
+
+def _pubkey():
+    if _rsa is None:
+        return None
+    try:
+        return _rsa.PublicKey.load_pkcs1(_PUBKEY_PEM.encode("utf-8"))
+    except Exception:
+        return None
+
+
+def _privkey():
+    if _rsa is None:
+        return None
+    # 1) 固定文件路径（签发机专用：绕过 systemd EnvironmentFile 不支持多行 PEM 值的限制）
+    fixed = os.path.join(_state_dir(), "license_sign_key.pem")
+    if os.path.exists(fixed):
+        try:
+            return _rsa.PrivateKey.load_pkcs1(open(fixed, "r").read().strip().encode("utf-8"))
+        except Exception:
+            pass
+    # 2) 环境变量直接给 PEM
+    raw = os.environ.get("NASSAFE_LICENSE_SIGN_KEY", "").strip()
+    # 3) 环境变量给文件路径指针
+    if not raw:
+        fp = os.environ.get("NASSAFE_LICENSE_SIGN_KEY_FILE", "").strip()
+        if fp and os.path.exists(fp):
+            try:
+                raw = open(fp, "r").read().strip()
+            except Exception:
+                raw = ""
+    if not raw:
+        return None
+    try:
+        return _rsa.PrivateKey.load_pkcs1(raw.encode("utf-8"))
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------- 机器码
@@ -140,7 +196,7 @@ def _sign(payload_b64: str, secret: bytes) -> str:
 # ---------------------------------------------------------------- 发码 / 验码
 
 def issue_key(edition: str, fingerprint: str, days: int = 0) -> str:
-    """生成激活码。days=0 表示永久。"""
+    """生成激活码。days=0 表示永久。优先用 RSA 私钥签 NS2；无私钥时回落旧 HMAC(NS1)。"""
     if edition not in editions.EDITIONS:
         raise ValueError(f"未知版本: {edition}")
     fp = fingerprint.strip().upper()
@@ -148,16 +204,21 @@ def issue_key(edition: str, fingerprint: str, days: int = 0) -> str:
         raise ValueError("机器码应为 8 位字母数字（设置页可查）")
     now = int(time.time())
     payload = {
-        "v": 1,
+        "v": 2,
         "ed": edition,
         "fp": fp,
         "iat": now,
         "exp": now + days * 86400 if days and days > 0 else 0,
     }
     payload_b64 = _b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    priv = _privkey()
+    if priv is not None:
+        sig = _b64url(_rsa.sign(payload_b64.encode("ascii"), priv, "SHA-256"))
+        return f"{_KEY_PREFIX2}.{payload_b64}.{sig}"
+    # 回落：旧 HMAC（需 _secret，仅官方旧机）
     secret = _secret()
     if not secret:
-        raise RuntimeError("签名密钥不存在，请先在服务端执行: python3 licensing.py init")
+        raise RuntimeError("没有可用的签发密钥（需 NASSAFE_LICENSE_SIGN_KEY 或旧 license_secret.key）")
     return f"{_KEY_PREFIX}.{payload_b64}.{_sign(payload_b64, secret)}"
 
 
@@ -166,36 +227,33 @@ def _is_official_issuer() -> bool:
     return bool(os.environ.get("NASSAFE_MASTER_SECRET", "").strip())
 
 
-def verify_with_cloud(key: str, fp: str) -> tuple[bool, str, dict]:
-    """非官方机器向官方验签服务核码（默认指向官方云端）。返回 (ok, msg, payload)。"""
-    url = os.environ.get("NASSAFE_LICENSE_VERIFY_URL",
-                         "http://47.108.213.178:8848/api/license/cloud-verify").strip()
-    body = json.dumps({"key": key, "fp": fp}).encode("utf-8")
-    req = urllib.request.Request(url, data=body,
-                                 headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            d = json.loads(resp.read().decode("utf-8"))
-    except Exception:  # noqa: BLE001  网络不可达不给通过
-        return False, "无法连接激活服务器，请检查本机网络后重试", {}
-    if not d.get("ok"):
-        return False, str(d.get("error") or "激活码校验未通过"), {}
-    return True, "", d.get("payload") or {}
-
-
 def verify_key(key: str) -> tuple[bool, str, dict]:
-    """验码。返回 (是否有效, 提示, payload)。只验签名/格式/有效期，不核对机器码。"""
+    """验码。返回 (是否有效, 提示, payload)。支持 NS2(RSA 公钥本地验) 与 NS1(HMAC 兼容)。
+    只验签名/格式/有效期，不核对机器码（机器码由 activate 核对）。"""
     k = (key or "").strip()
     k = "".join(k.split())  # 去掉粘贴时混入的空白
     parts = k.split(".")
-    if len(parts) != 3 or parts[0] != _KEY_PREFIX:
+    if len(parts) != 3:
         return False, "激活码格式不对，请完整复制后重试", {}
-    payload_b64, sig = parts[1], parts[2]
-    secret = _secret()
-    if not secret:
-        return False, "服务端缺少签名密钥，激活功能不可用（请联系厂商）", {}
-    if not hmac.compare_digest(sig, _sign(payload_b64, secret)):
-        return False, "激活码无效（校验不通过）", {}
+    prefix, payload_b64, sig = parts[0], parts[1], parts[2]
+    if prefix == _KEY_PREFIX2:
+        # RSA 非对称：任何客户端用内置公钥本地验，无需网络/私钥，MITM 无法伪造
+        pub = _pubkey()
+        if pub is None or _rsa is None:
+            return False, "本机缺少 RSA 验签组件，激活不可用", {}
+        try:
+            _rsa.verify(payload_b64.encode("ascii"), _b64url_dec(sig), pub)
+        except Exception:
+            return False, "激活码无效（RSA 校验不通过）", {}
+    elif prefix == _KEY_PREFIX:
+        # 旧 HMAC 格式：需 _secret，仅官方机可验
+        secret = _secret()
+        if not secret:
+            return False, "本机缺少签名密钥（旧格式需官方机验证）", {}
+        if not hmac.compare_digest(sig, _sign(payload_b64, secret)):
+            return False, "激活码无效（校验不通过）", {}
+    else:
+        return False, "不支持的激活码版本", {}
     try:
         payload = json.loads(_b64url_dec(payload_b64).decode("utf-8"))
     except Exception:
@@ -210,11 +268,8 @@ def verify_key(key: str) -> tuple[bool, str, dict]:
 
 
 def activate(key: str) -> tuple[bool, str]:
-    """激活：验码（官方机器本地验 / 用户机器云端验）+ 核对本机机器码 + 落盘。"""
-    if _is_official_issuer():
-        ok, msg, payload = verify_key(key)
-    else:
-        ok, msg, payload = verify_with_cloud((key or "").strip(), machine_fingerprint())
+    """激活：本地验签（NS1/NS2 均支持，RSA 公钥本地验，不依赖网络/云端）+ 核对本机机器码 + 落盘。"""
+    ok, msg, payload = verify_key((key or "").strip())
     if not ok:
         return False, msg
     fp = machine_fingerprint()
