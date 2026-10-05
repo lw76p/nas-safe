@@ -204,6 +204,7 @@ def collect_remote_summary(dev: dict) -> dict:
         "group": dev.get("group", "远程设备"), "brand": brand,
         "brand_label": dev.get("brand_label") or brandmod.BRAND_LABELS.get(brand, brand),
         "type": "remote", "enabled": dev.get("enabled", True),
+        "full_server": bool(dev.get("full_server")),
         "status": "offline", "host": dev.get("host", ""), "port": dev.get("port", 0),
         "last_seen": dev.get("last_seen", 0), "note": dev.get("note", ""),
         "agent": dev.get("agent") or {},
@@ -436,6 +437,10 @@ def add_device(payload: dict) -> dict:
                 d["token"] = str(payload.get("token")).strip()
             d["https"] = bool(payload.get("https"))
             d["enabled"] = True
+            # 扫描到真·TS Safe 服务端（不是只装了轻量代理）时标记为完整服务端，
+            # 前端据此隐藏「安装完整版」入口（已经是了，不必再推）。
+            if "full_server" in payload:
+                d["full_server"] = bool(payload.get("full_server"))
             d["net_kind"] = (payload.get("net_kind") or d.get("net_kind") or "").strip()
             d["brand_label"] = (payload.get("brand_label") or d.get("brand_label") or "").strip()
             if payload.get("agent_request") or payload.get("install_agent"):
@@ -459,6 +464,9 @@ def add_device(payload: dict) -> dict:
         "net_kind": (payload.get("net_kind") or "").strip(),
         "brand_label": (payload.get("brand_label") or "").strip(),
         "agent": _agent_pending(None) if (payload.get("agent_request") or payload.get("install_agent")) else {},
+        # 扫描探测到这本身就是一台 TS Safe 服务端（nassafe=True）时为 True；
+        # 轻量代理端点 / 仅监控设备为 False（前端会推「安装完整版」）。
+        "full_server": bool(payload.get("full_server")),
     })
     save_devices(devs)
     return {"ok": True, "id": dev_id}
@@ -818,6 +826,7 @@ def get_manage() -> dict:
             "status": st,
             "agent_status": "installed" if (d.get("type") == "local" or d.get("id") == LOCAL_ID)
                            else (ag.get("status") or "none"),
+            "full_server": bool(d.get("full_server")),
             "features": {k: bool(feats.get(k)) for k in DEVICE_FEATURES},
         })
     return {"ok": True, "online": online, "total": len(rows), "devices": rows}

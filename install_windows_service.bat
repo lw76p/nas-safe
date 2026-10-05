@@ -1,22 +1,26 @@
 @echo off
 REM ============================================================
-REM  TS Safe — Windows 服务一键安装（需管理员）
+REM  TS Safe 完整版 — Windows 一键安装 / 卸载（需管理员）
 REM
 REM  把完整 TS Safe 引擎注册为「开机自启」的 Windows 服务，
 REM  后台运行并提供 Web 控制台（默认 http://localhost:8848）。
 REM  所有功能（快照 / 重复文件 / 磁盘清理 / 迁移 / 日报 / 告警）
-REM  都在这台 Windows 上原生可用，无需再依赖 NAS 上的「联机设备」。
+REM  都在这台 Windows 上原生可用，无需再依赖别的设备来「代管」。
 REM
-REM  用法：右键本文件 -> 以管理员身份运行
+REM  安装：右键本文件 -> 以管理员身份运行
+REM  卸载：以管理员身份运行  install_windows_service.bat uninstall
 REM ============================================================
 setlocal EnableExtensions
 
-REM --- 0. 自提权到管理员（若尚未提权） ---
+REM --- 0. 自提权到管理员（若尚未提权）；保留传入的参数 ---
 fltmc >nul 2>&1 || (
     echo [需要管理员权限] 正在请求 UAC 提权...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs" >nul 2>&1
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs" >nul 2>&1
     exit /b
 )
+
+REM --- 卸载分支 ---
+if /i "%~1"=="uninstall" goto UNINSTALL
 
 REM --- 1. 定位安装目录（本脚本应位于仓库根目录，含 server\ 与 web\）---
 set "INSTALL_ROOT=%~dp0"
@@ -91,15 +95,45 @@ echo.
 echo ============================================================
 echo  TS Safe 已安装并启动（开机自动运行）！
 echo.
-echo  本机控制台： http://localhost:8848
-echo  局域网访问： http://本机局域网IP:8848
+echo  ★ 第一步：打开控制台设管理员账号
+echo      本机：    http://localhost:8848
+echo      局域网：  http://本机局域网IP:8848
+echo.
+echo  ★ 第二步（可选）：回到「总控台」接管这台设备
+echo      在这台电脑的控制台里，它本身已是独立主机，所有功能原生可用。
+echo      若想在原来的总控台里也直接管理它：到总控台「＋ 添加设备 / 扫描」，
+echo      会把它识别为 TS Safe 服务端（不再是只能监控的端点），迁移/快照等都可用。
+echo.
 echo  状态目录：   C:\ProgramData\NAS Safe\state
 echo  日志：       C:\ProgramData\NAS Safe\state\logs\service.log
 echo               C:\ProgramData\NAS Safe\state\logs\app.log
+echo  卸载：       以管理员运行  install_windows_service.bat uninstall
+echo ============================================================
 echo.
-echo  首次打开页面请设置管理员账号。
-echo  使用 VSS 快照（Windows 卷影）需要以管理员权限运行本服务
-echo  （默认服务以 LocalSystem 运行，已具备足够权限）。
+echo [信息] 即将为你打开控制台页面（首次请设置管理员账号）...
+timeout /t 2 >nul
+start "" "http://localhost:8848"
+pause
+goto :EOF
+
+REM ============================================================
+REM  卸载：停止并移除服务、删除防火墙规则（保留 venv 与 state 以便重装）
+REM ============================================================
+:UNINSTALL
+set "INSTALL_ROOT=%~dp0"
+set "SERVER_DIR=%INSTALL_ROOT%server"
+echo [步骤] 停止并移除 TSafeServer 服务...
+net stop TSafeServer >nul 2>&1
+if exist "%SERVER_DIR%\win_service.py" (
+    "%INSTALL_ROOT%venv\Scripts\python.exe" "%SERVER_DIR%\win_service.py" remove >nul 2>&1
+)
+echo [步骤] 删除防火墙规则 TS Safe Console ...
+netsh advfirewall firewall delete rule name="TS Safe Console" >nul 2>&1
+echo.
+echo ============================================================
+echo  已卸载 TSafeServer 服务（防火墙规则已删）。
+echo  说明：venv 与 C:\ProgramData\NAS Safe\state 已保留，方便重新安装；
+echo        如需彻底清理，手动删除上述目录即可。
 echo ============================================================
 pause
 endlocal

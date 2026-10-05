@@ -1433,6 +1433,15 @@ body.light .topo-stage {
 .dd-stat.bad .v { color: var(--red); }
 .dd-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
+/* ---------- 联机设备：升级为完整版（Windows 服务）提示卡 ---------- */
+.dd-full-install {
+  margin-top: 12px; padding: 14px 16px;
+  border: 1px solid #bfdbfe; border-radius: 12px;
+  background: #eff6ff;
+}
+.dd-full-install .ddfi-title { font-weight: 700; font-size: 14px; color: #1d4ed8; margin-bottom: 2px; }
+.dd-full-install .btn { margin-top: 2px; }
+
 /* ---------- 联网设备：图标框排列 ---------- */
 .net-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px; }
 .net-empty { grid-column: 1 / -1; margin: 2px 0; }

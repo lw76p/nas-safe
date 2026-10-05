@@ -180,6 +180,103 @@ def _gen_agent_zip(host: str) -> bytes:
     return buf.getvalue()
 
 
+_FULL_BUNDLE_README = (
+    "TS Safe · 完整版安装包（跨平台）\r\n"
+    "================================\r\n"
+    "\r\n"
+    "这个包能让任意一台电脑/服务器变成一台【独立的 TS Safe 主机】：\r\n"
+    "装好后开机自动在后台运行，自带控制台（浏览器打开 http://localhost:8848），\r\n"
+    "迁移、快照、重复文件清理、磁盘清理、每日白话日报……全部原生可用，\r\n"
+    "不再依赖别的设备来「代管」这台设备。\r\n"
+    "\r\n"
+    "【Windows】\r\n"
+    "1. 把解压出来的文件夹放到任意位置（路径不要含中文/空格最佳）。\r\n"
+    "2. 右键 install_windows_service.bat →「以管理员身份运行」。\r\n"
+    "   （必须管理员：服务要写 C:\\ProgramData、放行防火墙 8848、注册开机自启）\r\n"
+    "3. 脚本自动：建虚拟环境 → 装依赖 → 注册并启动 TSafeServer 服务。\r\n"
+    "4. 打开 http://localhost:8848 ；首次进入设一个管理员账号。\r\n"
+    "   同局域网其他设备访问 http://这台电脑的局域网IP:8848 。\r\n"
+    "   卸载：以管理员运行  install_windows_service.bat uninstall 。\r\n"
+    "\r\n"
+    "【Linux（systemd，如 Ubuntu / Debian / 树莓派）】\r\n"
+    "  sudo bash install_service.sh\r\n"
+    "脚本自动建 venv、装依赖、写 /etc/systemd/system/tssafe.service 并 enable+start。\r\n"
+    "日志：journalctl -u tssafe -f ；状态目录默认 /opt/nas-safe/state 。\r\n"
+    "卸载： sudo bash install_service.sh uninstall 。\r\n"
+    "\r\n"
+    "【macOS（launchd）】\r\n"
+    "  bash install_service.sh\r\n"
+    "脚本自动建 venv、装依赖、写 ~/Library/LaunchAgents/com.tssafe.server.plist 并 load。\r\n"
+    "状态目录默认 ~/Library/Application Support/NAS Safe/state 。\r\n"
+    "卸载： bash install_service.sh uninstall 。\r\n"
+    "\r\n"
+    "【说明】\r\n"
+    "- 纯后台服务，不带界面、不弹窗；想看提醒可另行安装桌面小助手。\r\n"
+    "- 需要 Python 3.10+ 才能装依赖；若本机没装，脚本会提示去官网下载。\r\n"
+    "- 控制台端口均为 8848；若被占用，可在安装前设置环境变量 NASSAFE_PORT。\r\n"
+)
+
+
+def _gen_full_bundle() -> bytes:
+    """生成「完整版」跨平台安装包：server/ + web/ + 各平台安装脚本 + 依赖清单 + 说明。
+
+    让任意一台被监控/只装代理的联机设备原生跑完整 TS Safe 引擎（开机自启服务），
+    从而能在它上面用迁移/快照/清理/日报等全部功能。
+
+    安装脚本与 requirements.txt 优先从仓库根目录读取（随镜像/仓库分发），缺失时
+    回退到内置最小依赖清单，保证包永远可用。
+    """
+    import io as _io
+    import zipfile as _zip
+
+    server_dir = os.path.dirname(os.path.abspath(__file__))
+    web_dir = WEB_DIR
+    repo_root = os.path.dirname(server_dir)
+
+    # 各平台安装脚本：优先仓库根，其次 server 目录
+    install_scripts = ["install_windows_service.bat", "install_service.sh"]
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as z:
+        # server/ 全部 .py（排除缓存/状态/虚拟环境/版本库）
+        for root, dirs, files in os.walk(server_dir):
+            dirs[:] = [d for d in dirs if d not in ("__pycache__", "state", "venv", ".git")]
+            for fn in files:
+                if fn.endswith(".pyc"):
+                    continue
+                full = os.path.join(root, fn)
+                arc = os.path.relpath(full, server_dir)
+                z.write(full, os.path.join("server", arc))
+        # web/ 全部文件
+        if os.path.isdir(web_dir):
+            for root, dirs, files in os.walk(web_dir):
+                dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
+                for fn in files:
+                    full = os.path.join(root, fn)
+                    arc = os.path.relpath(full, web_dir)
+                    z.write(full, os.path.join("web", arc))
+        # 安装脚本
+        for name in install_scripts:
+            src = os.path.join(repo_root, name)
+            if not os.path.isfile(src):
+                src = os.path.join(server_dir, name)
+            if os.path.isfile(src):
+                with open(src, "rb") as fh:
+                    z.writestr(name, fh.read())
+        # 依赖清单
+        req_src = os.path.join(repo_root, "requirements.txt")
+        if not os.path.isfile(req_src):
+            req_src = os.path.join(server_dir, "requirements.txt")
+        if os.path.isfile(req_src):
+            with open(req_src, "rb") as fh:
+                z.writestr("requirements.txt", fh.read())
+        else:
+            z.writestr("requirements.txt",
+                       b"pdfminer.six>=20231228\npython-docx>=1.1.0\nrsa>=4.9\n")
+        # 说明
+        z.writestr("README.txt", _FULL_BUNDLE_README.encode("utf-8-sig"))
+    return buf.getvalue()
+
+
 def _gen_setup_bat(base_url: str) -> str:
     """生成 Windows 一键安装脚本（纯 ASCII + CRLF，cmd 兼容）。
 
@@ -1039,6 +1136,19 @@ class Handler(BaseHTTPRequestHandler):
                     if not path:
                         raise StorageError("缺少 path 或 snapshot_id 参数")
                     self._send_json(build_browse(unquote(path)))
+            elif route == "/api/downloads/full-bundle":
+                # 完整版跨平台安装包：server/ + web/ + 各平台安装脚本 + 依赖 + 说明，
+                # 让任意一台被监控/只装代理的联机设备原生跑完整引擎（开机自启服务）。
+                data = _gen_full_bundle()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header(
+                    "Content-Disposition",
+                    'attachment; filename="NAS-Safe-Windows-Full.zip"')
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
             elif route.startswith("/agent/"):
                 # 桌面小助手分发：py 脚本静态下载；setup.bat 按当前 Host 动态生成
                 name = route[len("/agent/"):]
