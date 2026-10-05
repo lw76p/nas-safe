@@ -250,6 +250,13 @@ def collect_remote_summary(dev: dict) -> dict:
         out["note"] = f"无法连接（{type(exc).__name__}）"
         out["health"] = 1
     out["health_label"] = {0: "正常", 1: "注意", 2: "警告", 3: "异常"}.get(out["health"], "注意")
+    # 服务端探测失败，但轻量代理近期有真实心跳：视为在线（与设置页 agent 判定一致），
+    # 避免「设置页在线、联机设备/动画页离线」这种两页不一致的困惑。
+    if out["status"] != "online" and dev.get("type") != "local" and _online_status(dev) == "online":
+        out["status"] = "online"
+        if not out.get("note") or str(out.get("note", "")).startswith(("无法连接", "对端返回", "探测失败")):
+            out["note"] = "仅代理在线（对端 TS Safe 服务未响应，仅确认设备存活）"
+        out["health"] = min(int(out.get("health") or 1), 1)
     return out
 
 
@@ -693,12 +700,17 @@ DEVICE_FEATURES = ["dups", "junk", "migrate", "autosnap"]
 
 
 def _online_status(dev: dict) -> str:
-    """基于最近心跳/采集估计设备在线状态（不实时探测，避免拖慢接口）。"""
+    """基于最近心跳/采集估计设备在线状态（不实时探测，避免拖慢接口）。
+
+    注意：在线只能依据「代理真实心跳 last_checkin」。不能回退到 installed_at
+    （标记安装的时间）或 netscan 的 last_seen（ICMP 存活），否则「标记安装但代理
+    从未连上 / 仅 ICMP 通但 TS Safe 没跑」也会被误判为在线。
+    """
     ag = dev.get("agent") or {}
     if dev.get("type") == "local":
         return "online"
-    # 已安装代理：5 分钟内有心跳即在線
-    lc = ag.get("last_checkin") or ag.get("installed_at") or dev.get("last_seen") or 0
+    # 已安装代理：必须 5 分钟内有真实心跳才算在线
+    lc = ag.get("last_checkin") or 0
     if ag.get("status") == "installed" and (time.time() - float(lc or 0)) < 360:
         return "online"
     if dev.get("host"):
