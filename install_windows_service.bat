@@ -46,6 +46,31 @@ if not defined PY (
 )
 echo [信息] 使用 Python：%PY%
 
+REM --- 2.5 预先写出《首次使用指南.txt》（任何结果下都可查看，窗口关了也能看）---
+(
+echo ============================================================
+echo        TS Safe 完整版 — 首次使用指南
+echo ============================================================
+echo.
+echo  ★ 第一步：打开控制台，设置管理员账号
+echo      本机访问：  http://localhost:8848
+echo      局域网：    http://你的局域网IP:8848
+echo      （首次打开会让你创建管理员账号，请牢记）
+echo.
+echo  ★ 第二步（可选）：回原总控台接管这台设备
+echo      本机现在已是独立的 TS Safe 主机，所有功能原生可用。
+echo      想在原总控台也直接管理它：到总控台「＋添加设备 / 扫描」，
+echo      它会以“TS Safe 服务端”身份出现（不再是只能监控的端点），
+echo      迁移 / 快照 / 重复文件 / 磁盘清理 / 日报 等都可用。
+echo.
+echo  状态目录：   C:\ProgramData\NAS Safe\state
+echo  日志：       C:\ProgramData\NAS Safe\state\logs\service.log
+echo               C:\ProgramData\NAS Safe\state\logs\app.log
+echo  卸载：       以管理员运行  install_windows_service.bat uninstall
+echo ============================================================
+) > "%INSTALL_ROOT%首次使用指南.txt"
+echo [信息] 已生成《首次使用指南.txt》（可随时双击查看）。
+
 REM --- 3. 创建 venv 并安装依赖 ---
 if not exist "%INSTALL_ROOT%venv\Scripts\python.exe" (
     echo [步骤] 创建虚拟环境 venv ...
@@ -87,6 +112,7 @@ echo [步骤] 启动 TSafeServer 服务...
 net start TSafeServer
 if errorlevel 1 (
     echo [警告] 服务启动失败，可在「服务」中手动启动 TSafeServer，或查看日志排查。
+    powershell -NoProfile -Command "[System.Windows.Forms.MessageBox]::Show('服务未能自动启动。请到 Windows「服务」手动启动 TSafeServer，再打开 http://localhost:8848 设置管理员；日志见 C:\ProgramData\NAS Safe\state\logs\', 'TS Safe 安装提示')" >nul 2>&1
     pause
     exit /b 1
 )
@@ -113,6 +139,7 @@ echo.
 echo [信息] 即将为你打开控制台页面（首次请设置管理员账号）...
 timeout /t 2 >nul
 start "" "http://localhost:8848"
+powershell -NoProfile -Command "[System.Windows.Forms.MessageBox]::Show('TS Safe 已安装完成！请打开 http://localhost:8848 设置管理员账号。详细步骤见同目录《首次使用指南.txt》。', 'TS Safe 安装完成')" >nul 2>&1
 pause
 goto :EOF
 

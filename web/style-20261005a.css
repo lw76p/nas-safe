@@ -1561,3 +1561,5 @@ body.light .topo-stage {
 .auth-links { margin: 0; text-align: right; }
 .auth-links a { color: #6f82ff; font-size: 12.5px; text-decoration: none; }
 .auth-links a:hover { text-decoration: underline; }
+.setup-note { margin: 4px 0 2px; padding: 10px 12px; border: 1px solid #2f6df0; border-radius: 10px; background: rgba(47,109,240,.10); color: var(--text); font-size: 12.5px; line-height: 1.65; }
+.setup-note b { color: #9cc0ff; }
