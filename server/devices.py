@@ -650,6 +650,82 @@ def agent_install_script_ps(token: str, center: str) -> str:
     return AGENT_INSTALL_PS_TEMPLATE.replace("__CENTER__", center).replace("__TOKEN__", token)
 
 
+# ---------------------------------------------------------------------------
+# 傻瓜式配对（消费级：6 位配对码，免 token 复制 / 免 PowerShell）
+# 流程：中控「添加 Windows 设备」→ 生成待配对设备 + 6 位码 → 用户在电脑上打开
+#       助手并输入该码 → 助手用码调 /api/agent/pair 换取永久令牌 → 自动心跳在线。
+# ---------------------------------------------------------------------------
+
+PAIRING_TTL = 600  # 配对码有效期（秒）
+
+
+def create_pairing(name: str | None = None) -> dict:
+    """中控生成「待配对」Windows 设备 + 6 位配对码，返回给前端展示。"""
+    devs = load_devices()
+    # 清掉任何未过期但已废弃的待配对码，避免多码并存让用户困惑
+    for d in devs:
+        ag = d.get("agent") or {}
+        if ag.get("pairing_code") and (ag.get("pairing_expires") or 0) > time.time():
+            ag["pairing_code"] = ""
+            ag["pairing_expires"] = 0
+            d["agent"] = ag
+    dev_id = f"dev-{int(time.time())}"
+    code = f"{secrets.randbelow(1000000):06d}"
+    token = secrets.token_hex(8)
+    ag = {
+        "status": "pending",
+        "token": token,
+        "pairing_code": code,
+        "pairing_expires": time.time() + PAIRING_TTL,
+        "requested_at": time.time(),
+    }
+    devs.append({
+        "id": dev_id,
+        "name": (name or "Windows 电脑").strip(),
+        "group": "联网设备",
+        "brand": "windows",
+        "brand_label": "Windows 电脑",
+        "type": "remote",
+        "host": "",
+        "port": 0,
+        "https": False,
+        "token": "",
+        "enabled": True,
+        "note": "",
+        "agent": ag,
+    })
+    save_devices(devs)
+    return {"ok": True, "id": dev_id, "code": code, "expires_in": PAIRING_TTL, "token": token}
+
+
+def pair_with_code(code: str, info: dict | None = None) -> dict:
+    """被控端用 6 位码换取永久令牌：绑定到对应待配对设备。一次性（用完即焚）。"""
+    code = (code or "").strip()
+    devs = load_devices()
+    for d in devs:
+        ag = d.get("agent") or {}
+        if ag.get("pairing_code") == code:
+            if (ag.get("pairing_expires") or 0) < time.time():
+                return {"ok": False, "error": "配对码已过期，请在控制台重新生成"}
+            token = ag.get("token") or secrets.token_hex(8)
+            ag["token"] = token
+            ag["status"] = "installed"
+            ag["installed_at"] = time.time()
+            ag["pairing_code"] = ""
+            ag["pairing_expires"] = 0
+            if info:
+                ag["info"] = info
+                _os = str(info.get("os") or "").lower()
+                if "windows" in _os:
+                    d["brand"] = "windows"
+                    d["brand_label"] = "Windows 电脑"
+            d["agent"] = ag
+            d["last_seen"] = time.time()
+            save_devices(devs)
+            return {"ok": True, "token": token, "id": d.get("id"), "name": d.get("name")}
+    return {"ok": False, "error": "配对码无效"}
+
+
 def _default_local_name(dev: dict | None = None) -> str:
     """本机默认显示名：品牌 + 本机（用户改过名就不走这里）。"""
     try:

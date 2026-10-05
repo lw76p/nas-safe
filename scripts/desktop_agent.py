@@ -1354,6 +1354,79 @@ def install_wizard(base_hint=""):
 
 
 # --------------------------------------------------------------------------
+# 傻瓜式配对：无令牌但有 NAS 地址时，提示输入 6 位配对码换取永久令牌
+# --------------------------------------------------------------------------
+
+def ask_pairing_code(base):
+    """配对码输入窗口：返回 6 位码或空字符串（取消/不可用）。"""
+    try:
+        import tkinter as tk
+    except Exception:
+        return ""
+    out = {"code": ""}
+
+    def build():
+        root, body = _modern_window("配对 NAS Safe 设备", 460, 312)
+        root.attributes("-topmost", True)
+        tk.Label(body, text="输入配对码", bg=BG, fg=TEXT, font=(FONT, 14, "bold")).pack(pady=(16, 2))
+        tk.Label(body, text="在控制台「功能设置 → 添加设备 → Windows 电脑」里\n点击「生成配对码」，把显示的 6 位数字填到这里",
+                 bg=BG, fg=TEXT2, font=(FONT, 9), justify="center").pack(pady=(2, 8))
+        box = tk.Entry(body, width=8, relief="flat", bg=CARD, fg=TEXT, font=(FONT, 24, "bold"),
+                       justify="center", highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
+        box.pack(pady=(2, 8))
+        box.focus_set()
+        err = tk.Label(body, text="", bg=BG, fg="#dc2626", font=(FONT, 9))
+        err.pack()
+        foot = tk.Frame(body, bg=BG)
+        foot.pack(fill="x", padx=20, pady=(4, 14))
+
+        def submit():
+            c = box.get().strip()
+            if len(c) != 6 or not c.isdigit():
+                err.configure(text="请输入 6 位数字")
+                return
+            out["code"] = c
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+        btn = _btn(foot, "配对并连接", primary=True, width=18, command=submit)
+        btn.pack(side="right")
+        box.bind("<Return>", lambda e: submit())
+        root.mainloop()
+
+    try:
+        build()
+    except Exception:
+        return ""
+    return out["code"]
+
+
+def pair_flow(base):
+    """用配对码换取永久令牌并落盘（带 UI）。返回 token 或空。"""
+    code = ask_pairing_code(base)
+    if not code:
+        return ""
+    try:
+        r = http_json(base.rstrip("/") + "/api/agent/pair", method="POST",
+                      body={"code": code,
+                            "hostname": os.environ.get("COMPUTERNAME") or socket.gethostname(),
+                            "os": "Windows"})
+    except Exception:
+        return ""
+    if r and r.get("ok"):
+        tok = r.get("token")
+        cfg = load_config()
+        cfg["nas"] = base.rstrip("/")
+        cfg["agent_token"] = tok
+        save_config(cfg)
+        ensure_autostart(base.rstrip("/"), int(cfg.get("interval") or DEFAULT_INTERVAL), token=tok)
+        return tok
+    return ""
+
+
+# --------------------------------------------------------------------------
 # 系统托盘图标（ctypes + Win32，纯标准库，零第三方依赖）
 #
 #   正常：产品蓝盾牌（与 NAS Safe 界面同色）；悬停提示「NAS Safe · 快照保护中」
@@ -2284,6 +2357,11 @@ def main():
 
     interval = args.interval or int(cfg.get("interval") or DEFAULT_INTERVAL)
     token = args.token or (cfg.get("agent_token") or "")
+    if not token and base and not args.no_ui and not args.once:
+        # 傻瓜式配对：没有令牌但有 NAS 地址 → 提示输入 6 位配对码换取令牌
+        paired = pair_flow(base)
+        if paired:
+            token = paired
     if args.install or first_run:
         cfg2 = load_config()
         cfg2.update({"nas": base, "interval": interval})

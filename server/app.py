@@ -1237,6 +1237,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(devices.agent_heartbeat(payload.get("token")))
                 return
 
+            if route == "/api/agent/pair":
+                # 傻瓜式配对：被控端用 6 位码换取永久令牌（靠码鉴权，免管理员会话）
+                payload = self._read_json()
+                self._send_json(devices.pair_with_code(
+                    str(payload.get("code") or ""),
+                    {"hostname": str(payload.get("hostname") or "")[:64],
+                     "os": str(payload.get("os") or "")[:80]},
+                ))
+                return
+
             # 官方验签端点（免登录）：用户机器激活时由其服务端调用，机器对机器无用户会话；
             # 仅配置了 master 密钥的官方机器开放，且只做验签不落库，无越权风险。
             if route == "/api/license/cloud-verify":
@@ -1796,6 +1806,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": _dmsg, "upgrade": True})
                     return
                 self._send_json({"ok": True, **devices.add_device(payload)})
+            elif route == "/api/devices/pairing":
+                # 傻瓜式配对：生成「待配对」Windows 设备 + 6 位码（需管理员）
+                _dok, _dmsg = editions.check_devices(len(devices.load_devices()) + 1)
+                if not _dok:
+                    self._send_json({"ok": False, "error": _dmsg, "upgrade": True})
+                    return
+                self._send_json({"ok": True, **devices.create_pairing(
+                    (payload.get("name") or None))})
             elif route == "/api/devices/remove":
                 dev_id = (payload.get("id") or "").strip()
                 if not dev_id:
