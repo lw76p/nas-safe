@@ -248,6 +248,25 @@
     </details>
   </section>
 
+  <!-- 功能区：告警信息（本机 + 联机设备的告警与历史） -->
+  <section class="panel zone zone-monitor" id="alertsPanel" data-view="alerts" hidden>
+    <div class="panel-head">
+      <div class="zone-head">
+        <span class="zone-ico">⚠</span>
+        <div>
+          <h2>告警信息</h2>
+          <p class="sub">本机与每台联机设备的当前告警与历史记录 · 首页横幅出现的告警都会在这里留痕</p>
+        </div>
+      </div>
+      <div class="panel-actions">
+        <button class="btn ghost" id="alertsRefreshBtn">刷新</button>
+      </div>
+    </div>
+    <div id="alertsSummary" class="alerts-summary"></div>
+    <div id="alertsFilters" class="alerts-filters"></div>
+    <div id="alertsList" class="alerts-list"><p class="muted">正在加载告警…</p></div>
+  </section>
+
   <section class="panel zone zone-monitor" id="settingsPanel" data-view="settings">
     <div class="panel-head">
       <div class="zone-head">
@@ -665,6 +684,6 @@
 <div class="toast-root" id="toastRoot"></div>
 
 <script src="/qrcode.min.js"></script>
-<script src="/app-20261004d.js"></script>
+<script src="/app-20261005a.js"></script>
 </body>
 </html>

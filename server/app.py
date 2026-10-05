@@ -75,6 +75,7 @@ import junk  # noqa: E402  磁盘垃圾清理（回收站/缩略图/Docker缓存
 import daily_report  # noqa: E402  每日健康日报（定时聚合快照/告警/空间/硬盘，复用通知链路推送）
 import smartd  # noqa: E402  硬盘 SMART 健康采集（跨品牌，smartctl 多路径探测 + QTS 包兜底）
 import devices  # noqa: E402
+import alertlog  # noqa: E402  告警历史记录（本机告警落盘，供「告警信息」页展示历史）
 import netscan  # noqa: E402  联网设备自动扫描  跨品牌多设备总控制台（注册 + 分层聚合 + 健康汇总）
 import migrate  # noqa: E402  换机迁移（配置包导出 / 导入 / 路径映射 / 能力降级）
 import auth      # noqa: E402  账号/会话/权限分级
@@ -230,6 +231,115 @@ def now_stamp() -> str:
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+# ---------------------------------------------------------------------------
+# 告警信息聚合：本机 + 每台联机设备的当前告警与历史记录
+# ---------------------------------------------------------------------------
+
+def _local_current_alerts() -> list:
+    """本机当前告警（异常判定，含硬件/容量 + 快照保护类），与首页横幅同源。"""
+    try:
+        m = metrics.collect(force=False)
+    except Exception:  # noqa: BLE001
+        m = {}
+    try:
+        return anomalies.collect_anomalies(m or {})
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _remote_alert_summary(dev: dict) -> dict:
+    """拉取一台联机设备的告警汇总（对端也跑同一套 TS Safe）。
+
+    优先调用对端的 /api/alerts/summary（新版会返回它自己的 current+history）；
+    对端若未升级该接口，降级为只拉 /api/alerts 的当前快照保护告警。
+    连不上则安全返回离线占位。
+    """
+    did = dev.get("id")
+    dname = dev.get("name") or "远程设备"
+    host = (dev.get("host") or "").strip()
+    port = int(dev.get("port") or 0)
+    if not host or not port:
+        return {"id": did, "name": dname, "type": "remote", "status": "offline",
+                "current": [], "history": [],
+                "counts": {"critical": 0, "warn": 0, "total": 0, "resolved": 0},
+                "warning": "这台设备还没登记访问地址，连不上"}
+    base = f"http{'s' if dev.get('https') else ''}://{host}:{port}"
+    token = (dev.get("token") or "").strip()
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    # 1) 优先拉对端 summary（按注册 id 取回它自己那条，避免误取控制台本机）
+    try:
+        s = devices._http_get(base + "/api/alerts/summary", headers, timeout=3)
+        if s.get("ok") and s.get("devices"):
+            hit = next((d for d in s["devices"]
+                        if d.get("id") == did or d.get("type") == "local"), None)
+            if hit:
+                lp = dict(hit)
+                lp["id"] = did
+                lp["name"] = dname
+                lp["type"] = "remote"
+                lp["status"] = "online"
+                lp.setdefault("current", [])
+                lp.setdefault("history", [])
+                lp.setdefault("counts", {"critical": 0, "warn": 0, "total": 0, "resolved": 0})
+                return lp
+    except Exception:  # noqa: BLE001  旧版本无该接口 → 降级
+        pass
+
+    # 2) 降级：只拉当前快照保护告警（不含历史）
+    try:
+        t = devices._http_get(base + "/api/alerts?integrity=1", headers, timeout=3)
+        now = t.get("scanned_at") or iso_now()
+        cur = [{
+            "level": a.get("level", "warn"),
+            "type": "tamper",
+            "key": a.get("title") or "tamper",
+            "title": a.get("title") or "快照保护异常",
+            "detail": a.get("detail") or "",
+            "first_seen": now, "last_seen": now,
+            "status": "active", "resolved_at": None, "count": 1,
+        } for a in (t.get("alerts") or [])]
+        return {"id": did, "name": dname, "type": "remote", "status": "online",
+                "current": cur, "history": [],
+                "counts": {"critical": sum(1 for x in cur if x["level"] == "critical"),
+                           "warn": sum(1 for x in cur if x["level"] == "warn"),
+                           "total": len(cur), "resolved": 0},
+                "warning": "对端未升级到支持历史记录的版本，仅显示当前告警"}
+    except Exception as exc:  # noqa: BLE001
+        return {"id": did, "name": dname, "type": "remote", "status": "offline",
+                "current": [], "history": [],
+                "counts": {"critical": 0, "warn": 0, "total": 0, "resolved": 0},
+                "warning": f"连不上这台设备（{type(exc).__name__}）"}
+
+
+def build_alerts_summary() -> dict:
+    """聚合所有设备的告警与历史，供「告警信息」页面展示。"""
+    devs = devices.load_devices()
+    out = []
+    for dev in devs:
+        did = dev.get("id", "local")
+        dname = dev.get("name") or "本机"
+        if did == "local" or dev.get("type") == "local":
+            items = _local_current_alerts()
+            alertlog.reconcile("local", dname, items)
+            cur = alertlog.history("local", include_resolved=False)
+            hist = alertlog.history("local", include_resolved=True)
+            out.append({
+                "id": "local", "name": dname, "type": "local", "status": "online",
+                "current": cur, "history": hist,
+                "counts": alertlog.counts("local"),
+            })
+        else:
+            rdev = _remote_alert_summary(dev)
+            # 对端历史里 device_name 是它自己的「本机」，在控制台统一改成设备登记名
+            for rec in (rdev.get("current") or []) + (rdev.get("history") or []):
+                rec["device_name"] = dname
+            out.append(rdev)
+    return {"ok": True, "devices": out, "scanned_at": iso_now()}
 
 
 def human_size(num_bytes) -> str:
@@ -704,6 +814,9 @@ class Handler(BaseHTTPRequestHandler):
                     "alerts": storage.scan_tamper(include_integrity=include_integrity),
                     "scanned_at": iso_now(),
                 })
+            elif route == "/api/alerts/summary":
+                # 告警信息页：聚合本机 + 每台联机设备的当前告警与历史记录
+                self._send_json(build_alerts_summary())
             elif route == "/api/integrity":
                 self._send_json({
                     "ok": True,
@@ -1843,6 +1956,11 @@ def main() -> None:
     try:
         # 每日健康日报：每天定时聚合快照/告警/空间/硬盘，经通知链路推送到用户通道
         daily_report.start_scheduler()
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    try:
+        # 告警历史扫描：持续把本机告警落盘，供「告警信息」页展示历史记录
+        alertlog.start_scanner(int(os.environ.get("NASSAFE_ALERTLOG_INTERVAL", "120")))
     except Exception:  # noqa: BLE001
         traceback.print_exc()
     try:
