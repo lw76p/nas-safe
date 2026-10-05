@@ -267,6 +267,7 @@ def probe_host(ip: str, port: int, timeout: float = CONNECT_TIMEOUT,
         info["brand"] = sysinfo.get("os_id") or "generic_linux"
         info["brand_label"] = sysinfo.get("os_name") or ""
         info["hostname"] = sysinfo.get("hostname") or sysinfo.get("host") or ""
+        info["machine_id"] = sysinfo.get("machine_id") or ""
     except Exception as exc:  # noqa: BLE001
         # 端口开着但拿不到 /api/system：可能是需要账号、或不是 TS Safe
         code = getattr(exc, "code", None)
@@ -539,6 +540,14 @@ def scan(payload: dict | None = None) -> dict:
         nets.append({"cidr": c, "iface": "手动填写", "kind": "manual", "self_ip": ""})
 
     self_ips = {n.get("self_ip", "") for n in nets if n.get("self_ip")}
+    # 本机稳定标识：容器部署下本机 IP 与宿主局域网 IP 不一致，仅靠 IP 会误把
+    # 自己当成对端；用 storage.machine_id 比对，能正确排除「自己」。
+    self_mid = ""
+    try:
+        from storage import machine_id as _mid
+        self_mid = _mid()
+    except Exception:  # noqa: BLE001
+        self_mid = ""
     targets: list[tuple[str, int, dict]] = []
     truncated = False
     meta = []
@@ -565,7 +574,10 @@ def scan(payload: dict | None = None) -> dict:
                 r["kind"] = net.get("kind", "lan")
                 r["iface"] = net.get("iface", "")
                 r["cidr"] = net.get("cidr", "")
-                r["is_self"] = ip in self_ips
+                # 判定「自己」：IP 命中本机网卡，或对端返回的 machine_id 与本机一致
+                r["is_self"] = (ip in self_ips) or bool(
+                    self_mid and r.get("machine_id") and r["machine_id"] == self_mid
+                )
             return r
         with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, max(8, len(targets)))) as ex:
             for r in ex.map(work, targets):

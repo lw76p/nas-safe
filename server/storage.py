@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import subprocess
+import socket
 import datetime
 import time
 import json
@@ -96,6 +97,7 @@ class SystemProfile:
     has_systemd: bool = False
     kernel: str = ""
     warnings: list = field(default_factory=list)
+    machine_id: str = ""          # 稳定的本机唯一标识（/etc/machine-id 优先，回退 hostname）
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -217,6 +219,47 @@ def _is_container() -> bool:
         return False
 
 
+_MID_CACHE: str | None = None
+
+
+def machine_id() -> str:
+    """稳定的本机唯一标识（带缓存）。
+
+    用途：扫描网段时区分「自己」和真正的对端设备。容器部署下，容器网络隔离
+    会让本机 IP 与宿主局域网 IP 不一致，仅靠 IP 判断会误把自己当成对端；
+    改用稳定的 machine-id 比对，即使 NAT/容器也能正确排除自己。
+    优先级：/etc/machine-id → /var/lib/dbus/machine-id → 主机名。
+    """
+    global _MID_CACHE
+    if _MID_CACHE is not None:
+        return _MID_CACHE
+    mid = ""
+    for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                mid = fh.read().strip()
+                if mid:
+                    break
+        except OSError:
+            continue
+    if not mid:
+        for p in ("/sys/class/dmi/id/product_uuid",):
+            try:
+                with open(p, "r", encoding="utf-8") as fh:
+                    mid = fh.read().strip()
+                    if mid:
+                        break
+            except OSError:
+                continue
+    if not mid:
+        try:
+            mid = socket.gethostname() or ""
+        except Exception:  # noqa: BLE001
+            mid = ""
+    _MID_CACHE = mid or "unknown-host"
+    return _MID_CACHE
+
+
 def probe_system() -> SystemProfile:
     """探测当前系统能力。只读操作，不做任何修改。"""
     os_release = _read_os_release()
@@ -261,6 +304,8 @@ def probe_system() -> SystemProfile:
         )
     if not profile.is_container and not profile.has_systemd:
         profile.warnings.append("未检测到 systemd，定时任务将使用内置调度器。")
+
+    profile.machine_id = machine_id()
 
     return profile
 
