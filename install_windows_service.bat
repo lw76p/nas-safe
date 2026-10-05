@@ -1,187 +1,176 @@
-@echo off
-chcp 65001 >nul 2>&1
-setlocal EnableExtensions
-
-REM ============================================================
-REM  TS Safe å®Œæ•´ç‰ˆ - Windows ä¸€é”®å®‰è£… / å¸è½½ï¼ˆéœ€ç®¡ç†å‘˜ï¼‰
-REM
-REM  æŠŠå®Œæ•´ TS Safe å¼•æ“æ³¨å†Œä¸ºã€Œå¼€æœºè‡ªå¯ã€çš„ Windows æœåŠ¡ï¼Œ
-REM  åå°è¿è¡Œå¹¶æä¾› Web æ§åˆ¶å°ï¼ˆé»˜è®¤ http://localhost:8848ï¼‰ã€‚
-REM  æ‰€æœ‰åŠŸèƒ½ï¼ˆå¿«ç…§ / é‡å¤æ–‡ä»¶ / ç£ç›˜æ¸…ç† / è¿ç§» / æ—¥æŠ¥ / å‘Šè­¦ï¼‰
-REM  éƒ½åœ¨è¿™å° Windows ä¸ŠåŸç”Ÿå¯ç”¨ï¼Œæ— éœ€å†ä¾èµ–åˆ«çš„è®¾å¤‡æ¥ã€Œä»£ç®¡ã€ã€‚
-REM
-REM  é‡è¦ï¼šâ‘  è¯·å…ˆæŠŠæ•´ä¸ª NAS-Safe-Full.zip è§£å‹åˆ°ä¸€ä¸ªã€ä¸å«ä¸­æ–‡ã€ä¸å«ç©ºæ ¼ã€‘
-REM          çš„æ–‡ä»¶å¤¹ï¼ˆä¾‹å¦‚ D:\TSafeï¼‰ï¼Œä¸è¦ç›´æ¥åŒå‡»å‹ç¼©åŒ…é‡Œçš„æœ¬æ–‡ä»¶ï¼›
-REM        â‘¡ å³é”®æœ¬æ–‡ä»¶ -> ä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œã€‚
-REM  å¸è½½ï¼šä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œ  install_windows_service.bat uninstall
-REM ============================================================
-
-REM --- ç”¨ 8.3 çŸ­è·¯å¾„ï¼Œå½»åº•è§„é¿ä¸­æ–‡/ç©ºæ ¼ç›®å½•å¯¼è‡´çš„ææƒä¸å®‰è£…å¤±è´¥ ---
-set "DP=%~sdp0"
-if not defined DP set "DP=%~dp0"
-set "BAT=%~sdp0%~nx0"
-if not defined BAT set "BAT=%~f0"
-
-REM --- 0. è‡ªææƒåˆ°ç®¡ç†å‘˜ï¼ˆè‹¥å°šæœªææƒï¼‰---
-fltmc >nul 2>&1
-if errorlevel 1 (
-    echo.
-    echo [éœ€è¦ç®¡ç†å‘˜æƒé™] å³å°†å¼¹å‡º Windows ç”¨æˆ·è´¦æˆ·æ§åˆ¶ï¼ˆUACï¼‰ï¼Œè¯·ç‚¹å‡»ã€Œæ˜¯ã€ã€‚
-    echo   è‹¥ä¸æƒ³è‡ªåŠ¨ææƒï¼Œå¯å…³é—­æ­¤çª—å£ï¼Œæ”¹ä¸ºå³é”®æœ¬æ–‡ä»¶ - ä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œã€‚
-    echo.
-    timeout /t 2 >nul
-    powershell -NoProfile -Command "Start-Process -FilePath '%BAT%' -ArgumentList 'ELEV' -Verb RunAs" >nul 2>&1
-    if errorlevel 1 (
-        powershell -NoProfile -Command "[System.Windows.Forms.MessageBox]::Show('æ— æ³•è‡ªåŠ¨è·å–ç®¡ç†å‘˜æƒé™ã€‚è¯·å³é”®æœ¬æ–‡ä»¶ï¼Œé€‰æ‹©ã€Œä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œã€ï¼Œå†é‡è¯•ã€‚', 'TS Safe å®‰è£…')" >nul 2>&1
-        echo [é”™è¯¯] è‡ªåŠ¨ææƒå¤±è´¥ï¼Œè¯·æ‰‹åŠ¨ä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œæœ¬æ–‡ä»¶ã€‚
-        pause
-    )
-    exit /b
-)
-
-REM --- å¸è½½åˆ†æ”¯ ---
-if /i "%~1"=="uninstall" goto UNINSTALL
-
-REM --- 1. å®šä½å®‰è£…ç›®å½•ï¼ˆæœ¬è„šæœ¬åº”ä½äºä»“åº“æ ¹ç›®å½•ï¼Œå« server\ ä¸ web\ï¼‰---
-set "INSTALL_ROOT=%DP%"
-set "SERVER_DIR=%INSTALL_ROOT%server"
-if not exist "%SERVER_DIR%\app.py" (
-    echo [é”™è¯¯] æœªæ‰¾åˆ° %SERVER_DIR%\app.py
-    echo         è¯·æŠŠæœ¬è„šæœ¬æ”¾åœ¨ä»“åº“æ ¹ç›®å½•ï¼ˆä¸ server\ã€web\ åŒçº§ï¼‰åå†è¿è¡Œã€‚
-    echo         ä¹Ÿè¯·ç¡®è®¤ä½ æ˜¯å…ˆè§£å‹äº†æ•´ä¸ª zipï¼Œè€Œä¸æ˜¯ç›´æ¥åŒå‡»å‹ç¼©åŒ…é‡Œçš„æ–‡ä»¶ã€‚
-    pause
-    exit /b 1
-)
-
-REM --- 2. é€‰æ‹© Pythonï¼ˆä¼˜å…ˆ py å¯åŠ¨å™¨ï¼Œå…¶æ¬¡ pythonï¼‰---
-set "PY="
-where py >nul 2>&1 && set "PY=py -3"
-if not defined PY (
-    where python >nul 2>&1 && set "PY=python"
-)
-if not defined PY (
-    echo [é”™è¯¯] æœªæ£€æµ‹åˆ° Pythonã€‚è¯·å…ˆå®‰è£… Python 3.10+ï¼ˆå®‰è£…æ—¶å‹¾é€‰ "Add python.exe to PATH"ï¼‰ã€‚
-    echo         ä¸‹è½½ï¼šhttps://www.python.org/downloads/
-    pause
-    exit /b 1
-)
-echo [ä¿¡æ¯] ä½¿ç”¨ Pythonï¼š%PY%
-
-REM --- 2.5 é¢„å…ˆå†™å‡ºã€Šé¦–æ¬¡ä½¿ç”¨æŒ‡å—.txtã€‹ï¼ˆä»»ä½•ç»“æœä¸‹éƒ½å¯æŸ¥çœ‹ï¼Œçª—å£å…³äº†ä¹Ÿèƒ½çœ‹ï¼‰---
-(
-echo ============================================================
-echo        TS Safe å®Œæ•´ç‰ˆ - é¦–æ¬¡ä½¿ç”¨æŒ‡å—
-echo ============================================================
-echo.
-echo  â˜… ç¬¬ä¸€æ­¥ï¼šæ‰“å¼€æ§åˆ¶å°ï¼Œè®¾ç½®ç®¡ç†å‘˜è´¦å·
-echo      æœ¬æœºè®¿é—®ï¼š  http://localhost:8848
-echo      å±€åŸŸç½‘ï¼š    http://ä½ çš„å±€åŸŸç½‘IP:8848
-echo      ï¼ˆé¦–æ¬¡æ‰“å¼€ä¼šè®©ä½ åˆ›å»ºç®¡ç†å‘˜è´¦å·ï¼Œè¯·ç‰¢è®°ï¼‰
-echo.
-echo  â˜… ç¬¬äºŒæ­¥ï¼ˆå¯é€‰ï¼‰ï¼šå›åŸæ€»æ§å°æ¥ç®¡è¿™å°è®¾å¤‡
-echo      æœ¬æœºç°åœ¨å·²æ˜¯ç‹¬ç«‹çš„ TS Safe ä¸»æœºï¼Œæ‰€æœ‰åŠŸèƒ½åŸç”Ÿå¯ç”¨ã€‚
-echo      æƒ³åœ¨åŸæ€»æ§å°ä¹Ÿç›´æ¥ç®¡ç†å®ƒï¼šåˆ°æ€»æ§å°ã€Œï¼‹æ·»åŠ è®¾å¤‡ / æ‰«æã€ï¼Œ
-echo      å®ƒä¼šä»¥â€œTS Safe æœåŠ¡ç«¯â€èº«ä»½å‡ºç°ï¼ˆä¸å†æ˜¯åªèƒ½ç›‘æ§çš„ç«¯ç‚¹ï¼‰ï¼Œ
-echo      è¿ç§» / å¿«ç…§ / é‡å¤æ–‡ä»¶ / ç£ç›˜æ¸…ç† / æ—¥æŠ¥ ç­‰éƒ½å¯ç”¨ã€‚
-echo.
-echo  çŠ¶æ€ç›®å½•ï¼š   C:\ProgramData\NAS Safe\state
-echo  æ—¥å¿—ï¼š       C:\ProgramData\NAS Safe\state\logs\service.log
-echo               C:\ProgramData\NAS Safe\state\logs\app.log
-echo  å¸è½½ï¼š       ä»¥ç®¡ç†å‘˜è¿è¡Œ  install_windows_service.bat uninstall
-echo ============================================================
-) > "%INSTALL_ROOT%é¦–æ¬¡ä½¿ç”¨æŒ‡å—.txt"
-echo [ä¿¡æ¯] å·²ç”Ÿæˆã€Šé¦–æ¬¡ä½¿ç”¨æŒ‡å—.txtã€‹ï¼ˆå¯éšæ—¶åŒå‡»æŸ¥çœ‹ï¼‰ã€‚
-
-REM --- 3. åˆ›å»º venv å¹¶å®‰è£…ä¾èµ– ---
-if not exist "%INSTALL_ROOT%venv\Scripts\python.exe" (
-    echo [æ­¥éª¤] åˆ›å»ºè™šæ‹Ÿç¯å¢ƒ venv ...
-    %PY% -m venv "%INSTALL_ROOT%venv"
-    if errorlevel 1 (
-        echo [é”™è¯¯] åˆ›å»ºè™šæ‹Ÿç¯å¢ƒå¤±è´¥ï¼ˆå¯èƒ½æ˜¯ Windows ç¼ºå°‘ VC è¿è¡Œåº“æˆ–æƒé™ä¸è¶³ï¼‰ã€‚
-        pause
-        exit /b 1
-    )
-)
-echo [æ­¥éª¤] å®‰è£…ä¾èµ–ï¼ˆrequirements.txt + pywin32ï¼‰...
-"%INSTALL_ROOT%venv\Scripts\pip.exe" install -r "%INSTALL_ROOT%requirements.txt" pywin32
-if errorlevel 1 (
-    echo [é”™è¯¯] ä¾èµ–å®‰è£…å¤±è´¥ï¼Œè¯·æ£€æŸ¥ç½‘ç»œåé‡è¯•ã€‚
-    pause
-    exit /b 1
-)
-REM pywin32 åœ¨ venv ä¸­éœ€æ‰§è¡Œ post-installï¼šæŠŠ pythonservice.exe å¤åˆ¶åˆ° Scripts
-REM å¹¶æ³¨å†Œä¸º Python æœåŠ¡å®¿ä¸»ï¼ˆè¯¥æ­¥éª¤éœ€è¦ç®¡ç†å‘˜æƒé™ï¼Œbat å·²è‡ªææƒï¼‰ã€‚
-echo [æ­¥éª¤] æ³¨å†Œ pywin32 æœåŠ¡å®¿ä¸»ï¼ˆpywin32_postinstallï¼‰...
-"%INSTALL_ROOT%venv\Scripts\python.exe" "%INSTALL_ROOT%venv\Scripts\pywin32_postinstall.py" -install
-
-REM --- 4. æ³¨å†Œ Windows æœåŠ¡ï¼ˆè‡ªåŠ¨å¯åŠ¨ï¼‰---
-echo [æ­¥éª¤] æ³¨å†Œ TSafeServer æœåŠ¡...
-"%INSTALL_ROOT%venv\Scripts\python.exe" "%SERVER_DIR%\win_service.py" install
-if errorlevel 1 (
-    echo [é”™è¯¯] æœåŠ¡æ³¨å†Œå¤±è´¥ã€‚
-    pause
-    exit /b 1
-)
-sc config TSafeServer start= auto >nul 2>&1
-
-REM --- 5. æ”¾è¡Œé˜²ç«å¢™ TCP 8848 ---
-echo [æ­¥éª¤] æ”¾è¡Œé˜²ç«å¢™ TCP 8848 ...
-netsh advfirewall firewall add rule name="TS Safe Console" dir=in action=allow protocol=TCP localport=8848 >nul 2>&1
-
-REM --- 6. å¯åŠ¨æœåŠ¡ ---
-echo [æ­¥éª¤] å¯åŠ¨ TSafeServer æœåŠ¡...
-net start TSafeServer
-if errorlevel 1 (
-    echo [è­¦å‘Š] æœåŠ¡å¯åŠ¨å¤±è´¥ï¼Œå¯åœ¨ã€ŒæœåŠ¡ã€ä¸­æ‰‹åŠ¨å¯åŠ¨ TSafeServerï¼Œæˆ–æŸ¥çœ‹æ—¥å¿—æ’æŸ¥ã€‚
-    powershell -NoProfile -Command "[System.Windows.Forms.MessageBox]::Show('æœåŠ¡æœªèƒ½è‡ªåŠ¨å¯åŠ¨ã€‚è¯·åˆ° Windowsã€ŒæœåŠ¡ã€æ‰‹åŠ¨å¯åŠ¨ TSafeServerï¼Œå†æ‰“å¼€ http://localhost:8848 è®¾ç½®ç®¡ç†å‘˜ï¼›æ—¥å¿—è§ C:\ProgramData\NAS Safe\state\logs\', 'TS Safe å®‰è£…æç¤º')" >nul 2>&1
-    pause
-    exit /b 1
-)
-
-echo.
-echo ============================================================
-echo  TS Safe å·²å®‰è£…å¹¶å¯åŠ¨ï¼ˆå¼€æœºè‡ªåŠ¨è¿è¡Œï¼‰ï¼
-echo.
-echo  â˜… ç¬¬ä¸€æ­¥ï¼šæ‰“å¼€æ§åˆ¶å°è®¾ç®¡ç†å‘˜è´¦å·
-echo      æœ¬æœºï¼š    http://localhost:8848
-echo      å±€åŸŸç½‘ï¼š  http://æœ¬æœºå±€åŸŸç½‘IP:8848
-echo.
-echo  â˜… ç¬¬äºŒæ­¥ï¼ˆå¯é€‰ï¼‰ï¼šå›åˆ°ã€Œæ€»æ§å°ã€æ¥ç®¡è¿™å°è®¾å¤‡
-echo      åœ¨è¿™å°ç”µè„‘çš„æ§åˆ¶å°é‡Œï¼Œå®ƒæœ¬èº«å·²æ˜¯ç‹¬ç«‹ä¸»æœºï¼Œæ‰€æœ‰åŠŸèƒ½åŸç”Ÿå¯ç”¨ã€‚
-echo      è‹¥æƒ³åœ¨åŸæ¥çš„æ€»æ§å°é‡Œä¹Ÿç›´æ¥ç®¡ç†å®ƒï¼šåˆ°æ€»æ§å°ã€Œï¼‹ æ·»åŠ è®¾å¤‡ / æ‰«æã€ï¼Œ
-echo      ä¼šæŠŠå®ƒè¯†åˆ«ä¸º TS Safe æœåŠ¡ç«¯ï¼ˆä¸å†æ˜¯åªèƒ½ç›‘æ§çš„ç«¯ç‚¹ï¼‰ï¼Œè¿ç§»/å¿«ç…§ç­‰éƒ½å¯ç”¨ã€‚
-echo.
-echo  çŠ¶æ€ç›®å½•ï¼š   C:\ProgramData\NAS Safe\state
-echo  æ—¥å¿—ï¼š       C:\ProgramData\NAS Safe\state\logs\service.log
-echo               C:\ProgramData\NAS Safe\state\logs\app.log
-echo  å¸è½½ï¼š       ä»¥ç®¡ç†å‘˜è¿è¡Œ  install_windows_service.bat uninstall
-echo ============================================================
-echo.
-echo [ä¿¡æ¯] å³å°†ä¸ºä½ æ‰“å¼€æ§åˆ¶å°é¡µé¢ï¼ˆé¦–æ¬¡è¯·è®¾ç½®ç®¡ç†å‘˜è´¦å·ï¼‰...
-timeout /t 3 >nul
-start "" "http://localhost:8848"
-powershell -NoProfile -Command "[System.Windows.Forms.MessageBox]::Show('TS Safe å·²å®‰è£…å®Œæˆï¼è¯·æ‰“å¼€ http://localhost:8848 è®¾ç½®ç®¡ç†å‘˜è´¦å·ã€‚è¯¦ç»†æ­¥éª¤è§åŒç›®å½•ã€Šé¦–æ¬¡ä½¿ç”¨æŒ‡å—.txtã€‹ã€‚', 'TS Safe å®‰è£…å®Œæˆ')" >nul 2>&1
-pause
-goto :EOF
-
-REM ============================================================
-REM  å¸è½½ï¼šåœæ­¢å¹¶ç§»é™¤æœåŠ¡ã€åˆ é™¤é˜²ç«å¢™è§„åˆ™ï¼ˆä¿ç•™ venv ä¸ state ä»¥ä¾¿é‡è£…ï¼‰
-REM ============================================================
-:UNINSTALL
-set "INSTALL_ROOT=%DP%"
-set "SERVER_DIR=%INSTALL_ROOT%server"
-echo [æ­¥éª¤] åœæ­¢å¹¶ç§»é™¤ TSafeServer æœåŠ¡...
-net stop TSafeServer >nul 2>&1
-if exist "%SERVER_DIR%\win_service.py" (
-    "%INSTALL_ROOT%venv\Scripts\python.exe" "%SERVER_DIR%\win_service.py" remove >nul 2>&1
-)
-echo [æ­¥éª¤] åˆ é™¤é˜²ç«å¢™è§„åˆ™ TS Safe Console ...
-netsh advfirewall firewall delete rule name="TS Safe Console" >nul 2>&1
-echo.
-echo ============================================================
-echo  å·²å¸è½½ TSafeServer æœåŠ¡ï¼ˆé˜²ç«å¢™è§„åˆ™å·²åˆ ï¼‰ã€‚
-echo  è¯´æ˜ï¼švenv ä¸ C:\ProgramData\NAS Safe\state å·²ä¿ç•™ï¼Œæ–¹ä¾¿é‡æ–°å®‰è£…ï¼›
-echo        å¦‚éœ€å½»åº•æ¸…ç†ï¼Œæ‰‹åŠ¨åˆ é™¤ä¸Šè¿°ç›®å½•å³å¯ã€‚
-echo ============================================================
-pause
-endlocal
+@echo off
+setlocal EnableExtensions
+
+REM ============================================================
+REM  TS Safe ÍêÕû°æ - Windows Ò»¼ü°²×° / Ğ¶ÔØ£¨Ğè¹ÜÀíÔ±£©
+REM
+REM  °ÑÍêÕû TS Safe ÒıÇæ×¢²áÎª"¿ª»ú×ÔÆô"µÄ Windows ·şÎñ£¬
+REM  ºóÌ¨ÔËĞĞ²¢Ìá¹© Web ¿ØÖÆÌ¨£¨Ä¬ÈÏ http://localhost:8848£©¡£
+REM  ËùÓĞ¹¦ÄÜ£¨¿ìÕÕ / ÖØ¸´ÎÄ¼ş / ´ÅÅÌÇåÀí / Ç¨ÒÆ / ÈÕ±¨ / ¸æ¾¯£©
+REM  ¶¼ÔÚÕâÌ¨ Windows ÉÏÔ­Éú¿ÉÓÃ£¬ÎŞĞèÔÙÒÀÀµ±ğµÄÉè±¸À´"´ú¹Ü"¡£
+REM
+REM  ÖØÒª£º¢Ù ÇëÏÈ°ÑÕû¸ö NAS-Safe-Full.zip ½âÑ¹µ½Ò»¸ö¡¾²»º¬ÖĞÎÄ¡¢²»º¬¿Õ¸ñ¡¿
+REM          µÄÎÄ¼ş¼Ğ£¨ÀıÈç D:\TSafe£©£¬²»ÒªÖ±½ÓË«»÷Ñ¹Ëõ°üÀïµÄ±¾ÎÄ¼ş£»
+REM        ¢Ú ÓÒ¼ü±¾ÎÄ¼ş - ÒÔ¹ÜÀíÔ±Éí·İÔËĞĞ¡£
+REM  Ğ¶ÔØ£ºÒÔ¹ÜÀíÔ±Éí·İÔËĞĞ  install_windows_service.bat uninstall
+REM ============================================================
+
+REM --- ÓÃ 8.3 ¶ÌÂ·¾¶£¬³¹µ×¹æ±ÜÖĞÎÄ/¿Õ¸ñÄ¿Â¼µ¼ÖÂµÄÌáÈ¨Óë°²×°Ê§°Ü ---
+set "DP=%~sdp0"
+if not defined DP set "DP=%~dp0"
+set "BAT=%~sdp0%~nx0"
+if not defined BAT set "BAT=%~f0"
+
+REM --- 0. ×ÔÌáÈ¨µ½¹ÜÀíÔ±£¨ÈôÉĞÎ´ÌáÈ¨£©---
+fltmc >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo [ĞèÒª¹ÜÀíÔ±È¨ÏŞ] ¼´½«µ¯³ö Windows ÓÃ»§ÕË»§¿ØÖÆ£¨UAC£©£¬Çëµã»÷"ÊÇ"¡£
+    echo   ÈôÎ´µ¯³ö UAC£¬Çë¹Ø±Õ´Ë´°¿Ú£¬¸ÄÎªÓÒ¼ü±¾ÎÄ¼ş - ÒÔ¹ÜÀíÔ±Éí·İÔËĞĞ¡£
+    echo.
+    timeout /t 2 >nul
+    powershell -NoProfile -Command "Start-Process -FilePath '%BAT%' -ArgumentList 'ELEV' -Verb RunAs" >nul 2>&1
+    if errorlevel 1 (
+        powershell -NoProfile -Command "[System.Windows.Forms.MessageBox]::Show('ÎŞ·¨×Ô¶¯»ñÈ¡¹ÜÀíÔ±È¨ÏŞ¡£ÇëÓÒ¼ü±¾ÎÄ¼ş£¬Ñ¡Ôñ"ÒÔ¹ÜÀíÔ±Éí·İÔËĞĞ"£¬ÔÙÖØÊÔ¡£','TS Safe °²×°')" >nul 2>&1
+        echo [´íÎó] ×Ô¶¯ÌáÈ¨Ê§°Ü£¬ÇëÊÖ¶¯ÒÔ¹ÜÀíÔ±Éí·İÔËĞĞ±¾ÎÄ¼ş¡£
+        pause
+    ) else (
+        echo [ÌáÊ¾] ÒÑÔÚĞÂ´°¿ÚÒÔ¹ÜÀíÔ±Éí·İ¼ÌĞø°²×°£¬±¾´°¿Ú¿É¹Ø±Õ¡£
+        pause
+    )
+    exit /b
+)
+
+if /i "%~1"=="uninstall" goto UNINSTALL
+
+set "INSTALL_ROOT=%DP%"
+set "SERVER_DIR=%INSTALL_ROOT%server"
+if not exist "%SERVER_DIR%\app.py" (
+    echo [´íÎó] Î´ÕÒµ½ %SERVER_DIR%\app.py
+    echo         Çë°Ñ±¾½Å±¾·ÅÔÚ²Ö¿â¸ùÄ¿Â¼£¨Óë server\¡¢web\ Í¬¼¶£©ºóÔÙÔËĞĞ¡£
+    echo         Ò²ÇëÈ·ÈÏÄãÊÇÏÈ½âÑ¹ÁËÕû¸ö zip£¬¶ø²»ÊÇÖ±½ÓË«»÷Ñ¹Ëõ°üÀïµÄÎÄ¼ş¡£
+    pause
+    exit /b 1
+)
+
+set "PY="
+where py >nul 2>&1 && set "PY=py -3"
+if not defined PY (
+    where python >nul 2>&1 && set "PY=python"
+)
+if not defined PY (
+    echo [´íÎó] Î´¼ì²âµ½ Python¡£ÇëÏÈ°²×° Python 3.10+£¨°²×°Ê±¹´Ñ¡ "Add python.exe to PATH"£©¡£
+    echo         ÏÂÔØ£ºhttps://www.python.org/downloads/
+    pause
+    exit /b 1
+)
+echo [ĞÅÏ¢] Ê¹ÓÃ Python£º%PY%
+
+(
+echo ============================================================
+echo        TS Safe ÍêÕû°æ - Ê×´ÎÊ¹ÓÃÖ¸ÄÏ
+echo ============================================================
+echo.
+echo  ¡ï µÚÒ»²½£º´ò¿ª¿ØÖÆÌ¨£¬ÉèÖÃ¹ÜÀíÔ±ÕËºÅ
+echo      ±¾»ú·ÃÎÊ£º  http://localhost:8848
+echo      ¾ÖÓòÍø£º    http://ÄãµÄ¾ÖÓòÍøIP:8848
+echo      £¨Ê×´Î´ò¿ª»áÈÃÄã´´½¨¹ÜÀíÔ±ÕËºÅ£¬ÇëÀÎ¼Ç£©
+echo.
+echo  ¡ï µÚ¶ş²½£¨¿ÉÑ¡£©£º»ØÔ­×Ü¿ØÌ¨½Ó¹ÜÕâÌ¨Éè±¸
+echo      ±¾»úÏÖÔÚÒÑÊÇ¶ÀÁ¢µÄ TS Safe Ö÷»ú£¬ËùÓĞ¹¦ÄÜÔ­Éú¿ÉÓÃ¡£
+echo      ÏëÔÚÔ­×Ü¿ØÌ¨Ò²Ö±½Ó¹ÜÀíËü£ºµ½×Ü¿ØÌ¨"£«Ìí¼ÓÉè±¸ / É¨Ãè"£¬
+echo      Ëü»áÒÔ"TS Safe ·şÎñ¶Ë"Éí·İ³öÏÖ£¨²»ÔÙÊÇÖ»ÄÜ¼à¿ØµÄ¶Ëµã£©£¬
+echo      Ç¨ÒÆ / ¿ìÕÕ / ÖØ¸´ÎÄ¼ş / ´ÅÅÌÇåÀí / ÈÕ±¨ µÈ¶¼¿ÉÓÃ¡£
+echo.
+echo  ×´Ì¬Ä¿Â¼£º   C:\ProgramData\NAS Safe\state
+echo  ÈÕÖ¾£º       C:\ProgramData\NAS Safe\state\logs\service.log
+echo               C:\ProgramData\NAS Safe\state\logs\app.log
+echo  Ğ¶ÔØ£º       ÒÔ¹ÜÀíÔ±ÔËĞĞ  install_windows_service.bat uninstall
+echo ============================================================
+) > "%INSTALL_ROOT%Ê×´ÎÊ¹ÓÃÖ¸ÄÏ.txt"
+echo [ĞÅÏ¢] ÒÑÉú³É¡¶Ê×´ÎÊ¹ÓÃÖ¸ÄÏ.txt¡·£¨¿ÉËæÊ±Ë«»÷²é¿´£©¡£
+
+if not exist "%INSTALL_ROOT%venv\Scripts\python.exe" (
+    echo [²½Öè] ´´½¨ĞéÄâ»·¾³ venv ...
+    %PY% -m venv "%INSTALL_ROOT%venv"
+    if errorlevel 1 (
+        echo [´íÎó] ´´½¨ĞéÄâ»·¾³Ê§°Ü£¨¿ÉÄÜÊÇ Windows È±ÉÙ VC ÔËĞĞ¿â»òÈ¨ÏŞ²»×ã£©¡£
+        pause
+        exit /b 1
+    )
+)
+echo [²½Öè] °²×°ÒÀÀµ£¨requirements.txt + pywin32£©...
+"%INSTALL_ROOT%venv\Scripts\pip.exe" install -r "%INSTALL_ROOT%requirements.txt" pywin32
+if errorlevel 1 (
+    echo [´íÎó] ÒÀÀµ°²×°Ê§°Ü£¬Çë¼ì²éÍøÂçºóÖØÊÔ¡£
+    pause
+    exit /b 1
+)
+echo [²½Öè] ×¢²á pywin32 ·şÎñËŞÖ÷£¨pywin32_postinstall£©...
+"%INSTALL_ROOT%venv\Scripts\python.exe" "%INSTALL_ROOT%venv\Scripts\pywin32_postinstall.py" -install
+
+echo [²½Öè] ×¢²á TSafeServer ·şÎñ...
+"%INSTALL_ROOT%venv\Scripts\python.exe" "%SERVER_DIR%\win_service.py" install
+if errorlevel 1 (
+    echo [´íÎó] ·şÎñ×¢²áÊ§°Ü¡£
+    pause
+    exit /b 1
+)
+sc config TSafeServer start= auto >nul 2>&1
+
+echo [²½Öè] ·ÅĞĞ·À»ğÇ½ TCP 8848 ...
+netsh advfirewall firewall add rule name="TS Safe Console" dir=in action=allow protocol=TCP localport=8848 >nul 2>&1
+
+echo [²½Öè] Æô¶¯ TSafeServer ·şÎñ...
+net start TSafeServer
+if errorlevel 1 (
+    echo [¾¯¸æ] ·şÎñÆô¶¯Ê§°Ü£¬¿ÉÔÚ"·şÎñ"ÖĞÊÖ¶¯Æô¶¯ TSafeServer£¬»ò²é¿´ÈÕÖ¾ÅÅ²é¡£
+    powershell -NoProfile -Command "[System.Windows.Forms.MessageBox]::Show('·şÎñÎ´ÄÜ×Ô¶¯Æô¶¯¡£Çëµ½ Windows"·şÎñ"ÊÖ¶¯Æô¶¯ TSafeServer£¬ÔÙ´ò¿ª http://localhost:8848 ÉèÖÃ¹ÜÀíÔ±£»ÈÕÖ¾¼û C:\ProgramData\NAS Safe\state\logs\', 'TS Safe °²×°ÌáÊ¾')" >nul 2>&1
+    pause
+    exit /b 1
+)
+
+echo.
+echo ============================================================
+echo  TS Safe ÒÑ°²×°²¢Æô¶¯£¨¿ª»ú×Ô¶¯ÔËĞĞ£©£¡
+echo.
+echo  ¡ï µÚÒ»²½£º´ò¿ª¿ØÖÆÌ¨Éè¹ÜÀíÔ±ÕËºÅ
+echo      ±¾»ú£º    http://localhost:8848
+echo      ¾ÖÓòÍø£º  http://±¾»ú¾ÖÓòÍøIP:8848
+echo.
+echo  ¡ï µÚ¶ş²½£¨¿ÉÑ¡£©£º»Øµ½"×Ü¿ØÌ¨"½Ó¹ÜÕâÌ¨Éè±¸
+echo      ÔÚÕâÌ¨µçÄÔµÄ¿ØÖÆÌ¨Àï£¬Ëü±¾ÉíÒÑÊÇ¶ÀÁ¢Ö÷»ú£¬ËùÓĞ¹¦ÄÜÔ­Éú¿ÉÓÃ¡£
+echo      ÈôÏëÔÚÔ­À´µÄ×Ü¿ØÌ¨ÀïÒ²Ö±½Ó¹ÜÀíËü£ºµ½×Ü¿ØÌ¨"£« Ìí¼ÓÉè±¸ / É¨Ãè"£¬
+echo      »á°ÑËüÊ¶±ğÎª TS Safe ·şÎñ¶Ë£¨²»ÔÙÊÇÖ»ÄÜ¼à¿ØµÄ¶Ëµã£©£¬Ç¨ÒÆ/¿ìÕÕµÈ¶¼¿ÉÓÃ¡£
+echo.
+echo  ×´Ì¬Ä¿Â¼£º   C:\ProgramData\NAS Safe\state
+echo  ÈÕÖ¾£º       C:\ProgramData\NAS Safe\state\logs\service.log
+echo               C:\ProgramData\NAS Safe\state\logs\app.log
+echo  Ğ¶ÔØ£º       ÒÔ¹ÜÀíÔ±ÔËĞĞ  install_windows_service.bat uninstall
+echo ============================================================
+echo.
+echo [ĞÅÏ¢] ¼´½«ÎªÄã´ò¿ª¿ØÖÆÌ¨Ò³Ãæ£¨Ê×´ÎÇëÉèÖÃ¹ÜÀíÔ±ÕËºÅ£©...
+timeout /t 3 >nul
+start "" "http://localhost:8848"
+powershell -NoProfile -Command "[System.Windows.Forms.MessageBox]::Show('TS Safe ÒÑ°²×°Íê³É£¡Çë´ò¿ª http://localhost:8848 ÉèÖÃ¹ÜÀíÔ±ÕËºÅ¡£ÏêÏ¸²½Öè¼ûÍ¬Ä¿Â¼¡¶Ê×´ÎÊ¹ÓÃÖ¸ÄÏ.txt¡·¡£', 'TS Safe °²×°Íê³É')" >nul 2>&1
+pause
+goto :EOF
+
+:UNINSTALL
+set "INSTALL_ROOT=%DP%"
+set "SERVER_DIR=%INSTALL_ROOT%server"
+echo [²½Öè] Í£Ö¹²¢ÒÆ³ı TSafeServer ·şÎñ...
+net stop TSafeServer >nul 2>&1
+if exist "%SERVER_DIR%\win_service.py" (
+    "%INSTALL_ROOT%venv\Scripts\python.exe" "%SERVER_DIR%\win_service.py" remove >nul 2>&1
+)
+echo [²½Öè] É¾³ı·À»ğÇ½¹æÔò TS Safe Console ...
+netsh advfirewall firewall delete rule name="TS Safe Console" >nul 2>&1
+echo.
+echo ============================================================
+echo  ÒÑĞ¶ÔØ TSafeServer ·şÎñ£¨·À»ğÇ½¹æÔòÒÑÉ¾£©¡£
+echo  ËµÃ÷£ºvenv Óë C:\ProgramData\NAS Safe\state ÒÑ±£Áô£¬·½±ãÖØĞÂ°²×°£»
+echo        ÈçĞè³¹µ×ÇåÀí£¬ÊÖ¶¯É¾³ıÉÏÊöÄ¿Â¼¼´¿É¡£
+echo ============================================================
+pause
+endlocal
