@@ -1,21 +1,41 @@
 @echo off
+chcp 65001 >nul 2>&1
+setlocal EnableExtensions
+
 REM ============================================================
-REM  TS Safe 完整版 — Windows 一键安装 / 卸载（需管理员）
+REM  TS Safe 完整版 - Windows 一键安装 / 卸载（需管理员）
 REM
 REM  把完整 TS Safe 引擎注册为「开机自启」的 Windows 服务，
 REM  后台运行并提供 Web 控制台（默认 http://localhost:8848）。
 REM  所有功能（快照 / 重复文件 / 磁盘清理 / 迁移 / 日报 / 告警）
 REM  都在这台 Windows 上原生可用，无需再依赖别的设备来「代管」。
 REM
-REM  安装：右键本文件 -> 以管理员身份运行
+REM  重要：① 请先把整个 NAS-Safe-Full.zip 解压到一个【不含中文、不含空格】
+REM          的文件夹（例如 D:\TSafe），不要直接双击压缩包里的本文件；
+REM        ② 右键本文件 -> 以管理员身份运行。
 REM  卸载：以管理员身份运行  install_windows_service.bat uninstall
 REM ============================================================
-setlocal EnableExtensions
 
-REM --- 0. 自提权到管理员（若尚未提权）；保留传入的参数 ---
-fltmc >nul 2>&1 || (
-    echo [需要管理员权限] 正在请求 UAC 提权...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs" >nul 2>&1
+REM --- 用 8.3 短路径，彻底规避中文/空格目录导致的提权与安装失败 ---
+set "DP=%~sdp0"
+if not defined DP set "DP=%~dp0"
+set "BAT=%~sdp0%~nx0"
+if not defined BAT set "BAT=%~f0"
+
+REM --- 0. 自提权到管理员（若尚未提权）---
+fltmc >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo [需要管理员权限] 即将弹出 Windows 用户账户控制（UAC），请点击「是」。
+    echo   若不想自动提权，可关闭此窗口，改为右键本文件 - 以管理员身份运行。
+    echo.
+    timeout /t 2 >nul
+    powershell -NoProfile -Command "Start-Process -FilePath '%BAT%' -ArgumentList 'ELEV' -Verb RunAs" >nul 2>&1
+    if errorlevel 1 (
+        powershell -NoProfile -Command "[System.Windows.Forms.MessageBox]::Show('无法自动获取管理员权限。请右键本文件，选择「以管理员身份运行」，再重试。', 'TS Safe 安装')" >nul 2>&1
+        echo [错误] 自动提权失败，请手动以管理员身份运行本文件。
+        pause
+    )
     exit /b
 )
 
@@ -23,11 +43,12 @@ REM --- 卸载分支 ---
 if /i "%~1"=="uninstall" goto UNINSTALL
 
 REM --- 1. 定位安装目录（本脚本应位于仓库根目录，含 server\ 与 web\）---
-set "INSTALL_ROOT=%~dp0"
+set "INSTALL_ROOT=%DP%"
 set "SERVER_DIR=%INSTALL_ROOT%server"
 if not exist "%SERVER_DIR%\app.py" (
     echo [错误] 未找到 %SERVER_DIR%\app.py
     echo         请把本脚本放在仓库根目录（与 server\、web\ 同级）后再运行。
+    echo         也请确认你是先解压了整个 zip，而不是直接双击压缩包里的文件。
     pause
     exit /b 1
 )
@@ -49,7 +70,7 @@ echo [信息] 使用 Python：%PY%
 REM --- 2.5 预先写出《首次使用指南.txt》（任何结果下都可查看，窗口关了也能看）---
 (
 echo ============================================================
-echo        TS Safe 完整版 — 首次使用指南
+echo        TS Safe 完整版 - 首次使用指南
 echo ============================================================
 echo.
 echo  ★ 第一步：打开控制台，设置管理员账号
@@ -137,7 +158,7 @@ echo  卸载：       以管理员运行  install_windows_service.bat uninstall
 echo ============================================================
 echo.
 echo [信息] 即将为你打开控制台页面（首次请设置管理员账号）...
-timeout /t 2 >nul
+timeout /t 3 >nul
 start "" "http://localhost:8848"
 powershell -NoProfile -Command "[System.Windows.Forms.MessageBox]::Show('TS Safe 已安装完成！请打开 http://localhost:8848 设置管理员账号。详细步骤见同目录《首次使用指南.txt》。', 'TS Safe 安装完成')" >nul 2>&1
 pause
@@ -147,7 +168,7 @@ REM ============================================================
 REM  卸载：停止并移除服务、删除防火墙规则（保留 venv 与 state 以便重装）
 REM ============================================================
 :UNINSTALL
-set "INSTALL_ROOT=%~dp0"
+set "INSTALL_ROOT=%DP%"
 set "SERVER_DIR=%INSTALL_ROOT%server"
 echo [步骤] 停止并移除 TSafeServer 服务...
 net stop TSafeServer >nul 2>&1
