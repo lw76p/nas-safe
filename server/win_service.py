@@ -30,6 +30,7 @@ import sys
 import time
 import logging
 import subprocess
+import traceback
 
 try:
     import win32serviceutil
@@ -56,6 +57,7 @@ BIND_HOST = os.environ.get("NASSAFE_BIND_HOST", "0.0.0.0")
 LOG_DIR = os.path.join(STATE_DIR, "logs")
 SERVICE_LOG = os.path.join(LOG_DIR, "service.log")
 APP_LOG = os.path.join(LOG_DIR, "app.log")
+STARTUP_ERROR_LOG = os.path.join(STATE_DIR, "logs", "startup_error.log")
 
 
 def _resolve_python() -> str:
@@ -75,12 +77,41 @@ def _configure_logging() -> None:
         os.makedirs(LOG_DIR, exist_ok=True)
     except OSError:
         pass
-    logging.basicConfig(
-        filename=SERVICE_LOG,
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        encoding="utf-8",
-    )
+    try:
+        logging.basicConfig(
+            filename=SERVICE_LOG,
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(message)s",
+            encoding="utf-8",
+        )
+    except OSError:
+        # 如果连日志文件都写不了，至少别让服务崩溃
+        logging.basicConfig(
+            stream=sys.stdout,
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(message)s",
+        )
+
+
+def _write_startup_error(msg: str) -> None:
+    """把启动错误写到显眼位置，便于 install bat 读取并弹窗。"""
+    try:
+        os.makedirs(os.path.dirname(STARTUP_ERROR_LOG), exist_ok=True)
+        with open(STARTUP_ERROR_LOG, "w", encoding="utf-8") as f:
+            f.write(msg)
+            f.write("\n")
+    except OSError:
+        pass
+
+
+def _read_app_log_tail(lines: int = 30) -> str:
+    try:
+        if not os.path.exists(APP_LOG):
+            return ""
+        with open(APP_LOG, "r", encoding="utf-8", errors="ignore") as f:
+            return "".join(f.readlines()[-lines:])
+    except Exception:
+        return ""
 
 
 class TSafeServer(win32serviceutil.ServiceFramework):
@@ -136,25 +167,56 @@ class TSafeServer(win32serviceutil.ServiceFramework):
         try:
             out = open(APP_LOG, "a", encoding="utf-8", buffering=1)
         except OSError:
-            out = None
+            out = subprocess.DEVNULL
 
         logging.info(
-            "启动子进程: %s app.py (PORT=%s BIND=%s STATE=%s)",
-            py, PORT, BIND_HOST, STATE_DIR,
+            "启动子进程: %s app.py (PORT=%s BIND=%s STATE=%s WEB=%s)",
+            py, PORT, BIND_HOST, STATE_DIR, WEB_DIR,
         )
-        self.proc = subprocess.Popen(
-            [py, "app.py"],
-            cwd=SERVER_DIR,
-            env=env,
-            stdout=out,
-            stderr=subprocess.STDOUT,
-        )
+        try:
+            self.proc = subprocess.Popen(
+                [py, "app.py"],
+                cwd=SERVER_DIR,
+                env=env,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+            )
+        except Exception as exc:  # noqa: BLE001
+            tb = traceback.format_exc()
+            logging.error("创建子进程失败: %s\n%s", exc, tb)
+            _write_startup_error(f"创建子进程失败: {exc}\n{tb}")
+            raise
         logging.info("子进程 PID=%s", self.proc.pid)
+
+    def _check_child_healthy(self, seconds: int = 5) -> bool:
+        """启动后等待几秒，若子进程已退出则视为启动失败。"""
+        for _ in range(seconds):
+            if self._stopping:
+                return False
+            if self.proc.poll() is not None:
+                tail = _read_app_log_tail(20)
+                msg = (
+                    f"子进程启动后立即退出，返回码={self.proc.returncode}。\n"
+                    f"常见原因：端口 {PORT} 被占用 / app.py 初始化失败 / 依赖缺失。\n"
+                    f"--- app.log 最后 20 行 ---\n{tail}"
+                )
+                logging.error(msg)
+                _write_startup_error(msg)
+                return False
+            time.sleep(1)
+        return True
 
     # ---- 主循环 ----
     def SvcDoRun(self):
         _configure_logging()
         logging.info("TSafeServer 启动 (INSTALL_ROOT=%s)", INSTALL_ROOT)
+
+        # 关键：立即报告服务已运行，让 SCM 不再等待，避免 2186
+        try:
+            self.ReportServiceStatus(win32service.SERVICE_RUNNING)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("ReportServiceStatus(RUNNING) 失败: %s", exc)
+
         try:
             servicemanager.LogMsg(
                 servicemanager.EVENTLOG_INFORMATION_TYPE,
@@ -169,6 +231,13 @@ class TSafeServer(win32serviceutil.ServiceFramework):
         restarts = 0
         while not self._stopping:
             self._launch()
+            # 首次启动做健康检查，秒崩则停止服务（而不是无限重启导致 SCM 判死）
+            if not self._check_child_healthy(seconds=5):
+                self._terminate_child()
+                logging.error("子进程启动失败，服务停止")
+                # 让 SCM 知道我们主动退出（StartServiceCtrlDispatcher 会返回）
+                break
+
             # 等子进程退出或服务被停止
             while not self._stopping:
                 rc = win32event.WaitForSingleObject(self.stop_event, 1000)
