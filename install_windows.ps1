@@ -1,4 +1,4 @@
-﻿﻿# TS Safe — Windows 完整版安装 / 卸载（PowerShell 主脚本，UTF-8 with BOM）
+﻿# TS Safe — Windows 完整版安装 / 卸载（PowerShell 主脚本，UTF-8 with BOM）
 #
 # 说明：install_windows_service.bat 只是纯 ASCII 启动器，真正的安装逻辑全在本文件。
 # 这样做的原因：cmd.exe 解析含中文的 .bat 极易出编码/转义问题，PowerShell（UTF-8 BOM）
@@ -69,6 +69,84 @@ function Pause-End {
     Save-Diag
     Write-Host ''
     Read-Host '按回车键关闭本窗口' | Out-Null
+}
+
+function Get-RichDiag {
+    $sb = New-Object System.Text.StringBuilder
+    $null = $sb.AppendLine('【服务状态】')
+    try {
+        $gs = Get-Service -Name $SvcName -ErrorAction Stop
+        $null = $sb.AppendLine('  Get-Service : ' + $gs.Status + '   (StartType=' + $gs.StartType + ')')
+    } catch {
+        $null = $sb.AppendLine('  Get-Service : 服务未创建或无法查询')
+    }
+    try {
+        $q = & sc.exe query $SvcName 2>&1
+        $null = $sb.AppendLine('  sc query    : ' + ((($q | ForEach-Object { $_.ToString() }) -join ' ').Trim()))
+    } catch {
+        $null = $sb.AppendLine('  sc query    : (本机不可用)')
+    }
+    $null = $sb.AppendLine('')
+    foreach ($n in @('service.log', 'startup_error.log', 'app.log')) {
+        $lp = Join-Path $LogDir $n
+        $null = $sb.AppendLine("【$n】")
+        if (Test-Path $lp) {
+            $tt = (Get-Content $lp -Tail 20 -ErrorAction SilentlyContinue) -join "`n"
+            if ([string]::IsNullOrWhiteSpace($tt)) { $null = $sb.AppendLine('  (文件存在但为空)') }
+            else { $null = $sb.AppendLine($tt) }
+        } else {
+            $null = $sb.AppendLine('  (文件不存在 —— 服务进程很可能根本没启动)')
+        }
+        $null = $sb.AppendLine('')
+    }
+    $null = $sb.AppendLine('【系统事件日志：最近与本服务相关的记录】')
+    try {
+        $ev = @(Get-EventLog -LogName System -SourceName 'Service Control Manager' -Newest 20 -ErrorAction Stop |
+                Where-Object { "$($_.Message)" -like "*$SvcName*" })
+        if ($ev.Count -gt 0) {
+            foreach ($e in $ev) {
+                $msg = "$($e.Message)" -replace "`r`n", ' ' -replace "`n", ' '
+                $null = $sb.AppendLine('  ' + $e.TimeGenerated + '  ' + $e.EntryType + ' : ' + $msg)
+            }
+        } else {
+            $null = $sb.AppendLine('  (无相关事件 —— 服务可能从未被系统尝试启动)')
+        }
+    } catch {
+        $null = $sb.AppendLine('  (读取事件日志失败: ' + $_.Exception.Message + ')')
+    }
+    return $sb.ToString()
+}
+
+function Wait-Console {
+    param([int]$Seconds = 90, [int]$PortNum = 8848)
+    $steps = [int]($Seconds / 2)
+    for ($i = 0; $i -lt $steps; $i++) {
+        Start-Sleep -Seconds 2
+        try {
+            $rr = Invoke-WebRequest -Uri "http://127.0.0.1:$PortNum/" -UseBasicParsing -TimeoutSec 4
+            if ($rr.StatusCode -eq 200) { return $true }
+        } catch { }
+    }
+    return $false
+}
+
+function Register-FallbackTask {
+    $taskName = 'TSafeServer'
+    try {
+        $action = New-ScheduledTaskAction -Execute $VenvPy -Argument 'app.py' -WorkingDirectory $ServerDir
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                    -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) `
+                    -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+                               -Principal $principal -Settings $settings -Force | Out-Null
+        Add-Diag "已注册降级计划任务：$taskName"
+        return $true
+    } catch {
+        Add-Diag "Register-ScheduledTask 失败: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 # ---------------------------------------------------------------- 管理员校验
@@ -374,6 +452,55 @@ if (Test-Path $post) {
 }
 Write-Ok 'pywin32 注册完成。'
 
+# 3.5 引擎自检：先绕开 Windows 服务，直接跑一次 app.py。
+#     这样一旦引擎本身有问题，能立刻拿到真实的 Python 报错，
+#     而不是只看到一句「服务启动了但 8848 没响应」无从下手。
+Write-Step '引擎自检（直接启动 app.py 验证，约 10-60 秒）...'
+$selfOut = Join-Path $Root 'engine_selftest.log'
+$selfErr = Join-Path $Root 'engine_selftest.err'
+foreach ($f in @($selfOut, $selfErr)) {
+    if (Test-Path $f) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+}
+$selfProc = $null
+try {
+    $selfProc = Start-Process -FilePath $VenvPy -ArgumentList 'app.py' -WorkingDirectory $ServerDir `
+                -RedirectStandardOutput $selfOut -RedirectStandardError $selfErr -PassThru -WindowStyle Hidden
+} catch {
+    Write-Err "自检进程启动失败：$($_.Exception.Message)"
+    Add-Diag "自检启动失败: $($_.Exception.Message)"
+}
+$selfOk = $false
+if ($selfProc) {
+    for ($i = 0; $i -lt 45; $i++) {
+        Start-Sleep -Seconds 2
+        if ($selfProc.HasExited) { break }
+        try {
+            $rr = Invoke-WebRequest -Uri 'http://127.0.0.1:8848/api/system' -UseBasicParsing -TimeoutSec 4
+            if ($rr.StatusCode -eq 200) { $selfOk = $true; break }
+        } catch { }
+    }
+    if (-not $selfOk -and $selfProc.HasExited) { Add-Diag ('自检进程提前退出 rc=' + $selfProc.ExitCode) }
+    if (-not $selfProc.HasExited) {
+        try { Stop-Process -Id $selfProc.Id -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    Start-Sleep -Seconds 2
+}
+if ($selfOk) {
+    Write-Ok '引擎自检通过（app.py 能正常提供服务）。'
+    Add-Diag '引擎自检通过'
+} else {
+    $so = ''
+    $se = ''
+    if (Test-Path $selfOut) { $so = (Get-Content $selfOut -Tail 25 -ErrorAction SilentlyContinue) -join "`n" }
+    if (Test-Path $selfErr) { $se = (Get-Content $selfErr -Tail 25 -ErrorAction SilentlyContinue) -join "`n" }
+    Write-Err '引擎自检失败：app.py 本身跑不起来，所以服务也起不来。'
+    Add-Diag "引擎自检失败。`r`n--- stdout ---`r`n$so`r`n--- stderr ---`r`n$se"
+    Save-Diag
+    Show-Popup -Title 'TS Safe 引擎自检失败' -Text "app.py 本身启动失败，因此 Windows 服务也起不来。`n`n--- 错误输出(stderr) ---`n$se`n--- 标准输出(stdout) ---`n$so`n`n完整诊断已写入：`n$DiagFile`n$selfErr" -IsError
+    Pause-End
+    exit 1
+}
+
 # 4. 清理可能残留的旧服务
 Write-Step '清理可能残留的旧 TSafeServer 服务...'
 & net.exe stop $SvcName 2>$null | Out-Null
@@ -426,32 +553,61 @@ Write-Ok '防火墙已放行。'
 
 # 9. 启动服务
 Write-Step '启动 TSafeServer 服务...'
-& net.exe start $SvcName 2>$null | Out-Null
+$netOut = & net.exe start $SvcName 2>&1
+$netRc = $LASTEXITCODE
+$netTxt = (($netOut | ForEach-Object { $_.ToString() }) -join ' ').Trim()
+Write-Host ('    net start 返回：' + $netRc + '  ' + $netTxt) -ForegroundColor DarkGray
+Add-Diag "net start rc=$netRc out=$netTxt"
+Start-Sleep -Seconds 3
+$svcState = '未创建'
+try { $svcState = (Get-Service -Name $SvcName -ErrorAction Stop).Status } catch { }
+Write-Host ('    服务当前状态：' + $svcState) -ForegroundColor DarkGray
+Add-Diag "服务状态：$svcState"
 
-# 10. 健康检查
-Write-Step '等待控制台就绪（最多 40 秒）...'
-$ok = $false
-for ($i = 0; $i -lt 20; $i++) {
-    Start-Sleep -Seconds 2
-    try {
-        $r = Invoke-WebRequest -Uri "http://localhost:$Port/" -UseBasicParsing -TimeoutSec 5
-        if ($r.StatusCode -eq 200) { $ok = $true; break }
-    } catch { }
-}
+# 10. 健康检查：先用「Windows 服务」方式，不行就自动降级为「登录自启计划任务」
+$runMode = 'Windows 服务（开机自启、后台运行）'
+Write-Step '等待控制台就绪（服务方式，最多 90 秒）...'
+$ok = Wait-Console -Seconds 90
+$richDiag = ''
+
 if (-not $ok) {
-    $tail = ''
-    $appLog = Join-Path $LogDir 'app.log'
-    if (Test-Path $appLog) { $tail = (Get-Content $appLog -Tail 15 -ErrorAction SilentlyContinue) -join "`n" }
-    $errLog = Join-Path $LogDir 'startup_error.log'
-    $extra = ''
-    if (Test-Path $errLog) { $extra = (Get-Content $errLog -Tail 15 -ErrorAction SilentlyContinue) -join "`n" }
-    Write-Err '服务已安装，但控制台暂时没响应。'
-    Add-Diag "控制台未就绪。$extra"
-    Show-Popup -Title 'TS Safe 服务未就绪' -Text "服务已注册，但控制台暂时没响应。`n请尝试：重启电脑后访问 http://localhost:$Port`n`n日志目录：$LogDir`n$extra`n$tail" -IsError
+    Write-Warn '服务方式未就绪，正在收集诊断信息...'
+    $richDiag = Get-RichDiag
+    Add-Diag "服务方式控制台未就绪。`r`n$richDiag"
+    Save-Diag
+    Write-Host $richDiag -ForegroundColor DarkYellow
+
+    Write-Step '自动改用「登录自启计划任务」方式（不依赖 Windows 服务封装）...'
+    if (Register-FallbackTask) {
+        try { Start-ScheduledTask -TaskName 'TSafeServer' } catch { Add-Diag "Start-ScheduledTask 失败: $($_.Exception.Message)" }
+        Write-Warn '已创建计划任务 TSafeServer（SYSTEM 身份、登录自动启动、崩溃自动重启），等待引擎就绪...'
+        if (Wait-Console -Seconds 90) {
+            $ok = $true
+            $runMode = '登录自启计划任务（Windows 服务方式在本机不可用，已自动切换；功能完全一样）'
+            Write-Ok "控制台已就绪（$runMode）。"
+        }
+    } else {
+        Write-Warn '计划任务方式注册失败（可能是系统版本不支持）。'
+    }
+}
+
+if (-not $ok) {
+    Write-Err '两种方式都没能把控制台跑起来。'
+    $manual = "& '$VenvPy' '$ServerDir\app.py'"
+    Show-Popup -Title 'TS Safe 启动失败' -Text @"
+服务方式和计划任务方式都没能让控制台响应。
+
+$richDiag
+
+【你可以这样处理】
+1. 先重启一次电脑（服务/计划任务都会随开机自动启动）；
+2. 重启后仍不行，用管理员 PowerShell 手动前台跑一次引擎看真实报错：
+   $manual
+3. 把本弹窗内容、或安装目录下的 install_diag.txt 发给我。
+"@ -IsError
     Pause-End
     exit 1
 }
-Write-Ok '控制台已就绪。'
 
 # 11. 写《首次使用指南》
 Write-Step '生成《首次使用指南.txt》...'
@@ -461,6 +617,7 @@ TS Safe 完整版 — 首次使用指南
 ========================================
 
 安装位置：$Root
+运行方式：$runMode
 控制台地址：http://localhost:$Port
 数据目录：$StateDir
 
@@ -502,7 +659,8 @@ Write-Host '============================================' -ForegroundColor Green
 
 Add-Diag '安装完成'
 Show-Popup -Title 'TS Safe 安装完成' -Text @"
-TS Safe 已安装为 Windows 服务（开机自启、后台运行）。
+TS Safe 安装完成。
+当前运行方式：$runMode
 
 接下来请做两件事：
 1. 浏览器已打开 http://localhost:$Port —— 注册一个管理员账号
