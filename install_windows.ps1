@@ -1,4 +1,4 @@
-﻿# TS Safe — Windows 完整版安装 / 卸载（PowerShell 主脚本，UTF-8 with BOM）
+﻿﻿# TS Safe — Windows 完整版安装 / 卸载（PowerShell 主脚本，UTF-8 with BOM）
 #
 # 说明：install_windows_service.bat 只是纯 ASCII 启动器，真正的安装逻辑全在本文件。
 # 这样做的原因：cmd.exe 解析含中文的 .bat 极易出编码/转义问题，PowerShell（UTF-8 BOM）
@@ -24,6 +24,7 @@ $WebDir    = Join-Path $Root 'web'
 $VenvDir   = Join-Path $Root 'venv'
 $VenvPy    = Join-Path $VenvDir 'Scripts\python.exe'
 $VenvPip   = Join-Path $VenvDir 'Scripts\pip.exe'
+$DiagFile  = Join-Path $Root 'install_diag.txt'
 $StateDir  = 'C:\ProgramData\NAS Safe\state'
 $LogDir    = Join-Path $StateDir 'logs'
 $Port      = 8848
@@ -38,6 +39,9 @@ function Write-Step { param($t) Write-Host ''; Write-Host "[步骤] $t" -Foregro
 function Write-Ok   { param($t) Write-Host "[完成] $t" -ForegroundColor Green }
 function Write-Warn { param($t) Write-Host "[提示] $t" -ForegroundColor Yellow }
 function Write-Err  { param($t) Write-Host "[错误] $t" -ForegroundColor Red }
+
+$Diag = New-Object System.Collections.ArrayList
+function Add-Diag { param($t) [void]$Diag.Add([string]$t) }
 
 function Show-Popup {
     param($Title, $Text, [switch]$IsError)
@@ -54,7 +58,15 @@ function Show-Popup {
     }
 }
 
+function Save-Diag {
+    try {
+        $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+        [System.IO.File]::WriteAllText($DiagFile, (($Diag -join "`r`n") + "`r`n"), $utf8Bom)
+    } catch { }
+}
+
 function Pause-End {
+    Save-Diag
     Write-Host ''
     Read-Host '按回车键关闭本窗口' | Out-Null
 }
@@ -64,6 +76,7 @@ $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Err '没有管理员权限，无法安装 Windows 服务。'
+    Add-Diag '没有管理员权限'
     Show-Popup -Title 'TS Safe 需要管理员权限' -Text '请右键 install_windows_service.bat，选择「以管理员身份运行」，并在弹出的 UAC 窗口点「是」。' -IsError
     Pause-End
     exit 1
@@ -83,7 +96,7 @@ function Get-PortListener {
         return $list
     } catch { }
 
-    # 老系统回退：解析 netstat（PowerShell 里解析，不存在 cmd 转义问题）
+    # 老系统回退：解析 netstat（在 PowerShell 里解析，不存在 cmd 转义问题）
     try {
         $lines = & netstat.exe -ano -p TCP 2>$null
         foreach ($l in $lines) {
@@ -113,6 +126,7 @@ function Ensure-PortFree {
         if ($o.Id -le 4 -or $SafeProcessNames -notcontains $n) {
             $msg = "本机 {0} 端口已被占用：`n进程 {1} (PID {2})`n`n这不是 TS Safe 自己的进程，为安全起见本脚本不会结束它。`n请手动关闭该程序后重新运行安装；`n或换个端口（设置环境变量 NASSAFE_PORT 后重装）。" -f $TargetPort, $o.Name, $o.Id
             Write-Err "端口 $TargetPort 被 [$($o.Name) PID $($o.Id)] 占用，且不是 TS Safe 进程，已安全中止。"
+            Add-Diag "端口 $TargetPort 被 $($o.Name) PID $($o.Id) 占用（非本程序进程，中止）"
             Show-Popup -Title 'TS Safe 端口被占用' -Text $msg -IsError
             return $false
         }
@@ -128,39 +142,98 @@ function Ensure-PortFree {
     if ($left.Count -gt 0) {
         $msg = "端口 {0} 仍然被占用，请重启电脑后再次运行安装。" -f $TargetPort
         Write-Err $msg
+        Add-Diag "端口 $TargetPort 释放失败"
         Show-Popup -Title 'TS Safe 端口仍被占用' -Text $msg -IsError
         return $false
     }
     return $true
 }
 
-# ---------------------------------------------------------------- Python 探测
-function Test-Python {
-    param([string]$Exe, [string]$Pre)
+# ---------------------------------------------------------------- Python 探测（重写版）
+# 关键点：
+#  1) 调用外部程序必须用 splatting（& $Exe @pre）传参数数组；写成 & $Exe $a 会把
+#     整个数组当成一个参数，导致版本检测命令本身就是坏的（曾导致误报"没找到 Python"）。
+#  2) 版本检测只用 -V（输出 "Python 3.13.7"），不拼接 -c 代码，避开引号转义地狱。
+#  3) 候选来源要全：PATH、py 启动器的各版本选择器、注册表 InstallPath、常见安装目录。
+
+function Test-PythonExe {
+    param([string]$ExePath, [string[]]$PreArgs = @())
+    if (-not (Test-Path -LiteralPath $ExePath -ErrorAction SilentlyContinue)) { return $null }
     try {
-        $a = @()
-        if ($Pre) { $a += $Pre }
-        $a += @('-c', 'import sys;print("%d.%d" % sys.version_info[:2])')
-        $out = & $Exe $a 2>$null
-        if (-not $out) { return $null }
-        $s = ($out | Select-Object -Last 1).ToString().Trim()
-        $v = [version]$s
-        if ($v.Major -ge 3 -and $v.Minor -ge 10) {
-            if ($Pre) { return @($Exe, $Pre) }
-            return @($Exe)
+        $res = & $ExePath @PreArgs '-V' 2>&1
+        $line = $res | Select-Object -Last 1
+        if ($null -eq $line) { return $null }
+        $txt = $line.ToString()
+        if ($txt -match 'Python\s+(\d+)\.(\d+)\.?(\d+)?') {
+            $maj = [int]$Matches[1]
+            $min = [int]$Matches[2]
+            $pat = [int]$Matches[3]
+            if ($maj -ge 3 -and $min -ge 9) {
+                return [pscustomobject]@{
+                    Exe = $ExePath
+                    Pre = $PreArgs
+                    Ver = "$maj.$min.$pat"
+                }
+            }
         }
     } catch { }
     return $null
 }
 
-function Find-Python {
-    foreach ($e in @('py', 'python', 'python3')) {
-        $cmd = Get-Command $e -ErrorAction SilentlyContinue
-        if (-not $cmd) { continue }
-        foreach ($pre in @('-3', $null)) {
-            $r = Test-Python -Exe $cmd.Source -Pre $pre
-            if ($r) { return $r }
+function Find-SystemPython {
+    $cands = New-Object System.Collections.ArrayList
+
+    # 1) py 启动器：先 -3（最新版），再逐个具体版本
+    foreach ($sel in @('-3', '-3.14', '-3.13', '-3.12', '-3.11', '-3.10', '-3.9')) {
+        [void]$cands.Add(@{ Cmd = 'py'; Pre = @($sel) })
+    }
+    # 2) PATH 上的 python / python3
+    foreach ($n in @('python', 'python3')) {
+        [void]$cands.Add(@{ Cmd = $n; Pre = @() })
+    }
+    # 3) 注册表里登记的安装位置（HKLM / HKCU）
+    foreach ($rk in @('HKLM:\SOFTWARE\Python\PythonCore', 'HKCU:\SOFTWARE\Python\PythonCore')) {
+        try {
+            $subs = Get-ChildItem $rk -ErrorAction SilentlyContinue
+            foreach ($s in $subs) {
+                try {
+                    $ip = (Get-Item $s.PSPath -ErrorAction SilentlyContinue).GetValue('')
+                } catch { $ip = $null }
+                if ($ip) {
+                    [void]$cands.Add(@{ Cmd = (Join-Path $ip 'python.exe'); Pre = @() })
+                }
+            }
+        } catch { }
+    }
+    # 4) 常见安装目录
+    foreach ($pat in @("$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
+                       "C:\Python3*\python.exe",
+                       "C:\Program Files\Python3*\python.exe",
+                       "C:\Program Files (x86)\Python3*\python.exe")) {
+        try {
+            $found = Get-ChildItem -Path $pat -ErrorAction SilentlyContinue
+            foreach ($f in $found) {
+                [void]$cands.Add(@{ Cmd = $f.FullName; Pre = @() })
+            }
+        } catch { }
+    }
+
+    foreach ($c in $cands) {
+        $full = $c.Cmd
+        if (-not (Test-Path -LiteralPath $full -ErrorAction SilentlyContinue)) {
+            $g = Get-Command $c.Cmd -ErrorAction SilentlyContinue
+            if (-not $g) {
+                Add-Diag ("候选不可用: " + $c.Cmd + " " + ($c.Pre -join ' '))
+                continue
+            }
+            $full = $g.Source
         }
+        $r = Test-PythonExe -ExePath $full -PreArgs $c.Pre
+        if ($r) {
+            Add-Diag ("找到 Python: " + $r.Exe + " " + ($r.Pre -join ' ') + " -> " + $r.Ver)
+            return $r
+        }
+        Add-Diag ("候选版本不合格或无响应: " + $full + " " + ($c.Pre -join ' '))
     }
     return $null
 }
@@ -174,11 +247,14 @@ if ($Uninstall) {
     Write-Step '停止并移除 TSafeServer 服务...'
     & net.exe stop $SvcName 2>$null | Out-Null
     Start-Sleep -Seconds 2
-    $py = Find-Python
-    if ($py) {
-        $exe = $py[0]; $rest = @()
-        if ($py.Count -gt 1) { $rest = @($py[1]) }
-        & $exe @rest (Join-Path $ServerDir 'win_service.py') remove 2>$null | Out-Null
+    if (Test-Path -LiteralPath $VenvPy) {
+        $pExe = $VenvPy; $pPre = @()
+    } else {
+        $found = Find-SystemPython
+        if ($found) { $pExe = $found.Exe; $pPre = @($found.Pre) } else { $pExe = $null; $pPre = @() }
+    }
+    if ($pExe) {
+        & $pExe @pPre (Join-Path $ServerDir 'win_service.py') remove 2>$null | Out-Null
     }
     & sc.exe delete $SvcName 2>$null | Out-Null
 
@@ -205,46 +281,69 @@ Write-Host '============================================' -ForegroundColor Cyan
 # 0. 完整性校验
 if (-not (Test-Path (Join-Path $ServerDir 'app.py'))) {
     Write-Err "没找到 server\app.py。请把整个 NAS-Safe-Full.zip 解压后再运行安装。"
+    Add-Diag '安装包不完整：缺少 server\app.py'
     Show-Popup -Title 'TS Safe 安装失败' -Text "没找到 server\app.py。`n请不要直接运行压缩包里的文件：先把整个 zip 解压到一个不含中文、不含空格的文件夹（例如 D:\TSafe），再从该文件夹运行 install_windows_service.bat。" -IsError
     Pause-End
     exit 1
 }
 if (-not (Test-Path (Join-Path $ServerDir 'win_service.py'))) {
     Write-Err "没找到 server\win_service.py，安装包不完整，请重新下载。"
+    Add-Diag '安装包不完整：缺少 server\win_service.py'
     Show-Popup -Title 'TS Safe 安装失败' -Text '安装包不完整（缺少 server\win_service.py），请重新下载 NAS-Safe-Full.zip 并完整解压。' -IsError
     Pause-End
     exit 1
 }
 
-# 1. 定位 Python
-Write-Step '检查 Python 环境...'
-$pycmd = Find-Python
-if (-not $pycmd) {
-    Write-Err '没找到 Python 3.10 或更高版本。'
-    Show-Popup -Title 'TS Safe 缺少 Python' -Text "TS Safe 需要 Python 3.10 或更高版本。`n即将打开 Python 官方下载页，安装时请勾选「Add Python to PATH」，装完再重新运行本安装程序。" -IsError
-    Start-Process 'https://www.python.org/downloads/'
-    Pause-End
-    exit 1
-}
-$PyExe  = $pycmd[0]
-$PyPre  = @()
-if ($pycmd.Count -gt 1) { $PyPre = @($pycmd[1]) }
-Write-Ok "使用 Python：$PyExe $($PyPre -join ' ')"
+# 1. 准备 Python 运行环境
+#    优先复用本目录里已存在的 venv（重装/续装场景根本不需要再找系统 Python）
+Write-Step '检查 Python 运行环境...'
+$PyExe = $null
+$PyPre = @()
 
-# 2. 建虚拟环境
-if (-not (Test-Path $VenvPy)) {
-    Write-Step '创建独立运行环境（venv），约 10-30 秒...'
-    & $PyExe @PyPre -m venv $VenvDir
-    if (-not (Test-Path $VenvPy)) {
-        Write-Err 'venv 创建失败。'
-        Show-Popup -Title 'TS Safe 安装失败' -Text '创建 Python 虚拟环境失败，请确认 Python 安装完整（勾选了 pip / venv），然后重新运行安装。' -IsError
+if (Test-Path -LiteralPath $VenvPy) {
+    $ok = Test-PythonExe -ExePath $VenvPy -PreArgs @()
+    if ($ok) {
+        $PyExe = $VenvPy
+        $PyPre = @()
+        Write-Ok "复用本目录已存在的运行环境（Python $($ok.Ver)）"
+        Add-Diag "复用已有 venv: $($ok.Ver)"
+    } else {
+        Write-Warn '本目录的运行环境已损坏，将重建...'
+        Add-Diag '已有 venv 损坏，准备重建'
+        try { Remove-Item -Recurse -Force $VenvDir -ErrorAction Stop } catch { }
+    }
+}
+
+if (-not $PyExe) {
+    $found = Find-SystemPython
+    if (-not $found) {
+        Write-Err '没找到可用的 Python 3.9 或更高版本。'
+        Add-Diag '未找到可用的 Python 3.9+（详见本目录 install_diag.txt）'
+        Show-Popup -Title 'TS Safe 缺少 Python' -Text "TS Safe 需要 Python 3.9 或更高版本。`n本机没找到可用的 Python。`n`n将要打开 Python 官方下载页：安装时务必勾选「Add python.exe to PATH」，`n装完后再重新运行本安装程序。`n`n（排查明细见安装目录下的 install_diag.txt）" -IsError
+        Start-Process 'https://www.python.org/downloads/'
         Pause-End
         exit 1
     }
-}
-Write-Ok '运行环境就绪。'
+    $PyExe = $found.Exe
+    $PyPre = @($found.Pre)
+    Write-Ok "使用系统 Python $($found.Ver)：$PyExe $($PyPre -join ' ')"
 
-# 3. 装依赖
+    Write-Step '创建独立运行环境（venv），约 10-30 秒...'
+    & $PyExe @PyPre -m venv $VenvDir
+    $created = Test-PythonExe -ExePath $VenvPy -PreArgs @()
+    if (-not $created) {
+        Write-Err '虚拟环境创建失败。'
+        Add-Diag "venv 创建失败：$PyExe $($PyPre -join ' ')"
+        Show-Popup -Title 'TS Safe 安装失败' -Text '创建 Python 虚拟环境失败。请确认 Python 安装完整（含 pip / venv），然后重新运行安装。' -IsError
+        Pause-End
+        exit 1
+    }
+    $PyExe = $VenvPy
+    $PyPre = @()
+    Write-Ok '运行环境就绪。'
+}
+
+# 2. 装依赖
 Write-Step '安装运行依赖（含 pywin32）...'
 Write-Warn 'pywin32 需要向 Windows 注册服务组件，这一步可能需要 1-3 分钟，窗口不动是正常现象，请勿关闭！'
 $req = Join-Path $Root 'requirements.txt'
@@ -255,15 +354,17 @@ if ($LASTEXITCODE -ne 0) {
     Write-Warn '第一次安装未完全成功，重试一次...'
     & $VenvPip @pipArgs
 }
-if (-not (Test-Path $VenvPy)) {
-    Write-Err '依赖安装失败。'
+$depOk = Test-PythonExe -ExePath $VenvPy -PreArgs @()
+if (-not $depOk) {
+    Write-Err '依赖安装失败，运行环境不可用。'
+    Add-Diag '依赖安装失败，venv python 不可用'
     Show-Popup -Title 'TS Safe 安装失败' -Text '依赖安装失败，常见原因是网络不通。请连网后重新运行安装。' -IsError
     Pause-End
     exit 1
 }
 Write-Ok '依赖安装完成。'
 
-# 4. 注册 pywin32 服务宿主
+# 3. 注册 pywin32 服务宿主
 Write-Step '注册 pywin32 服务宿主，约 30 秒-1 分钟...'
 Write-Warn '这一步也会较慢，请勿关闭窗口。'
 $post = Join-Path $VenvDir 'Scripts\pywin32_postinstall.py'
@@ -273,7 +374,7 @@ if (Test-Path $post) {
 }
 Write-Ok 'pywin32 注册完成。'
 
-# 5. 清理可能残留的旧服务
+# 4. 清理可能残留的旧服务
 Write-Step '清理可能残留的旧 TSafeServer 服务...'
 & net.exe stop $SvcName 2>$null | Out-Null
 Start-Sleep -Seconds 2
@@ -281,7 +382,7 @@ Start-Sleep -Seconds 2
 & sc.exe delete $SvcName 2>$null | Out-Null
 Start-Sleep -Seconds 1
 
-# 6. 端口占用安全处理
+# 5. 端口占用安全处理
 Write-Step "检查并安全释放 $Port 端口..."
 if (-not (Ensure-PortFree -TargetPort $Port)) {
     Pause-End
@@ -289,7 +390,7 @@ if (-not (Ensure-PortFree -TargetPort $Port)) {
 }
 Write-Ok "$Port 端口可用。"
 
-# 7. 准备状态目录 + 环境变量
+# 6. 准备状态目录 + 环境变量
 Write-Step '准备数据目录与环境变量...'
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 New-Item -ItemType Directory -Force -Path $LogDir  | Out-Null
@@ -299,7 +400,7 @@ New-Item -ItemType Directory -Force -Path $LogDir  | Out-Null
 [Environment]::SetEnvironmentVariable('NASSAFE_BIND_HOST',  '0.0.0.0', 'Machine')
 Write-Ok "数据目录：$StateDir"
 
-# 8. 注册服务
+# 7. 注册服务
 Write-Step '注册 TSafeServer 服务（开机自启）...'
 $env:NASSAFE_STATE_DIR = $StateDir
 $env:NASSAFE_WEB_DIR   = $WebDir
@@ -308,7 +409,8 @@ $env:NASSAFE_BIND_HOST = '0.0.0.0'
 & $VenvPy (Join-Path $ServerDir 'win_service.py') install
 if ($LASTEXITCODE -ne 0) {
     Write-Err '服务注册失败。'
-    Show-Popup -Title 'TS Safe 服务注册失败' -Text "服务注册失败，请查看上面窗口的红色报错。`n日志目录：$LogDir" -IsError
+    Add-Diag 'win_service.py install 返回非 0'
+    Show-Popup -Title 'TS Safe 服务注册失败' -Text "服务注册失败，请查看上面窗口的红色报错。`n日志目录：$LogDir`n排查明细：$DiagFile" -IsError
     Pause-End
     exit 1
 }
@@ -316,17 +418,17 @@ if ($LASTEXITCODE -ne 0) {
 & sc.exe failure $SvcName reset= 86400 actions= restart/5000/restart/5000/restart/5000 2>$null | Out-Null
 Write-Ok '服务已注册（开机自启）。'
 
-# 9. 防火墙
+# 8. 防火墙
 Write-Step "放行防火墙 TCP $Port ..."
 & netsh.exe advfirewall firewall delete rule name="$FwRule" 2>$null | Out-Null
 & netsh.exe advfirewall firewall add rule name="$FwRule" dir=in action=allow protocol=TCP localport=$Port 2>$null | Out-Null
 Write-Ok '防火墙已放行。'
 
-# 10. 启动服务
+# 9. 启动服务
 Write-Step '启动 TSafeServer 服务...'
 & net.exe start $SvcName 2>$null | Out-Null
 
-# 11. 健康检查
+# 10. 健康检查
 Write-Step '等待控制台就绪（最多 40 秒）...'
 $ok = $false
 for ($i = 0; $i -lt 20; $i++) {
@@ -344,13 +446,14 @@ if (-not $ok) {
     $extra = ''
     if (Test-Path $errLog) { $extra = (Get-Content $errLog -Tail 15 -ErrorAction SilentlyContinue) -join "`n" }
     Write-Err '服务已安装，但控制台暂时没响应。'
+    Add-Diag "控制台未就绪。$extra"
     Show-Popup -Title 'TS Safe 服务未就绪' -Text "服务已注册，但控制台暂时没响应。`n请尝试：重启电脑后访问 http://localhost:$Port`n`n日志目录：$LogDir`n$extra`n$tail" -IsError
     Pause-End
     exit 1
 }
 Write-Ok '控制台已就绪。'
 
-# 12. 写《首次使用指南》
+# 11. 写《首次使用指南》
 Write-Step '生成《首次使用指南.txt》...'
 $guidePath = Join-Path $Root '首次使用指南.txt'
 $guide = @"
@@ -388,7 +491,7 @@ $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 [System.IO.File]::WriteAllText($guidePath, $guide, $utf8Bom)
 Write-Ok "已生成：$guidePath"
 
-# 13. 打开控制台 + 弹窗
+# 12. 打开控制台 + 弹窗
 Write-Step '打开控制台页面...'
 try { Start-Process "http://localhost:$Port" } catch { }
 
@@ -397,6 +500,7 @@ Write-Host '============================================' -ForegroundColor Green
 Write-Host ' 安装完成！' -ForegroundColor Green
 Write-Host '============================================' -ForegroundColor Green
 
+Add-Diag '安装完成'
 Show-Popup -Title 'TS Safe 安装完成' -Text @"
 TS Safe 已安装为 Windows 服务（开机自启、后台运行）。
 
