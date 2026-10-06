@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.7.18"
+AGENT_VER = "1.0.7.19"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -84,14 +84,55 @@ def http_json(url, timeout=15, method="GET", body=None):
 # --------------------------------------------------------------------------
 # Windows 通知：优先走托盘气球（不调用 PowerShell，避免安全软件拦截）
 # --------------------------------------------------------------------------
+def _console_url(path: str = "") -> str:
+    """取总控台地址（配置里保存的 NAS / 总控台），没有就返回空串。"""
+    try:
+        cfg = load_config() or {}
+    except Exception:  # noqa: BLE001
+        cfg = {}
+    base = str(cfg.get("nas") or cfg.get("base") or "").strip().rstrip("/")
+    return (base + path) if base else ""
+
+
 def _open_inbox_window():
-    """点击气泡（或托盘）时打开未读提醒界面；托盘不存在时也能直接打开。"""
+    """点击气泡（或托盘）时打开未读提醒。
+
+    历史坑（务必不要再改回去）：这里原来先走 tkinter 本地弹窗，但 tkinter 在
+    Windows 上**只能在该进程创建解释器的主线程**使用，而本函数运行在气泡的 Win32
+    消息线程里 → 必然抛 RuntimeError；外面又是 except: pass，用户看到的现象是
+    「点了气泡毫无反应」，日志里只会多出一条空的「未读提醒：」气泡
+    （tkinter 失败后的兜底又弹了一个 toast）。代码注释里早就写明 tkinter 建窗不可
+    靠，但当时只把「气泡」换成了 Win32 自绘，**未读窗口还留在 tkinter 上**。
+
+    现在：优先用浏览器打开控制台的告警页（任何环境都有效）→ tkinter 次选 →
+    都不行才用消息框兜底；每一步都写 agent.log，便于事后定位。
+    """
     def _ref():
         if _TRAY is not None:
             _TRAY.update(len(load_unread()))
+
+    url = _console_url("/#/alerts")
+    if url:
+        try:
+            import webbrowser
+            webbrowser.open(url)
+            agent_log("open_inbox: 已用浏览器打开 %s" % url)
+            return
+        except Exception as exc:  # noqa: BLE001
+            agent_log("open_inbox: 浏览器打开失败：%s" % exc)
+
     try:
         show_inbox_window(_ref)
-    except Exception:
+        agent_log("open_inbox: 已请求本地未读窗口")
+        return
+    except Exception as exc:  # noqa: BLE001
+        agent_log("open_inbox: 本地窗口打开失败：%s（改用消息框兜底）" % exc)
+
+    items = load_unread()
+    text = "\n".join("· " + str(i.get("text", "")) for i in items[:10]) or "目前没有未读提醒"
+    try:
+        ToastManager._fallback("未读提醒", text)
+    except Exception:  # noqa: BLE001
         pass
 
 

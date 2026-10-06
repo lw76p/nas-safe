@@ -76,6 +76,7 @@ import daily_report  # noqa: E402  每日健康日报（定时聚合快照/告�
 import smartd  # noqa: E402  硬盘 SMART 健康采集（跨品牌，smartctl 多路径探测 + QTS 包兜底）
 import devices  # noqa: E402
 import centerlink  # noqa: E402  完整版自动向来源总控台报到 + 心跳（跨公网/内网可达性）
+import agentdiag  # noqa: E402  桌面小助手本机诊断 / 直接拉起（绕开浏览器协议）
 import alertlog  # noqa: E402  告警历史记录（本机告警落盘，供「告警信息」页展示历史）
 import netscan  # noqa: E402  联网设备自动扫描  跨品牌多设备总控制台（注册 + 分层聚合 + 健康汇总）
 import migrate  # noqa: E402  换机迁移（配置包导出 / 导入 / 路径映射 / 能力降级）
@@ -884,7 +885,8 @@ class Handler(BaseHTTPRequestHandler):
         # 认证类接口（setup/check/logout/onelink/health）保持原生可用，供首次设账号与免输入登录。
         # /api/agent/install.sh|ps1 走一次性安装令牌，不依赖会话（在各自处理器内校验令牌）。
         # 少数会暴露文件系统浏览 / 配置导出的 GET 仍要求管理员，避免匿名遍历磁盘或导出配置。
-        PROTECTED_GET = ("/api/list_dir", "/api/browse", "/api/migrate/export")
+        PROTECTED_GET = ("/api/list_dir", "/api/browse", "/api/migrate/export",
+                         "/api/agent/diag")
 
         try:
             if route == "/api/auth/setup":
@@ -1012,6 +1014,10 @@ class Handler(BaseHTTPRequestHandler):
                 # 统一异常列表（硬件/容量/趋势/防勒索告警），供网页端与桌面小助手共用同一套规则
                 self._send_json({"ok": True, "anomalies": anomalies.collect_anomalies(),
                                  "agent": anomalies.agent_status()})
+            elif route == "/api/agent/diag":
+                # 桌面小助手本机诊断：协议是否注册、程序目录、控制端口、助手日志尾部。
+                # 网页此前只能看到「ping 不通」，拿不到任何原因；这里给出可定位的信息。
+                self._send_json(agentdiag.diagnose())
             elif route == "/api/agent/status":
                 # 桌面小助手在线状态（离线时由服务端看门狗接管微信/邮件提醒）
                 self._send_json({"ok": True, "status": anomalies.agent_status()})
@@ -1955,6 +1961,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "config": cfg})
 
             # ---------- 跨品牌多设备总控制台 ----------
+            elif route == "/api/agent/launch":
+                # 由**本机**服务端直接拉起桌面小助手：网页只能靠 nassafe-agent:// 协议，
+                # 协议没注册或指向已删除文件时浏览器会静默失败，用户完全没反馈。
+                # 这里绕过浏览器，直接起进程，一次解决「点了没反应」。
+                self._send_json(agentdiag.launch())
             elif route == "/api/devices/full-ticket":
                 # 点「装完整版」时签发一次性报到票据，随安装包下发；
                 # 新机器装完启动后自动回来登记，总控台因此能显示它在线。
