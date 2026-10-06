@@ -37,10 +37,37 @@ def config_path() -> str:
     return os.path.join(storage.state_dir(), "notify.json")
 
 
+# 某些写入路径会把"空值"存成字符串（"null"/"None"/"undefined"），
+# 回显到前端输入框就会变成字面量 null，看起来像已经填了内容。这里统一清掉。
+_NULLISH = {"null", "none", "undefined", "nan", ""}
+
+
+def _clean_channel(ch) -> dict:
+    """剔除被字符串化的空值，保留真实配置。"""
+    if not isinstance(ch, dict):
+        return ch
+    out = {}
+    for k, v in ch.items():
+        if isinstance(v, str) and v.strip().lower() in _NULLISH:
+            continue
+        out[k] = v
+    return out
+
+
+def _clean_config(cfg) -> dict:
+    if not isinstance(cfg, dict):
+        return {"enabled": False, "channels": []}
+    chans = cfg.get("channels")
+    if isinstance(chans, list):
+        cfg = dict(cfg)
+        cfg["channels"] = [_clean_channel(c) for c in chans]
+    return cfg
+
+
 def load_config() -> dict:
     try:
         with open(config_path(), "r", encoding="utf-8") as f:
-            return json.load(f)
+            return _clean_config(json.load(f))
     except (FileNotFoundError, json.JSONDecodeError):
         return {"enabled": False, "channels": []}
 
@@ -48,7 +75,7 @@ def load_config() -> dict:
 def save_config(cfg: dict) -> None:
     os.makedirs(storage.state_dir(), exist_ok=True)
     with open(config_path(), "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+        json.dump(_clean_config(cfg), f, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------

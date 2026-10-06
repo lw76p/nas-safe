@@ -331,7 +331,6 @@
                 <option value="bark">苹果手机推送（App 名叫 Bark）</option>
                 <option value="ntfy">手机推送（安卓、苹果都能用）</option>
                 <option value="telegram">Telegram 推送（国外软件，要能上外网）</option>
-                <option value="telegram">Telegram 推送（国外软件，要能上外网）</option>
                 <option value="email">自备邮箱发信（SMTP）</option>
               </optgroup>
             </select>
@@ -339,6 +338,9 @@
           <p class="muted" style="margin:6px 0 0">微信没开通前会自动走邮件。多数用户只填邮箱就够了。</p>
           <p class="muted" id="notifyEditionHint" style="margin:4px 0 0; line-height:1.8"></p>
           <div id="relayHint" class="notice" style="display:none"></div>
+          <div class="set-actions" id="relaySwitchBox" style="display:none; margin:2px 0 8px">
+            <button class="btn ghost" id="relayToSmtpBtn">改用「自备邮箱发信」（免费，最简单）</button>
+          </div>
           <div id="notifyFields"></div>
           <div class="set-actions">
             <button class="btn ghost" id="notifyTestBtn">发送测试</button>
@@ -684,6 +686,6 @@
 <div class="toast-root" id="toastRoot"></div>
 
 <script src="/qrcode.min.js"></script>
-<script src="/app-20261006b.js"></script>
+<script src="/app-20261006c.js"></script>
 </body>
 </html>
