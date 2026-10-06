@@ -75,6 +75,7 @@ import junk  # noqa: E402  磁盘垃圾清理（回收站/缩略图/Docker缓存
 import daily_report  # noqa: E402  每日健康日报（定时聚合快照/告警/空间/硬盘，复用通知链路推送）
 import smartd  # noqa: E402  硬盘 SMART 健康采集（跨品牌，smartctl 多路径探测 + QTS 包兜底）
 import devices  # noqa: E402
+import centerlink  # noqa: E402  完整版自动向来源总控台报到 + 心跳（跨公网/内网可达性）
 import alertlog  # noqa: E402  告警历史记录（本机告警落盘，供「告警信息」页展示历史）
 import netscan  # noqa: E402  联网设备自动扫描  跨品牌多设备总控制台（注册 + 分层聚合 + 健康汇总）
 import migrate  # noqa: E402  换机迁移（配置包导出 / 导入 / 路径映射 / 能力降级）
@@ -220,7 +221,7 @@ _FULL_BUNDLE_README = (
 )
 
 
-def _gen_full_bundle() -> bytes:
+def _gen_full_bundle(ticket: str = "", source: str = "") -> bytes:
     """生成「完整版」跨平台安装包：server/ + web/ + 各平台安装脚本 + 依赖清单 + 说明。
 
     让任意一台被监控/只装代理的联机设备原生跑完整 TS Safe 引擎（开机自启服务），
@@ -228,6 +229,10 @@ def _gen_full_bundle() -> bytes:
 
     安装脚本与 requirements.txt 优先从仓库根目录读取（随镜像/仓库分发），缺失时
     回退到内置最小依赖清单，保证包永远可用。
+
+    ticket/source 非空时，会把「来源总控台地址 + 一次性报到票据」写进包内的
+    install_source.json —— 新机器启动后据此自动向来源总控台报到并持续心跳，
+    这样即使总控台在公网、机器在内网，总控台也能显示它在线。
     """
     import io as _io
     import zipfile as _zip
@@ -277,6 +282,14 @@ def _gen_full_bundle() -> bytes:
                        b"pdfminer.six>=20231228\npython-docx>=1.1.0\nrsa>=4.9\n")
         # 说明
         z.writestr("README.txt", _FULL_BUNDLE_README.encode("utf-8-sig"))
+        # 来源总控台 + 一次性报到票据（让新机器自动回连，跨公网/内网也能显示在线）
+        if ticket and source:
+            _c = str(source).strip().rstrip("/")
+            if "://" not in _c:
+                _c = "http://" + _c
+            z.writestr("install_source.json", json.dumps(
+                {"center": _c, "ticket": ticket, "issued_at": int(time.time())},
+                ensure_ascii=False, indent=2).encode("utf-8"))
     return buf.getvalue()
 
 
@@ -508,11 +521,16 @@ def build_system_info() -> dict:
                 profile.warnings.append(note)
     except Exception:  # noqa: BLE001
         pass
+    try:
+        _cl_status = centerlink.status()
+    except Exception:  # noqa: BLE001
+        _cl_status = {"linked": False}
     return {
         "ok": True,
         "system": profile.to_dict(),
         "server_time": iso_now(),
         "version": "1.0.0",
+        "center_link": _cl_status,
     }
 
 
@@ -1142,7 +1160,10 @@ class Handler(BaseHTTPRequestHandler):
             elif route == "/api/downloads/full-bundle":
                 # 完整版跨平台安装包：server/ + web/ + 各平台安装脚本 + 依赖 + 说明，
                 # 让任意一台被监控/只装代理的联机设备原生跑完整引擎（开机自启服务）。
-                data = _gen_full_bundle()
+                _tk = (query.get("ticket") or [""])[0].strip()
+                # 优先用票据里已规范化的来源地址（含协议）；票据无效才退回 Host 头
+                _src = devices.full_ticket_source(_tk) or (self.headers.get("Host") or "").strip()
+                data = _gen_full_bundle(ticket=_tk, source=_src)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/zip")
                 self.send_header(
@@ -1348,6 +1369,27 @@ class Handler(BaseHTTPRequestHandler):
                     }))
                 else:
                     self._send_json(devices.agent_heartbeat(payload.get("token")))
+                return
+
+            if route == "/api/auto-claim":
+                # 完整版安装后自动向来源总控台报到（免会话，靠安装包内的一次性票据鉴权）。
+                # 这是旁路能力：失败只影响「总控台是否显示在线」，不影响本机自身服务。
+                payload = self._read_json()
+                try:
+                    _aok, _amsg = editions.check_devices(len(devices.load_devices()) + 1)
+                except Exception:  # noqa: BLE001
+                    _aok, _amsg = True, ""
+                _cl = dict(payload) if isinstance(payload, dict) else {}
+                _has = any((d.get("agent") or {}).get("machine_id") == str(_cl.get("machine_id") or "").strip()
+                           and str(_cl.get("machine_id") or "").strip()
+                           for d in devices.load_devices())
+                if not (_aok or _has):
+                    self._send_json({"ok": False, "error": _amsg})
+                    return
+                try:
+                    self._send_json(devices.auto_claim(payload))
+                except StorageError as exc:
+                    self._send_json({"ok": False, "error": str(exc)})
                 return
 
             if route == "/api/agent/pair":
@@ -1913,6 +1955,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "config": cfg})
 
             # ---------- 跨品牌多设备总控制台 ----------
+            elif route == "/api/devices/full-ticket":
+                # 点「装完整版」时签发一次性报到票据，随安装包下发；
+                # 新机器装完启动后自动回来登记，总控台因此能显示它在线。
+                _src = str(payload.get("source") or self.headers.get("Host") or "").strip()
+                self._send_json(devices.issue_full_ticket(
+                    _src, str(payload.get("name") or "")))
             elif route == "/api/devices/add":
                 _dok, _dmsg = editions.check_devices(len(devices.load_devices()) + 1)
                 if not _dok:
@@ -2092,6 +2140,12 @@ def main() -> None:
     try:
         # 告警历史扫描：持续把本机告警落盘，供「告警信息」页展示历史记录
         alertlog.start_scanner(int(os.environ.get("NASSAFE_ALERTLOG_INTERVAL", "120")))
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    try:
+        # 跨网可达性：若本机是从某个总控台下载的完整版，主动向它报到并持续心跳，
+        # 这样公网总控台也能把本机显示为在线（总控台无法反向连接内网机器）。
+        centerlink.start()
     except Exception:  # noqa: BLE001
         traceback.print_exc()
     try:

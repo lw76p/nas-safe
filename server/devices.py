@@ -559,6 +559,183 @@ def agent_heartbeat(token: str) -> dict:
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# 完整版「自动报到」：装完的完整版主动向来源总控台登记 + 持续心跳
+#
+# 为什么要这套：总控台可能在公网（比如 47.108.213.178），而被管设备在内网
+# （192.168.8.x）。总控台无法反向连接内网设备，所以「在线状态」不能靠总控台
+# 去拉探测；必须由设备主动登记 + 主动心跳。
+#
+# 流程：中控点「装完整版」时签发一次性票据 → 票据随安装包下发 → 新机器启动后
+# 用票据换一张长期心跳 token → 每分钟 POST /api/agent/heartbeat。
+# ---------------------------------------------------------------------------
+
+FULL_TICKET_FILE = "full_ticket.json"
+FULL_TICKET_TTL = 1800  # 30 分钟内有效
+
+
+def _full_ticket_path() -> str:
+    return os.path.join(_state_dir(), FULL_TICKET_FILE)
+
+
+def _load_full_tickets() -> dict:
+    try:
+        with open(_full_ticket_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_full_tickets(data: dict) -> None:
+    try:
+        os.makedirs(_state_dir(), exist_ok=True)
+        with open(_full_ticket_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def purge_full_tickets() -> int:
+    """清掉过期票据，避免 state 文件无限增长。返回清理条数。"""
+    data = _load_full_tickets()
+    now = time.time()
+    alive = {k: v for k, v in data.items() if float((v or {}).get("expires") or 0) > now}
+    if len(alive) != len(data):
+        _save_full_tickets(alive)
+    return len(data) - len(alive)
+
+
+def issue_full_ticket(source: str, name: str = "") -> dict:
+    """签发一次性「完整版报到票据」（仅管理员可申请），随安装包一起下发。"""
+    purge_full_tickets()
+    data = _load_full_tickets()
+    tk = secrets.token_hex(8)
+    exp = time.time() + FULL_TICKET_TTL
+    src = (source or "").strip().rstrip("/")
+    if src and "://" not in src:
+        src = "http://" + src  # 只给了 host（Host 头/location.host），补上协议
+    data[tk] = {
+        "source": src,
+        "name": (name or "").strip()[:64],
+        "created": time.time(),
+        "expires": exp,
+        "used": False,
+    }
+    _save_full_tickets(data)
+    return {"ok": True, "ticket": tk, "source": data[tk]["source"], "expires": exp}
+
+
+def full_ticket_source(ticket: str) -> str:
+    """按票据取已规范化的来源总控台地址（空串表示票据无效/不存在）。"""
+    tk = (ticket or "").strip()
+    if not tk:
+        return ""
+    rec = _load_full_tickets().get(tk)
+    if not rec or rec.get("used"):
+        return ""
+    if time.time() > float(rec.get("expires") or 0):
+        return ""
+    return str(rec.get("source") or "")
+
+
+def brand_from_os(os_name: str):
+    """按上报的系统名推断品牌标签。"""
+    o = (os_name or "").lower()
+    if "windows" in o or o.startswith("win") or "win32" in o or "nt " in o:
+        return "windows", "Windows 电脑"
+    if "darwin" in o or "mac os" in o or "macos" in o:
+        return "macos", "Mac 电脑"
+    if "nas" in o:
+        return "nas", "NAS"
+    if "linux" in o:
+        return "linux", "Linux 电脑"
+    return "generic_linux", "通用设备"
+
+
+def auto_claim(payload: dict) -> dict:
+    """装好的完整版用它自带的票据向来源总控台报到，登记为可在线的完整服务端。
+
+    幂等：同一 machine_id 重复报到只会更新，不会重复添加设备。
+    """
+    if not isinstance(payload, dict):
+        raise storage.StorageError("参数格式错误")
+    ticket = str(payload.get("ticket") or "").strip()
+    data = _load_full_tickets()
+    rec = data.get(ticket) if ticket else None
+    if not rec or rec.get("used") or time.time() > float(rec.get("expires") or 0):
+        raise storage.StorageError("报到票据无效或已过期：请在总控台重新点一次「装完整版」再下载")
+    machine = str(payload.get("machine_id") or "").strip()[:80]
+    hostname = str(payload.get("hostname") or "").strip()[:64] or "未知主机"
+    os_name = str(payload.get("os") or "").strip()[:80]
+    host = str(payload.get("host") or "").strip()[:64]
+    port = int(payload.get("port") or 8848)
+    brand, brand_label = brand_from_os(os_name)
+    now = time.time()
+
+    # 票据一次性核销
+    rec = dict(rec)
+    rec["used"] = True
+    rec["used_at"] = now
+    rec["machine_id"] = machine
+    data[ticket] = rec
+    _save_full_tickets(data)
+
+    devs = load_devices()
+    hit = None
+    for d in devs:
+        if machine and (d.get("agent") or {}).get("machine_id") == machine:
+            hit = d
+            break
+
+    agent_token = secrets.token_hex(8)
+    info = {"os": os_name, "hostname": hostname, "machine_id": machine,
+            "port": port, "version": str(payload.get("version") or "")[:32]}
+
+    if hit is None:
+        if str(rec.get("name") or "").strip():
+            hostname = str(rec["name"]).strip()[:64]
+        dev_id = f"dev-{int(now)}"
+        ag = {"status": "installed", "token": agent_token, "last_checkin": now,
+              "installed_at": now, "machine_id": machine, "info": info,
+              "via": "full_bundle"}
+        devs.append({
+            "id": dev_id,
+            "name": hostname,
+            "group": "联网设备",
+            "brand": brand,
+            "brand_label": brand_label,
+            "type": "remote",
+            "host": host,
+            "port": port,
+            "https": False,
+            "token": "",
+            "enabled": True,
+            "note": "由完整版安装包自动报到",
+            "full_server": True,
+            "agent": ag,
+        })
+    else:
+        hit["name"] = hostname or hit.get("name")
+        hit["full_server"] = True
+        hit["brand"] = hit.get("brand") or brand
+        hit["brand_label"] = hit.get("brand_label") or brand_label
+        if not hit.get("host"):
+            hit["host"] = host
+        if not hit.get("port"):
+            hit["port"] = port
+        ag = dict(hit.get("agent") or {})
+        ag.update({"status": "installed", "token": agent_token, "last_checkin": now,
+                   "machine_id": machine, "info": info, "via": "full_bundle"})
+        ag.setdefault("installed_at", now)
+        hit["agent"] = ag
+        dev_id = hit.get("id")
+
+    save_devices(devs)
+    return {"ok": True, "token": agent_token, "id": dev_id, "name": hostname,
+            "center": rec.get("source", ""), "brand": brand, "brand_label": brand_label}
+
+
 AGENT_INSTALL_TEMPLATE = """#!/bin/sh
 # TS Safe 轻量代理（v0）：只做「回连注册 + 每分钟心跳」，只读，不改系统配置
 CENTER="__CENTER__"

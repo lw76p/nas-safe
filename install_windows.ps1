@@ -31,6 +31,23 @@ $Port      = 8848
 $SvcName   = 'TSafeServer'
 $FwRule    = 'TS Safe 8848'
 
+# 来源总控台：打完整版安装包时随包下发（install_source.json）。
+# 装完这台机器会自动回到它那里登记并持续心跳，总控台因此能显示本机在线 ——
+# 即便总控台在公网、本机在内网（总控台无法反向连过来）。
+$CenterUrl = ''
+$srcFile = Join-Path $Root 'install_source.json'
+if (Test-Path $srcFile) {
+    try {
+        $CenterUrl = [string]((Get-Content $srcFile -Raw -Encoding UTF8 | ConvertFrom-Json).center)
+    } catch { $CenterUrl = '' }
+}
+$CenterLine = ''
+$CenterHint = ''
+if ($CenterUrl) {
+    $CenterLine = "原总控台：$CenterUrl`r`n"
+    $CenterHint = "这台机器会自动回到你的原总控台登记，并持续保持在线：`n$CenterUrl`n"
+}
+
 # 只允许结束这些进程名（防止误杀系统进程 —— 绝不使用无差别 taskkill）
 $SafeProcessNames = @('python', 'pythonw', 'py', 'pythonservice')
 
@@ -620,7 +637,7 @@ TS Safe 完整版 — 首次使用指南
 运行方式：$runMode
 控制台地址：http://localhost:$Port
 数据目录：$StateDir
-
+$CenterLine
 【第一步】设置管理员账号（必须做）
 ----------------------------------
 1. 打开（或等待自动打开） http://localhost:$Port
@@ -649,6 +666,10 @@ $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 Write-Ok "已生成：$guidePath"
 
 # 12. 打开控制台 + 弹窗
+if ($CenterUrl) {
+    Write-Host ('    原总控台：' + $CenterUrl) -ForegroundColor Cyan
+    Write-Host '    回到上面这个地址，就能在「联机设备」里看到这台电脑在线。' -ForegroundColor DarkGray
+}
 Write-Step '打开控制台页面...'
 try { Start-Process "http://localhost:$Port" } catch { }
 
@@ -661,7 +682,7 @@ Add-Diag '安装完成'
 Show-Popup -Title 'TS Safe 安装完成' -Text @"
 TS Safe 安装完成。
 当前运行方式：$runMode
-
+$CenterHint
 接下来请做两件事：
 1. 浏览器已打开 http://localhost:$Port —— 注册一个管理员账号
 2. 如果你是想把这台电脑交回原来的「总控台」统一管理：

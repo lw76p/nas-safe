@@ -156,10 +156,19 @@ echo "  ★ 第一步：打开控制台设管理员账号"
 echo "      本机：   http://localhost:$PORT"
 echo "      局域网： http://本机局域网IP:$PORT"
 echo ""
+CENTER=""
+SRC_FILE="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/install_source.json"
+if [ -f "$SRC_FILE" ]; then
+  CENTER=$(sed -n 's/.*"center"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SRC_FILE" 2>/dev/null | head -n 1)
+fi
 echo "  ★ 第二步（可选）：回到「总控台」接管这台设备"
 echo "      本机已是独立主机，所有功能原生可用。"
 echo "      若想在原来的总控台里也直接管理它：到总控台「＋ 添加设备 / 扫描」，"
 echo "      会把它识别为 TS Safe 服务端（不再是只能监控的端点），迁移/快照等都可用。"
+if [ -n "$CENTER" ]; then
+  echo "      你的原总控台：$CENTER"
+  echo "      这台机器会自动回去登记并保持在线，回到上面地址就能在「联机设备」里看到它。"
+fi
 echo ""
 if [ "$(uname)" = "Darwin" ]; then
   echo "  状态目录： $STATE_DIR"
