@@ -195,6 +195,7 @@ _FULL_BUNDLE_README = (
     "1. 进入解压后的文件夹。\r\n"
     "2. 右键 install_windows_service.bat →「以管理员身份运行」（必须管理员）。\r\n"
     "   （必须管理员：服务要写 C:\\ProgramData、放行防火墙 8848、注册开机自启）\r\n"
+    "   （install_windows.ps1 是真正的安装程序，必须和 bat 放在同一个文件夹里）\r\n"
     "3. 脚本自动：建虚拟环境 → 装依赖 → 注册并启动 TSafeServer 服务。\r\n"
     "4. 打开 http://localhost:8848 ；首次进入设一个管理员账号。\r\n"
     "   同局域网其他设备访问 http://这台电脑的局域网IP:8848 。\r\n"
@@ -236,7 +237,7 @@ def _gen_full_bundle() -> bytes:
     repo_root = os.path.dirname(server_dir)
 
     # 各平台安装脚本：优先仓库根，其次 server 目录
-    install_scripts = ["install_windows_service.bat", "install_service.sh"]
+    install_scripts = ["install_windows_service.bat", "install_windows.ps1", "install_service.sh"]
     buf = _io.BytesIO()
     with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as z:
         # server/ 全部 .py（排除缓存/状态/虚拟环境/版本库）
