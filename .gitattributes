@@ -1,0 +1,5 @@
+# Windows 安装脚本必须保持 CRLF：cmd.exe 对换行敏感，
+# git 的默认归一化会把 CRLF 转成 LF，导致 checkout 出来的 .bat 在 Windows 上解析异常。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
