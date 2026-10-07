@@ -1017,24 +1017,25 @@ def remove_device(dev_id: str) -> dict:
 DEVICE_FEATURES = ["dups", "junk", "migrate", "autosnap"]
 
 
-def _http_probe(host: str, port: int, https: bool = False, timeout: float = 1.5, token: str = "") -> bool:
-    """快速探测对端 TS Safe 的 /api/system 是否可达（只读 GET）。
+def _http_probe(host: str, port: int, https: bool = False, timeout: float = 2.0, token: str = "") -> bool:
+    """探测对端 TS Safe 是否在线：拉 /api/system/metrics（公开 GET，无需鉴权）。
 
-    兼容对端开启鉴权的情况：传入设备 token 时带 Bearer，与拓扑页
-    collect_remote_summary 拉 /api/system/metrics 的行为保持一致，避免
-    「拓扑在线、管控页离线」的两页不一致（老版本对端 /api/system 需鉴权）。
+    与拓扑页 collect_remote_summary 用**同一个端点 + 同一个判据**，确保两页在线
+    状态永远一致。历史 bug：曾探 /api/system，其返回体是 build_system_info() 的系统
+    画像，开头不是 {"ok":true} 且前 64 字节通常不含 'brand'，导致 _http_probe 误判
+    离线（拓扑页探的是 /api/system/metrics 反而在线），出现「拓扑在线、管控页离线」。
     """
     import urllib.request
     if not host or not port:
         return False
-    url = f"{'https' if https else 'http'}://{host}:{port}/api/system"
+    url = f"{'https' if https else 'http'}://{host}:{port}/api/system/metrics"
     req = urllib.request.Request(url, method="GET")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            body = r.read(64)
-        return b'"ok":' in body or b'"ok"' in body or b'"brand"' in body
+            body = r.read(256)
+        return b'"ok"' in body
     except Exception:
         return False
 
@@ -1057,12 +1058,16 @@ def _online_status(dev: dict) -> str:
     lc = ag.get("last_checkin") or 0
     if ag.get("status") == "installed" and (time.time() - float(lc or 0)) < 360:
         return "online"
-    # 完整服务端：没有代理心跳，直接 HTTP 探测 TS Safe 服务是否活着
-    if dev.get("full_server"):
-        host = (dev.get("host") or "").strip()
-        port = int(dev.get("port") or 0)
+    # 远程设备（完整服务端、或有 host:port 的代理设备）：代理心跳缺失时，
+    # 用一次极短 HTTP 探测 /api/system/metrics 确认对端 TS Safe 是否活着。
+    # 与拓扑页 collect_remote_summary 用「同一端点 + 同一判据」，彻底消除
+    # 「拓扑在线、管控页离线」的两页不一致（此前仅 full_server 才探测，普通
+    # agent 设备即使服务还活着也会被判离线）。
+    host = (dev.get("host") or "").strip()
+    port = int(dev.get("port") or 0)
+    if host and port:
         tok = (dev.get("token") or dev.get("agent", {}).get("token") or "").strip()
-        if host and port and _http_probe(host, port, bool(dev.get("https")), token=tok):
+        if _http_probe(host, port, bool(dev.get("https")), token=tok):
             return "online"
     if dev.get("host"):
         return "offline"
