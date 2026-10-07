@@ -19,6 +19,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
+import urllib.request
 
 import storage  # noqa: E402
 import brands as brandmod  # noqa: E402  品牌识别
@@ -325,6 +326,58 @@ def remote_snapshots(dev_id: str, volume: str = "") -> dict:
         "readonly": True,          # 联机设备快照在这里只看不动，避免跨机破坏性操作
         "warning": err,
     }
+
+
+# ---------------------------------------------------------------------------
+# 控制台 → 联机设备的通用代理转发
+# ---------------------------------------------------------------------------
+def proxy_to_device(dev_id, method, subpath, query_string="", body=None, timeout=60):
+    """控制台把请求代理转发到某台联机设备的本地接口。
+
+    设备端（完整版 TS Safe）会信任 center_link token（见 app.py 的 _current_user），
+    所以本函数带上的 Bearer 令牌即可越权执行写操作（如重复文件扫描、磁盘清理）。
+
+    返回 (status, content_type, body_bytes)，出错也尽量转成 JSON 便于前端提示。
+    """
+    devs = load_devices()
+    dev = next((d for d in devs if d.get("id") == dev_id), None)
+    if dev is None:
+        return (404, "application/json",
+                json.dumps({"ok": False, "error": "找不到这台设备"}, ensure_ascii=False).encode("utf-8"))
+    if dev.get("type") == "local" or dev.get("id") == LOCAL_ID:
+        return (400, "application/json",
+                json.dumps({"ok": False, "local": True, "error": "本机请直接调用本地接口"}, ensure_ascii=False).encode("utf-8"))
+    host = (dev.get("host") or "").strip()
+    port = int(dev.get("port") or 0)
+    if not host or not port:
+        return (400, "application/json",
+                json.dumps({"ok": False, "error": "这台设备还没登记访问地址，连不上"}, ensure_ascii=False).encode("utf-8"))
+    base = f"http{'s' if dev.get('https') else ''}://{host}:{port}"
+    token = (dev.get("token") or "").strip()
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = base + "/" + subpath.lstrip("/")
+    if query_string:
+        url = url + "?" + query_string
+    data = body
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            status = r.status
+            ctype = r.headers.get("Content-Type", "application/json")
+            body_bytes = r.read()
+    except urllib.error.HTTPError as e:
+        status = e.code
+        ctype = e.headers.get("Content-Type", "application/json")
+        body_bytes = e.read()
+    except Exception as exc:  # noqa: BLE001
+        return (502, "application/json",
+                json.dumps({"ok": False, "error": f"连不上这台设备（{type(exc).__name__}），可能已关机或地址变了"},
+                           ensure_ascii=False).encode("utf-8"))
+    return (status, ctype, body_bytes)
 
 
 # ---------------------------------------------------------------------------
@@ -709,7 +762,7 @@ def auto_claim(payload: dict) -> dict:
             "host": host,
             "port": port,
             "https": False,
-            "token": "",
+            "token": agent_token,
             "enabled": True,
             "note": "由完整版安装包自动报到",
             "full_server": True,
@@ -724,6 +777,8 @@ def auto_claim(payload: dict) -> dict:
             hit["host"] = host
         if not hit.get("port"):
             hit["port"] = port
+        # 受信令牌：与设备端 center_link token 保持一致，供控制台代理转发写操作
+        hit["token"] = agent_token
         ag = dict(hit.get("agent") or {})
         ag.update({"status": "installed", "token": agent_token, "last_checkin": now,
                    "machine_id": machine, "info": info, "via": "full_bundle"})

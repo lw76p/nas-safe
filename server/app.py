@@ -838,6 +838,19 @@ class Handler(BaseHTTPRequestHandler):
                     return hit
             except Exception:  # noqa: BLE001
                 pass
+        # 受信控制台令牌：本机若已向某总控台报到（center_link.json 存有 token），
+        # 则该总控台经代理转发的请求（Bearer 同一 token）视为管理员，用于远程
+        # 重复文件清理 / 磁盘清理等写操作下达到本机。仅比对本地 center_link token，
+        # 非受信令牌一律拒绝，无越权风险；本机自身（未报到）center_link 为空则不受影响。
+        if hdr.startswith("Bearer "):
+            tok = hdr[7:].strip()
+            if tok:
+                try:
+                    link = centerlink.read_link()
+                    if link.get("token") and link["token"] == tok:
+                        return {"username": "console", "role": "admin"}
+                except Exception:  # noqa: BLE001
+                    pass
         return None
 
     def _require_auth(self) -> bool:
@@ -852,6 +865,31 @@ class Handler(BaseHTTPRequestHandler):
             return True
         self._send_json({"ok": False, "error": "需要管理员权限，请先登录"}, 403)
         return False
+
+    def _handle_device_proxy(self, route: str, method: str, body=None) -> None:
+        """控制台 → 联机设备的代理转发：/api/devices/<id>/proxy/<subpath>。
+
+        设备端（完整版 TS Safe）会信任 center_link token（见 _current_user），
+        所以 devices.proxy_to_device 带上的 Bearer 即可越权下发写操作。
+        本机不做二次鉴权（避免被自身 _require_admin 拦死代理请求）。
+        """
+        parts = route.split("/")
+        # 期望：['', 'api', 'devices', '<id>', 'proxy', 'duplicates', 'scan']
+        if len(parts) < 6 or parts[2] != "devices" or parts[4] != "proxy":
+            self._send_json({"ok": False, "error": "代理路径格式错误"}, 400)
+            return
+        dev_id = parts[3]
+        subpath = "/".join(parts[5:])
+        parsed = urlparse(self.path)
+        status, ctype, body_bytes = devices.proxy_to_device(
+            dev_id, method, subpath, parsed.query, body)
+        self.send_response(status)
+        self.send_header("Content-Type", ctype or "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body_bytes)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if body_bytes:
+            self.wfile.write(body_bytes)
 
     def _set_session_cookie(self, sid: str, max_age: int) -> None:
         self.send_header("Set-Cookie", auth.cookie_header(sid, max_age))
@@ -1137,6 +1175,10 @@ class Handler(BaseHTTPRequestHandler):
                 _sys_info = build_system_info()
                 _sys_info["edition"] = editions.summary()
                 self._send_json(_sys_info)
+            elif route.startswith("/api/devices/") and "/proxy/" in route:
+                # 控制台 → 联机设备代理转发（只读拉取也走这里，如 metrics/list_dir/report）
+                self._handle_device_proxy(route, "GET")
+                return
             elif route == "/api/devices":
                 # 跨品牌多设备总控制台：分层聚合所有设备健康快照
                 force = bool(query.get("force"))
@@ -1453,6 +1495,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": "机器码不符"}, 400)
                     return
                 self._send_json({"ok": True, "payload": pl})
+                return
+
+            # 控制台 → 联机设备代理转发（免本机 admin，由设备端 center_link token 鉴权；
+            # 必须在下方全局 _require_admin 之前处理，否则代理请求会被自身鉴权卡死）
+            if route.startswith("/api/devices/") and "/proxy/" in route:
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length > 0 else b""
+                self._handle_device_proxy(route, "POST", body=raw)
                 return
 
             # 除认证接口外，所有 POST 都需要管理员权限（功能开关/写操作）

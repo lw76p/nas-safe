@@ -530,6 +530,13 @@
         <!-- 工具：重复文件清理（在设置页右侧显示） -->
         <div class="settings-pane" data-pane="dups">
           <h3 class="sub-h">重复文件清理</h3>
+          <div class="monitor-target-row" style="display:flex;align-items:center;gap:8px;margin:0 0 10px;flex-wrap:wrap">
+            <label class="tt-label" style="font-weight:600">目标设备</label>
+            <select id="dupDevice" class="device-select" style="padding:5px 8px;border-radius:6px;border:1px solid #cbd5e1;min-width:220px">
+              <option value="local">本机（运行控制台的这台机器）</option>
+            </select>
+            <span id="dupTargetHint" class="muted"></span>
+          </div>
           <p class="sub">按内容逐字节比对，只有完全一样的文件才算重复 · 清理走隔离区，随时可恢复</p>
           <div class="monitor-controls">
             <input id="dupRoot" class="text-input" placeholder="要扫描的目录（如 /share/影视）">
@@ -547,6 +554,13 @@
         <!-- 工具：磁盘垃圾清理 -->
         <div class="settings-pane" data-pane="junk">
           <h3 class="sub-h">磁盘垃圾清理</h3>
+          <div class="monitor-target-row" style="display:flex;align-items:center;gap:8px;margin:0 0 10px;flex-wrap:wrap">
+            <label class="tt-label" style="font-weight:600">目标设备</label>
+            <select id="junkDevice" class="device-select" style="padding:5px 8px;border-radius:6px;border:1px solid #cbd5e1;min-width:220px">
+              <option value="local">本机（运行控制台的这台机器）</option>
+            </select>
+            <span id="junkTargetHint" class="muted"></span>
+          </div>
           <p class="sub">回收站 · 缩略图缓存 · Docker 悬空镜像 · 30 天前旧日志 —— 只读扫描出报告，确认后再清</p>
           <div class="monitor-controls">
             <button class="btn primary" id="junkScanBtn">开始扫描</button>
@@ -686,6 +700,6 @@
 <div class="toast-root" id="toastRoot"></div>
 
 <script src="/qrcode.min.js"></script>
-<script src="/app-20261007b.js"></script>
+<script src="/app-20261007c.js"></script>
 </body>
 </html>
