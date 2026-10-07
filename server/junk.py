@@ -16,6 +16,7 @@
 import posixpath
 import re
 import shlex
+import sys
 import threading
 from datetime import datetime
 
@@ -193,10 +194,26 @@ def _scan_worker() -> None:
                 pass
 
 
+def _is_windows() -> bool:
+    return sys.platform == "win32"
+
+
+def _windows_unsupported() -> None:
+    with _lock:
+        _scan_state.update(
+            status="error",
+            error="磁盘垃圾清理当前仅支持 QNAP/QTS 等 Linux NAS；Windows 电脑暂不支持此功能",
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
+
+
 def start_scan() -> dict:
     with _lock:
         if _scan_state.get("status") == "scanning":
             return {"ok": False, "error": "已有扫描在进行中"}
+    if _is_windows():
+        _windows_unsupported()
+        return {"ok": True, "started": True}
     threading.Thread(target=_scan_worker, daemon=True).start()
     return {"ok": True, "started": True}
 
@@ -242,12 +259,16 @@ def start_clean(category: str | None = None, confirm: bool = False,
                 paths: list | None = None, categories: list | None = None) -> dict:
     """启动后台清理。支持单类别（category）或多类别（categories，一键全清）。
 
+    Windows 平台暂不支持磁盘垃圾清理，直接抛 JunkError 给前端明确提示。
+
     校验全部在进线程前完成（fail fast），线程只负责执行。
     多类别时按传入顺序逐类清理，进度 done/total 是所有类别的合计。
     """
     with _lock:
         if _clean_state.get("status") == "running":
             return {"ok": False, "error": "已有清理任务在进行中，请等它完成"}
+    if _is_windows():
+        raise JunkError("磁盘垃圾清理当前仅支持 QNAP/QTS 等 Linux NAS；Windows 电脑暂不支持此功能")
     if confirm is not True:
         raise JunkError("清理操作需要 confirm=true 确认参数")
     report = load_report()

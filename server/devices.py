@@ -960,12 +960,31 @@ def remove_device(dev_id: str) -> dict:
 DEVICE_FEATURES = ["dups", "junk", "migrate", "autosnap"]
 
 
+def _http_probe(host: str, port: int, https: bool = False, timeout: float = 1.5) -> bool:
+    """快速探测对端 TS Safe 的 /api/system 是否可达（只读 GET）。"""
+    import urllib.request
+    if not host or not port:
+        return False
+    url = f"{'https' if https else 'http'}://{host}:{port}/api/system"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read(64)
+        return b'"ok":' in body or b'"ok"' in body or b'"brand"' in body
+    except Exception:
+        return False
+
+
 def _online_status(dev: dict) -> str:
     """基于最近心跳/采集估计设备在线状态（不实时探测，避免拖慢接口）。
 
     注意：在线只能依据「代理真实心跳 last_checkin」。不能回退到 installed_at
     （标记安装的时间）或 netscan 的 last_seen（ICMP 存活），否则「标记安装但代理
     从未连上 / 仅 ICMP 通但 TS Safe 没跑」也会被误判为在线。
+
+    补充：对端若是完整 TS Safe 服务端（full_server），它没有轻量代理心跳，此时
+    用一次极短的 HTTP 探测 /api/system 来确认是否在线，避免「NAS 明明在线、管控页
+    却显示离线」。
     """
     ag = dev.get("agent") or {}
     if dev.get("type") == "local":
@@ -974,6 +993,12 @@ def _online_status(dev: dict) -> str:
     lc = ag.get("last_checkin") or 0
     if ag.get("status") == "installed" and (time.time() - float(lc or 0)) < 360:
         return "online"
+    # 完整服务端：没有代理心跳，直接 HTTP 探测 TS Safe 服务是否活着
+    if dev.get("full_server"):
+        host = (dev.get("host") or "").strip()
+        port = int(dev.get("port") or 0)
+        if host and port and _http_probe(host, port, bool(dev.get("https"))):
+            return "online"
     if dev.get("host"):
         return "offline"
     return "unknown"

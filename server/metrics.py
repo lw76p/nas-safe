@@ -19,6 +19,7 @@ TS Safe — 系统指标采集（仪表盘数据源，仅标准库）
 
 from __future__ import annotations
 
+import sys
 import time
 
 # 结果缓存
@@ -211,7 +212,13 @@ def _run_batch() -> str:
 def list_dirs(path: str, max_n: int = 300) -> dict:
     """列出生产目录的一级子目录（只读，供监控路径选择器用）。
 
-    路径合法性（必须在卷挂载点内、无 ..）由调用方（app.py）校验。"""
+    路径合法性（必须在卷挂载点内、无 ..）由调用方（app.py）校验。
+    Windows 平台走本地 os.listdir，Linux 继续走 ls 管道。
+    """
+    if sys.platform == "win32":
+        from winutils import list_dir
+        return list_dir(path, max_n=max_n)
+
     import shlex as _shlex
 
     script = f"ls -Ap {_shlex.quote(path)} 2>/dev/null | grep '/$' | head -{max_n}"
@@ -421,12 +428,47 @@ def _fmt_uptime(seconds: float) -> dict:
     return {"days": s // 86400, "hours": (s % 86400) // 3600, "minutes": (s % 3600) // 60}
 
 
+def _collect_windows() -> dict:
+    """Windows 平台简化指标：提供卷列表，其余字段安全降级。"""
+    from winutils import list_drives
+
+    vols = list_drives()
+    return {
+        "hostname": "Windows",
+        "uptime_s": 0,
+        "uptime": {"days": 0, "hours": 0, "minutes": 0},
+        "cpu": {"percent": None, "load1": None, "temp_c": None},
+        "mem": None,
+        "net": {"rx_bps": None, "tx_bps": None, "ifaces": []},
+        "volumes": vols,
+        "trends": [],
+        "disks": [],
+        "fan": None,
+        "capabilities": {
+            "cpu_percent": False,
+            "cpu_temp": False,
+            "mem": False,
+            "net": False,
+            "volumes": bool(vols),
+            "disks": False,
+            "disk_io": False,
+            "disk_temp": False,
+            "fan": False,
+        },
+    }
+
+
 def collect(force: bool = False) -> dict:
     """采集系统指标（带缓存）。返回可直接 JSON 化的 dict。"""
     global _last, _net_prev, _io_prev
     now = time.time()
     if not force and _last and now - _last["ts"] < _CACHE_TTL:
         return _last["data"]
+
+    if sys.platform == "win32":
+        data = _collect_windows()
+        _last = {"ts": now, "data": data}
+        return data
 
     raw = _run_batch()
     secs = _split_sections(raw)

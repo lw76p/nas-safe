@@ -22,11 +22,14 @@ TS Safe — 重复文件清理（v4 功能区）
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import posixpath
 import shlex
+import sys
 import threading
+import time
 import uuid
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -362,17 +365,171 @@ def _scan_worker(root: str, min_size: int, min_age_days: int) -> None:
                 pass
 
 
+def _hash_windows(candidates: list[dict], progress_cb) -> dict:
+    """Windows 本地 MD5 哈希（分块读取，避免大文件内存爆炸）。"""
+    hashes: dict[str, str] = {}
+    done = 0
+    for f in candidates:
+        path = f["path"]
+        h = hashlib.md5()  # noqa: S324  仅用于重复文件内容比对，非安全场景
+        try:
+            with open(path, "rb") as fh:
+                while True:
+                    chunk = fh.read(8 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+            hashes[path] = h.hexdigest()
+        except OSError:
+            pass
+        done += f["size"]
+        progress_cb(done)
+    return hashes
+
+
+def _scan_worker_windows(root: str, min_size: int, min_age_days: int) -> None:
+    """Windows 本地重复文件扫描（标准库实现）。"""
+
+    def set_state(**kw):
+        with _lock:
+            _scan_state.update(kw)
+
+    set_state(
+        status="scanning", phase="inventory", root=root,
+        started_at=datetime.now().isoformat(timespec="seconds"),
+        error="", files_seen=0, candidates=0, candidate_bytes=0,
+        hashed_bytes=0, groups=0, wasted_bytes=0,
+        finished_at=None, truncated=False,
+    )
+
+    skip_dir_names = {
+        ".nassafe-quarantine", "$RECYCLE.BIN",
+        "System Volume Information", "lost+found",
+    }
+    cutoff = (time.time() - min_age_days * 86400) if min_age_days > 0 else 0
+    files: list[dict] = []
+    truncated = False
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        # 原地修改 dirnames，跳过隐藏/系统目录
+        dirnames[:] = [
+            d for d in dirnames
+            if not d.startswith(".") and d not in skip_dir_names
+        ]
+        for fn in filenames:
+            if fn.startswith("."):
+                continue
+            path = os.path.join(dirpath, fn)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            if st.st_size < min_size:
+                continue
+            if min_age_days > 0 and st.st_mtime > cutoff:
+                continue
+            files.append({
+                "path": path,
+                "size": st.st_size,
+                "mtime": int(st.st_mtime),
+            })
+            if len(files) >= MAX_FILES:
+                files = files[:MAX_FILES]
+                truncated = True
+                break
+        if truncated:
+            break
+
+    with _lock:
+        _scan_state["files_seen"] = len(files)
+        _scan_state["truncated"] = truncated
+
+    # 按大小分组
+    by_size: dict[int, list[dict]] = defaultdict(list)
+    for f in files:
+        by_size[f["size"]].append(f)
+
+    size_groups = sorted(
+        (g for g in by_size.values() if len(g) >= 2 and g[0]["size"] >= min_size),
+        key=lambda g: g[0]["size"] * len(g), reverse=True,
+    )
+
+    candidates = [f for g in size_groups for f in g]
+    candidate_bytes = sum(f["size"] for f in candidates)
+    with _lock:
+        _scan_state["candidates"] = len(candidates)
+        _scan_state["candidate_bytes"] = candidate_bytes
+        _scan_state["phase"] = "hash"
+
+    path2hash: dict[str, str] = {}
+
+    def on_progress(done: int):
+        with _lock:
+            _scan_state["hashed_bytes"] = done
+
+    if candidates:
+        path2hash = _hash_windows(candidates, on_progress)
+
+    # 聚合成重复组
+    by_hash: dict[str, list[dict]] = defaultdict(list)
+    for g in size_groups:
+        digests: dict[str, list[dict]] = defaultdict(list)
+        for f in g:
+            d = path2hash.get(f["path"])
+            if d:
+                digests[d].append(f)
+        for d, fs in digests.items():
+            if len(fs) >= 2:
+                by_hash[d].extend(fs)
+
+    groups = []
+    wasted = 0
+    for d, fs in by_hash.items():
+        fs_sorted = sorted(fs, key=lambda x: x["path"])
+        waste = fs_sorted[0]["size"] * (len(fs_sorted) - 1)
+        wasted += waste
+        groups.append({
+            "hash": d,
+            "size": fs_sorted[0]["size"],
+            "wasted": waste,
+            "files": fs_sorted,
+        })
+    groups.sort(key=lambda g: g["wasted"], reverse=True)
+
+    report = {
+        "scanned_at": datetime.now().isoformat(timespec="seconds"),
+        "root": root,
+        "min_size": min_size,
+        "min_age_days": min_age_days,
+        "files_seen": len(files),
+        "truncated": truncated,
+        "groups": groups,
+        "wasted_bytes": wasted,
+        "group_count": len(groups),
+    }
+    _save_report(report)
+
+    with _lock:
+        _scan_state.update(
+            status="done", phase="", groups=len(groups),
+            wasted_bytes=wasted,
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
+
+
 def start_scan(root: str, min_mb: int = 1, min_age_days: int = 7) -> dict:
     """启动后台扫描。root 合法性（绝对路径/卷内）由 app.py 调用方校验。"""
     root = (root or "").strip()
-    if not root.startswith("/") or ".." in root.split("/"):
+    norm = os.path.normpath(root)
+    if not os.path.isabs(root) or ".." in norm.split(os.sep):
         raise DuplicateError("扫描路径必须是绝对路径且不允许包含 ..")
     with _lock:
         if _scan_state["status"] == "scanning":
             raise DuplicateError("已有扫描正在进行，请等它结束")
         _scan_state["status"] = "scanning"
+    worker = _scan_worker_windows if sys.platform == "win32" else _scan_worker
     t = threading.Thread(
-        target=_scan_worker,
+        target=worker,
         args=(root, max(0, int(min_mb)) * 1024 * 1024, max(0, int(min_age_days))),
         daemon=True,
     )
@@ -385,7 +542,16 @@ def start_scan(root: str, min_mb: int = 1, min_age_days: int = 7) -> dict:
 # ---------------------------------------------------------------------------
 
 def _norm(p: str) -> str:
+    if sys.platform == "win32":
+        return os.path.normpath(p)
     return posixpath.normpath(p)
+
+
+def _windows_noop(op: str) -> None:
+    raise DuplicateError(
+        f"Windows 平台暂不支持「{op}」操作。重复文件扫描可在 Windows 使用，"
+        "清理隔离请先在 NAS/Linux 控制台扫描后操作，或等待后续版本适配。"
+    )
 
 
 def quarantine_files(paths: list[str], confirm: bool) -> dict:
@@ -400,6 +566,8 @@ def quarantine_files(paths: list[str], confirm: bool) -> dict:
         raise DuplicateError("隔离操作需要 confirm=true 确认参数")
     if not isinstance(paths, list) or not paths:
         raise DuplicateError("缺少要隔离的文件列表")
+    if sys.platform == "win32":
+        _windows_noop("隔离")
 
     report = load_report()
     if not report or not report.get("groups"):
@@ -503,6 +671,8 @@ def restore_files(ids: list[str], confirm: bool) -> dict:
         raise DuplicateError("恢复操作需要 confirm=true 确认参数")
     if not isinstance(ids, list) or not ids:
         raise DuplicateError("缺少要恢复的条目 ID")
+    if sys.platform == "win32":
+        _windows_noop("恢复")
 
     log = load_quarantine_log()
     entries = {e["id"]: e for e in log.get("entries", [])}
@@ -564,6 +734,8 @@ def purge_quarantine(ids: list, confirm: bool) -> dict:
         raise DuplicateError("彻底删除需要 confirm=true 确认参数")
     if not isinstance(ids, list) or not ids:
         raise DuplicateError("缺少要删除的条目 ID")
+    if sys.platform == "win32":
+        _windows_noop("彻底删除")
 
     log = load_quarantine_log()
     entries = {e["id"]: e for e in log.get("entries", [])}

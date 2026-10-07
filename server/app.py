@@ -432,6 +432,10 @@ def _remote_alert_summary(dev: dict) -> dict:
 
 def build_alerts_summary() -> dict:
     """聚合所有设备的告警与历史，供「告警信息」页面展示。"""
+    try:
+        from brands import BRAND_LABELS as _BL
+    except Exception:  # noqa: BLE001
+        _BL = {}
     devs = devices.load_devices()
     out = []
     for dev in devs:
@@ -444,11 +448,15 @@ def build_alerts_summary() -> dict:
             hist = alertlog.history("local", include_resolved=True)
             out.append({
                 "id": "local", "name": dname, "type": "local", "status": "online",
+                "brand": dev.get("brand") or "windows",
+                "brand_label": _BL.get(dev.get("brand") or "windows", "Windows 电脑"),
                 "current": cur, "history": hist,
                 "counts": alertlog.counts("local"),
             })
         else:
             rdev = _remote_alert_summary(dev)
+            rdev["brand"] = rdev.get("brand") or dev.get("brand") or "unknown"
+            rdev["brand_label"] = rdev.get("brand_label") or _BL.get(rdev["brand"], rdev["brand"])
             # 对端历史里 device_name 是它自己的「本机」，在控制台统一改成设备登记名
             for rec in (rdev.get("current") or []) + (rdev.get("history") or []):
                 rec["device_name"] = dname
@@ -645,30 +653,63 @@ def build_browse(path: str) -> dict:
             "entries": storage._browse_local_dir(path)}
 
 
-def _assert_root_in_mounts(path: str) -> None:
-    """校验扫描根目录必须落在已知卷挂载点范围内（防越权扫系统目录）。
+def _is_safe_path(path: str) -> bool:
+    """路径安全初筛：绝对路径、不含 .. 跳转。"""
+    if not path:
+        return False
+    norm = os.path.normpath(path)
+    if ".." in norm.split(os.sep):
+        return False
+    return os.path.isabs(path)
 
-    与 /api/list_dir 同一套收集逻辑：storage 卷挂载点 + 指标采集的 df 路径。
-    """
-    if not path.startswith("/") or ".." in path.split("/"):
-        raise StorageError("路径不合法")
-    mounts = set()
+
+def _mounts_set() -> set[str]:
+    """收集已知卷挂载点（Linux / Windows 都支持）。"""
+    mounts: set[str] = set()
     try:
         for v in storage.list_all_volumes():
-            mp = str(getattr(v, "mountpoint", "") or "")
-            if mp.startswith("/"):
-                mounts.add(mp.rstrip("/"))
+            mp = str(getattr(v, "mountpoint", "") or "").strip()
+            if mp:
+                # Windows 盘符根（如 C:）必须保留尾反斜杠，否则 abspath 会误判成当前目录
+                mounts.add(mp if (len(mp) == 2 and mp[1] == ":") else mp.rstrip("/").rstrip("\\"))
     except Exception:  # noqa: BLE001
         pass
     try:
         for v in metrics.collect().get("volumes", []):
-            mounts.add(str(v.get("mount", "")).rstrip("/"))
+            mp = str(v.get("mount", "")).strip()
+            if mp:
+                # Windows 盘符根（如 C:）必须保留尾反斜杠，否则 abspath 会误判成当前目录
+                mounts.add(mp if (len(mp) == 2 and mp[1] == ":") else mp.rstrip("/").rstrip("\\"))
     except Exception:  # noqa: BLE001
         pass
     mounts.discard("")
+    return mounts
+
+
+def _path_under_mount(path: str, mounts: set[str]) -> bool:
+    """判断 path 是否落在任一 mount 下（兼容 Windows 盘符）。"""
+    if not mounts:
+        return True
+    norm = os.path.normcase(os.path.abspath(path))
+    for m in mounts:
+        mnorm = os.path.normcase(os.path.abspath(m))
+        if norm == mnorm or norm.startswith(mnorm + os.sep):
+            return True
+    return False
+
+
+def _assert_root_in_mounts(path: str) -> None:
+    """校验扫描根目录必须落在已知卷挂载点范围内（防越权扫系统目录）。
+
+    与 /api/list_dir 同一套收集逻辑：storage 卷挂载点 + 指标采集的 df 路径。
+    Windows 平台支持 C:\\ 等盘符路径。
+    """
+    if not _is_safe_path(path):
+        raise StorageError("路径不合法")
+    mounts = _mounts_set()
     if not mounts:
         return  # 卷信息不可得时不再拦截（SSH 模式下 metrics 一般可得）
-    if not any(path == m or path.startswith(m + "/") for m in mounts):
+    if not _path_under_mount(path, mounts):
         raise StorageError("路径必须在存储卷挂载点范围内")
 
 
@@ -1026,23 +1067,10 @@ class Handler(BaseHTTPRequestHandler):
                 # 安全校验：绝对路径、禁止 ..、必须落在已知卷挂载点范围内。
                 # 注意 QNAP 后端 volume.mountpoint 是卷ID，真实路径从指标采集的 df 里取。
                 path = unquote((query.get("path") or [""])[0])
-                if not path.startswith("/") or ".." in path.split("/"):
+                if not _is_safe_path(path):
                     raise StorageError("路径不合法")
-                mounts = set()
-                try:
-                    for v in storage.list_all_volumes():
-                        mp = str(getattr(v, "mountpoint", "") or "")
-                        if mp.startswith("/"):
-                            mounts.add(mp.rstrip("/"))
-                except Exception:  # noqa: BLE001
-                    pass
-                try:
-                    for v in metrics.collect().get("volumes", []):
-                        mounts.add(str(v.get("mount", "")).rstrip("/"))
-                except Exception:  # noqa: BLE001
-                    pass
-                mounts.discard("")
-                if mounts and not any(path == m or path.startswith(m + "/") for m in mounts):
+                mounts = _mounts_set()
+                if mounts and not _path_under_mount(path, mounts):
                     raise StorageError("路径必须在存储卷挂载点范围内")
                 self._send_json({"ok": True, **metrics.list_dirs(path)})
             elif route == "/api/notify/config":
