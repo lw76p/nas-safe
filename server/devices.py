@@ -1017,13 +1017,20 @@ def remove_device(dev_id: str) -> dict:
 DEVICE_FEATURES = ["dups", "junk", "migrate", "autosnap"]
 
 
-def _http_probe(host: str, port: int, https: bool = False, timeout: float = 1.5) -> bool:
-    """快速探测对端 TS Safe 的 /api/system 是否可达（只读 GET）。"""
+def _http_probe(host: str, port: int, https: bool = False, timeout: float = 1.5, token: str = "") -> bool:
+    """快速探测对端 TS Safe 的 /api/system 是否可达（只读 GET）。
+
+    兼容对端开启鉴权的情况：传入设备 token 时带 Bearer，与拓扑页
+    collect_remote_summary 拉 /api/system/metrics 的行为保持一致，避免
+    「拓扑在线、管控页离线」的两页不一致（老版本对端 /api/system 需鉴权）。
+    """
     import urllib.request
     if not host or not port:
         return False
     url = f"{'https' if https else 'http'}://{host}:{port}/api/system"
     req = urllib.request.Request(url, method="GET")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read(64)
@@ -1054,7 +1061,8 @@ def _online_status(dev: dict) -> str:
     if dev.get("full_server"):
         host = (dev.get("host") or "").strip()
         port = int(dev.get("port") or 0)
-        if host and port and _http_probe(host, port, bool(dev.get("https"))):
+        tok = (dev.get("token") or dev.get("agent", {}).get("token") or "").strip()
+        if host and port and _http_probe(host, port, bool(dev.get("https")), token=tok):
             return "online"
     if dev.get("host"):
         return "offline"
