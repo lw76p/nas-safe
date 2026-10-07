@@ -353,7 +353,9 @@ def proxy_to_device(dev_id, method, subpath, query_string="", body=None, timeout
         return (400, "application/json",
                 json.dumps({"ok": False, "error": "这台设备还没登记访问地址，连不上"}, ensure_ascii=False).encode("utf-8"))
     base = f"http{'s' if dev.get('https') else ''}://{host}:{port}"
-    token = (dev.get("token") or "").strip()
+    token = (dev.get("token") or "").strip() or (dev.get("agent") or {}).get("token", "")
+    if token:
+        token = str(token).strip()
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
