@@ -206,6 +206,7 @@ def collect_remote_summary(dev: dict) -> dict:
         "brand_label": dev.get("brand_label") or brandmod.BRAND_LABELS.get(brand, brand),
         "type": "remote", "enabled": dev.get("enabled", True),
         "full_server": bool(dev.get("full_server")),
+        "monitor_only": bool(dev.get("monitor_only")),
         "status": "offline", "host": dev.get("host", ""), "port": dev.get("port", 0),
         "last_seen": dev.get("last_seen", 0), "note": dev.get("note", ""),
         "agent": dev.get("agent") or {},
@@ -216,8 +217,26 @@ def collect_remote_summary(dev: dict) -> dict:
     }
     host = (dev.get("host") or "").strip()
     port = int(dev.get("port") or 0)
-    if not host or not port:
-        out["note"] = "缺少访问地址（host/port）"
+    if not host:
+        out["note"] = "缺少访问地址（host）"
+        return out
+    # 仅监控设备（路由器 / 交换机 / 没装 TS Safe 的电脑）：对端没有 TS Safe 接口可拉，
+    # 用一次 ICMP ping 判在线即可。ping 不通按离线显示，不做任何写操作。
+    if dev.get("monitor_only"):
+        try:
+            import netscan as _ns  # noqa: PLC0415  局部导入避免潜在循环依赖
+            alive = _ns._icmp_alive(host, timeout=1.2)
+        except Exception:  # noqa: BLE001
+            alive = False
+        out["status"] = "online" if alive else "offline"
+        out["note"] = "仅监控（未装 TS Safe，只探测在线状态）" if alive else "ping 不通，设备可能离线"
+        out["health"] = 0 if alive else 1
+        out["health_label"] = "正常" if alive else "注意"
+        if alive:
+            out["last_seen"] = time.time()
+        return out
+    if not port:
+        out["note"] = "缺少访问端口（port）"
         return out
     base = f"http{'s' if dev.get('https') else ''}://{host}:{port}"
     token = (dev.get("token") or "").strip()
@@ -476,7 +495,12 @@ def add_device(payload: dict) -> dict:
         raise storage.StorageError("参数格式错误")
     host = (payload.get("host") or "").strip()
     port = int(payload.get("port") or 0)
-    if not host or not port:
+    # 仅监控设备（路由器 / 交换机 / 没装 TS Safe 的电脑）：不需要对端跑 TS Safe，
+    # 只登记地址做在线探测，port 可为 0。
+    monitor_only = bool(payload.get("monitor_only"))
+    if not host:
+        raise storage.StorageError("请填写设备地址（host）")
+    if not port and not monitor_only:
         raise storage.StorageError("远程设备需要填写访问地址（host 和 port）")
     devs = load_devices()
     # 同一台设备（同地址同端口）重复添加时，改为更新，避免控制台出现两台一样的
@@ -496,6 +520,8 @@ def add_device(payload: dict) -> dict:
             # 前端据此隐藏「安装完整版」入口（已经是了，不必再推）。
             if "full_server" in payload:
                 d["full_server"] = bool(payload.get("full_server"))
+            if monitor_only:
+                d["monitor_only"] = True
             d["net_kind"] = (payload.get("net_kind") or d.get("net_kind") or "").strip()
             d["brand_label"] = (payload.get("brand_label") or d.get("brand_label") or "").strip()
             if payload.get("agent_request") or payload.get("install_agent"):
@@ -518,6 +544,9 @@ def add_device(payload: dict) -> dict:
         "note": "",
         "net_kind": (payload.get("net_kind") or "").strip(),
         "brand_label": (payload.get("brand_label") or "").strip(),
+        # 仅监控：设备上没有（也不可能有）TS Safe，如路由器 / 交换机 / 别人的电脑。
+        # 只做在线探测 + 展示，不出现在远程管控/清理等功能里。
+        "monitor_only": monitor_only,
         "agent": _agent_pending(None) if (payload.get("agent_request") or payload.get("install_agent")) else {},
         # 扫描探测到这本身就是一台 TS Safe 服务端（nassafe=True）时为 True；
         # 轻量代理端点 / 仅监控设备为 False（前端会推「安装完整版」）。
@@ -1054,6 +1083,16 @@ def _online_status(dev: dict) -> str:
     ag = dev.get("agent") or {}
     if dev.get("type") == "local":
         return "online"
+    # 仅监控设备：对端没有 TS Safe 服务，ping 一次判在线即可
+    if dev.get("monitor_only"):
+        h = (dev.get("host") or "").strip()
+        if not h:
+            return "unknown"
+        try:
+            import netscan as _ns  # noqa: PLC0415
+            return "online" if _ns._icmp_alive(h, timeout=1.2) else "offline"
+        except Exception:  # noqa: BLE001
+            return "offline"
     # 已安装代理：必须 5 分钟内有真实心跳才算在线
     lc = ag.get("last_checkin") or 0
     if ag.get("status") == "installed" and (time.time() - float(lc or 0)) < 360:
@@ -1099,6 +1138,7 @@ def get_manage() -> dict:
             "agent_status": "installed" if (d.get("type") == "local" or d.get("id") == LOCAL_ID)
                            else (ag.get("status") or "none"),
             "full_server": bool(d.get("full_server")),
+            "monitor_only": bool(d.get("monitor_only")),
             "features": {k: bool(feats.get(k)) for k in DEVICE_FEATURES},
         })
     return {"ok": True, "online": online, "total": len(rows), "devices": rows}
