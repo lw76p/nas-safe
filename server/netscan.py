@@ -311,7 +311,7 @@ def _expand(cidr: str, cap: int, self_ip: str = "") -> tuple[list[str], bool]:
 # ---------------------------------------------------------------------------
 
 FINGER_PORTS = [22, 80, 139, 443, 445, 548, 554, 631, 3389, 5000, 5001, 5900, 7000, 8080, 8848]
-BANNER_PORTS = [80, 443, 5000, 5001, 8080, 8848]
+BANNER_PORTS = [80, 443, 5000, 5001, 7000, 8080, 8848]
 MAX_FINGER = 192          # 最多给多少台主机采指纹
 MAX_AI = 12               # 最多让 AI 判断多少台（省时间、省 token）
 
@@ -402,7 +402,38 @@ def fingerprint(ip: str, ports: list | None = None, timeout: float = CONNECT_TIM
                 break
         if out["nas_kind"]:
             out["banners"]["nas_kind"] = out["nas_kind"]
+    # AirPlay /server-info 探针：7000 端口可能是 Apple TV / HomePod，也可能是 macOS 的隔空播放。
+    # 返回的 model 字段能区分：Macmini、MacBook、iMac、AppleTV 等。
+    # macOS 的隔空播放接收器常要求 AirPlay 客户端 UA，逐个 UA 试一次，提高拿到的概率。
+    if 7000 in open_ports:
+        import urllib.request as _apreq  # noqa: PLC0415
+        for _ua in ("AirPlay/550.14", "nassafe-scan", "Mozilla/5.0"):
+            try:
+                _ap = _apreq.Request(f"http://{ip}:7000/server-info",
+                                     headers={"User-Agent": _ua,
+                                              "Connection": "keep-alive"})
+                with _apreq.urlopen(_ap, timeout=2.5) as _r:
+                    _body = _r.read(4000).decode("utf-8", "ignore")
+            except Exception:  # noqa: BLE001
+                continue
+            _m = re.search(r'"model"\s*:\s*"([^"]+)"', _body)
+            if _m:
+                out["airplay_model"] = _m.group(1)
+                out["banners"]["7000"] = f"AirPlay model={_m.group(1)}"
+            if re.search(r"mac|macbook|imac|macmini|macstudio|macpro", _body, re.I):
+                out["is_mac_airplay"] = True
+            if re.search(r"appletv|homepod|audioaccessory|airport", _body, re.I):
+                out["is_appletv"] = True
+            break
     return out
+
+
+def _is_mac_host(host: str) -> bool:
+    """主机名里出现典型 Mac 命名即判定为 macOS。"""
+    return any(x in host for x in (
+        "macbook", "mac-book", "macmini", "mac-mini", "macstudio", "mac-studio",
+        "macpro", "mac-pro", "imac", "powerbook", "mac_", "mac-",
+    ))
 
 
 def _rule_identify(fp: dict) -> dict:
@@ -413,6 +444,12 @@ def _rule_identify(fp: dict) -> dict:
     out = {"device_type": "unknown", "brand_label": "", "suggest_name": "",
            "suggest_group": "", "confidence": 0.3, "by": "rule"}
     host = (fp.get("hostname") or "").lower()
+    airplay_model = str(fp.get("airplay_model") or "").lower()
+    is_mac_airplay = bool(fp.get("is_mac_airplay") or "mac" in airplay_model
+                          or "imac" in airplay_model or "macbook" in airplay_model)
+    # 只有明确探到 Apple TV / HomePod / AirPort 这类纯投屏硬件，才判成投屏设备
+    is_appletv = bool(fp.get("is_appletv") or any(
+        x in airplay_model for x in ("appletv", "homepod", "audioaccessory", "airport")))
     # 软路由 / 网关（iStoreOS、OpenWrt、ImmortalWrt、X-Wrt 等）常开 80/443/22，
     # 也可能跑 Samba 暴露 139/445，若放在 Windows 规则前面优先识别，避免误判。
     soft_router_markers = ("istoreos", "openwrt", "immortalwrt", "x-wrt", "lede", "padavan", "openwrt-")
@@ -420,9 +457,17 @@ def _rule_identify(fp: dict) -> dict:
     is_router_host = any(w in host for w in ("router", "gateway", "gw-", "rt-", "gt-"))
     if 8848 in ports:
         out.update({"device_type": "nas_safe", "brand_label": "TS Safe", "confidence": 0.9})
+    elif _is_mac_host(host) or 5900 in ports or 548 in ports or 88 in ports or is_mac_airplay:
+        # macOS 电脑：VNC(5900)/AFP(548)/Kerberos(88)/hostname 典型命名/AirPlay model 含 Mac。
+        # 必须放在 7000(AirPlay) 之前，否则 Mac mini / MacBook 会被误判成「苹果投屏设备」。
+        out.update({"device_type": "pc", "brand_label": "macOS 电脑", "confidence": 0.75})
+    elif 7000 in ports and not is_appletv:
+        # 只开 7000 且没探到 Apple TV/HomePod：绝大多数是 Mac 的隔空播放接收器。
+        # 真·投屏硬件（Apple TV/HomePod）装不了 TS Safe，判成电脑才不挡住用户添加 Mac。
+        out.update({"device_type": "pc", "brand_label": "苹果电脑（疑似 Mac）", "confidence": 0.5})
     elif 7000 in ports:
-        # AirPlay 接收器（Apple TV / HomePod / 带隔空播放的电视）：AirTunes 服务在 7000
-        out.update({"device_type": "media", "brand_label": "苹果投屏设备", "confidence": 0.75})
+        # 明确探到 Apple TV / HomePod / AirPort：纯投屏硬件，只能看不能纳管
+        out.update({"device_type": "media", "brand_label": "苹果投屏设备", "confidence": 0.8})
     elif 5000 in ports or 5001 in ports or "synology" in low or "dsm" in low:
         # 光看端口分不出品牌：探针结果优先（qnap -> 威联通），探不明降置信度
         _kind = str(fp.get("nas_kind") or "")
@@ -442,8 +487,6 @@ def _rule_identify(fp: dict) -> dict:
         # Windows：必须有 RDP(3389) 或同时出现 SMB(139/445)+Windows 字样；
         # 单靠 445 太容易被 Linux/Samba 误伤（如 iStoreOS 软路由）。
         out.update({"device_type": "pc", "brand_label": "Windows 电脑", "confidence": 0.6})
-    elif 5900 in ports or 548 in ports or 88 in ports or "macbook" in host or "mac-" in host:
-        out.update({"device_type": "pc", "brand_label": "macOS 电脑", "confidence": 0.5})
     elif 23 in ports or "switch" in host:
         # 可管理交换机常见 Telnet(23)；SSH(22) 也可能是交换机
         out.update({"device_type": "router", "brand_label": "交换机/网关", "confidence": 0.5})
