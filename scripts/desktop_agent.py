@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.7.21"
+AGENT_VER = "1.0.7.22"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -134,6 +134,35 @@ def _open_inbox_window():
         ToastManager._fallback("未读提醒", text)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _fire_toast_callback(manager, toast_hwnd):
+    """执行气泡点击回调；回调完成后让气泡线程自毁。
+
+    必须先跑回调再关窗：浏览器标签页打开需要 1~2 秒，先关窗用户会以为
+    「点了闪退、什么都没发生」。DestroyWindow 只能由拥有窗口的线程调用，
+    回调在独立线程里跑，所以完成后用 PostMessage WM_TIMER 让气泡线程自己关。
+    """
+    cb = manager._click.pop(int(toast_hwnd), None)
+    if not cb:
+        try:
+            ctypes.windll.user32.DestroyWindow(int(toast_hwnd))
+        except Exception:
+            pass
+        return
+
+    def _run():
+        try:
+            cb()
+        except Exception:
+            pass
+        finally:
+            try:
+                ctypes.windll.user32.PostMessageW(int(toast_hwnd), 0x8002, 0, 0)
+            except Exception:
+                pass
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def notify(title, text, level="info"):
@@ -397,27 +426,32 @@ class ToastManager:
                         # 不带 SS_NOTIFY 时系统 Static 会吞掉鼠标消息，点击文字全无反应，
                         # 只有点到文字间空白才碰巧触发——用户体感「气泡点击详情无效」。
                         # lparam 是控件 hwnd（64 位），& 0xFFFFFFFF 会截断 → GetParent 拿错句柄
+                        # 历史坑2：先 DestroyWindow 再开回调线程 → 气泡瞬间消失、浏览器
+                        # 标签页 1~2 秒后才开（还常开在当前窗口后面），用户体感「点了闪退、
+                        # 什么都没发生」。现在先执行回调，完成后由气泡线程自毁（PostMessage
+                        # WM_TIMER；DestroyWindow 只能由拥有该窗口的线程调用）。
                         ctl = int(lparam) & 0xFFFFFFFFFFFFFFFF
                         if ctl:
                             parent = u32.GetParent(ctl)
                             target = int(parent) if parent and int(parent) in manager._click else None
                             if target is not None:
-                                cb = manager._click.pop(target, None)
-                                u32.DestroyWindow(parent)
-                                if cb:
-                                    threading.Thread(target=cb, daemon=True).start()
+                                _fire_toast_callback(manager, target)
                         return 0
                     if msg == 0x0113:       # WM_TIMER：到时自动销毁
+                        u32.DestroyWindow(hwnd)
+                        return 0
+                    if msg == 0x8002:       # WM_APP+2：回调执行完毕，气泡线程自毁
+                        # 历史坑：用 PostMessage(WM_TIMER) 通知自毁不可靠——WM_TIMER
+                        # 被 Windows 特殊对待（与 SetTimer 合成机制绑定），手工 post
+                        # 的 WM_TIMER 不保证送进窗口过程。WM_APP 段是普通队列消息，
+                        # DispatchMessageW 必达。
                         u32.DestroyWindow(hwnd)
                         return 0
                     if msg == 0x0201:       # WM_LBUTTONDOWN：点击触发回调（accent 条命中时映射到父卡片）
                         target = hwnd if hwnd in manager._click else u32.GetParent(hwnd)
                         target = int(target) if target else None
                         if target is not None and target in manager._click:
-                            cb = manager._click.pop(target, None)
-                            u32.DestroyWindow(target)
-                            if cb:
-                                threading.Thread(target=cb, daemon=True).start()
+                            _fire_toast_callback(manager, target)
                         return 0
                     if msg == 0x0002:       # WM_DESTROY
                         manager._click.pop(hwnd, None)
@@ -2290,18 +2324,70 @@ def handle_protocol(raw):
     run_agent(base, interval, first=True)
 
 
+def _do_install_full(base, cmd):
+    """远程安装完整版 TS Safe（总控台经心跳下发命令）。
+
+    流程：下载 NAS-Safe-Full.zip（一次性票据鉴权）→ 解压到无中文无空格的
+    固定目录 → 以管理员运行 install_windows_service.bat（弹 UAC，用户点
+    「是」）→ 脚本自动建 venv/装依赖/注册开机自启服务 → 完整版启动后用
+    票据回总控台登记。结果随下一次心跳的 cmd_result 带回总控台。
+    """
+    result = {"action": "install_full", "ok": False, "error": ""}
+    try:
+        import tempfile
+        import zipfile
+        import urllib.parse
+        ticket = str(cmd.get("ticket") or "")
+        if not ticket:
+            raise RuntimeError("命令缺少下载票据")
+        url = base.rstrip("/") + "/api/downloads/full-bundle?ticket=" + urllib.parse.quote(ticket)
+        dst = os.path.join(tempfile.gettempdir(), "NAS-Safe-Full")
+        zip_path = dst + ".zip"
+        os.makedirs(dst, exist_ok=True)
+        agent_log("install_full: downloading bundle ...")
+        urllib.request.urlretrieve(url, zip_path)
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(dst)
+        bat = os.path.join(dst, "install_windows_service.bat")
+        if not os.path.exists(bat):
+            raise RuntimeError("安装包里没有 install_windows_service.bat")
+        agent_log("install_full: launching elevated installer (UAC) ...")
+        ps = ("Start-Process -FilePath '{bat}' -WorkingDirectory '{dst}' "
+              "-Verb RunAs").format(bat=bat.replace("'", "''"),
+                                    dst=dst.replace("'", "''"))
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        result["ok"] = True
+        result["error"] = "已弹出管理员授权（UAC），请在那台电脑上点「是」"
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = str(exc)
+        agent_log("install_full failed: %s" % exc)
+    agent_log("install_full result: ok=%s" % result["ok"])
+    _PENDING_CMD_RESULT.clear()
+    _PENDING_CMD_RESULT.update(result)
+
+
+# 远程命令执行结果（下一次心跳带回总控台）
+_PENDING_CMD_RESULT: dict = {}
+_INSTALL_FULL_RUNNING = False   # 防重入：同一时刻只跑一次远程安装
+
+
 def _device_agent_loop(base, token):
-    """轻量代理心跳（与托盘 UI 一体）：注册一次，每 60s 心跳一次，静默重试。"""
+    """轻量代理心跳（与托盘 UI 一体）：注册一次，每 60s 心跳一次，静默重试。
+
+    2026-10-08 起兼任「总控台命令通道」：心跳响应里带 cmd 就执行
+    （目前支持 install_full=远程安装完整版），执行结果随下一次心跳回传。
+    """
     def _post(path, obj):
         try:
             req = urllib.request.Request(base + path,
                                          data=json.dumps(obj).encode("utf-8"),
                                          method="POST",
                                          headers={"Content-Type": "application/json"})
-            urllib.request.urlopen(req, timeout=10).read()
-            return True
+            return json.loads(urllib.request.urlopen(req, timeout=10).read().decode("utf-8"))
         except Exception:  # noqa: BLE001
-            return False
+            return None
     hostname = os.environ.get("COMPUTERNAME") or socket.gethostname()
     osname = "Windows"
     try:
@@ -2309,8 +2395,29 @@ def _device_agent_loop(base, token):
     except Exception:
         pass
     while not STOP_EVENT.is_set():
-        if _post("/api/agent/heartbeat", {"token": token}):
+        body = {"token": token}
+        if _PENDING_CMD_RESULT:
+            body["cmd_result"] = dict(_PENDING_CMD_RESULT)
+        resp = _post("/api/agent/heartbeat", body)
+        if resp and resp.get("ok"):
             agent_log("agent heartbeat ok")
+            if body.get("cmd_result"):
+                _PENDING_CMD_RESULT.clear()   # 总控台已收到回执
+            cmd = resp.get("cmd")
+            if isinstance(cmd, dict) and cmd.get("action") == "install_full":
+                global _INSTALL_FULL_RUNNING
+                if _INSTALL_FULL_RUNNING:
+                    agent_log("install_full skipped: already running")
+                else:
+                    _INSTALL_FULL_RUNNING = True
+
+                    def _safe_install():
+                        try:
+                            _do_install_full(base, cmd)
+                        finally:
+                            globals()["_INSTALL_FULL_RUNNING"] = False
+
+                    threading.Thread(target=_safe_install, daemon=True).start()
         else:
             agent_log("agent heartbeat failed")
         STOP_EVENT.wait(60)

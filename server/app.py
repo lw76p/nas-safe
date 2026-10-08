@@ -687,13 +687,22 @@ def _mounts_set() -> set[str]:
 
 
 def _path_under_mount(path: str, mounts: set[str]) -> bool:
-    """判断 path 是否落在任一 mount 下（兼容 Windows 盘符）。"""
+    """判断 path 是否落在任一 mount 下（兼容 Windows 盘符）。
+
+    历史坑：盘符根挂载点（如 "E:"）abspath 后是 "E:\\"（以分隔符结尾），
+    再拼 os.sep 会得到 "E:\\\\"（双反斜杠），任何正常路径都匹配不上——
+    导致扫 E:\\音乐 / D:\\xxx 这类「盘符根下一级目录」全部误报越界。
+    因此挂载点已以分隔符结尾时直接作为前缀，不再拼 os.sep。
+    """
     if not mounts:
         return True
     norm = os.path.normcase(os.path.abspath(path))
     for m in mounts:
         mnorm = os.path.normcase(os.path.abspath(m))
-        if norm == mnorm or norm.startswith(mnorm + os.sep):
+        if norm == mnorm:
+            return True
+        prefix = mnorm if mnorm.endswith(os.sep) else mnorm + os.sep
+        if norm.startswith(prefix):
             return True
     return False
 
@@ -1444,7 +1453,10 @@ class Handler(BaseHTTPRequestHandler):
                         "os": str(payload.get("os") or "")[:80],
                     }))
                 else:
-                    self._send_json(devices.agent_heartbeat(payload.get("token")))
+                    _cr = payload.get("cmd_result")
+                    self._send_json(devices.agent_heartbeat(
+                        payload.get("token"),
+                        _cr if isinstance(_cr, dict) else None))
                 return
 
             if route == "/api/auto-claim":
@@ -2050,6 +2062,16 @@ class Handler(BaseHTTPRequestHandler):
                 _src = str(payload.get("source") or self.headers.get("Host") or "").strip()
                 self._send_json(devices.issue_full_ticket(
                     _src, str(payload.get("name") or "")))
+            elif route == "/api/devices/install-full":
+                # 远程安装完整版：给已装桌面助手的联机设备排一条命令，
+                # 设备端桌面助手下次心跳领取 → 下载安装包 → 弹 UAC → 自动装服务。
+                _dev_id = (payload.get("id") or "").strip()
+                if not _dev_id:
+                    raise StorageError("缺少 id 参数")
+                _scheme = (self.headers.get("X-Forwarded-Proto") or "http").strip()
+                _host = self.headers.get("Host") or ""
+                self._send_json({"ok": True, **devices.queue_install_full(
+                    _dev_id, f"{_scheme}://{_host}")})
             elif route == "/api/devices/add":
                 _dok, _dmsg = editions.check_devices(len(devices.load_devices()) + 1)
                 if not _dok:

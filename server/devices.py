@@ -529,7 +529,9 @@ def add_device(payload: dict) -> dict:
             save_devices(devs)
             return {"ok": True, "id": d.get("id"), "updated": True}
 
-    dev_id = f"dev-{int(time.time())}"
+    # 秒级时间戳会撞车（扫描页批量勾选添加就是紧凑循环，同一秒加多台
+    # 会生成重复 id 导致设备互相覆盖），必须拼上随机后缀保证唯一。
+    dev_id = f"dev-{int(time.time())}{secrets.token_hex(3)}"
     devs.append({
         "id": dev_id,
         "name": (payload.get("name") or f"{host}:{port}").strip(),
@@ -626,8 +628,13 @@ def agent_register(token: str, info: dict | None = None) -> dict:
     return {"ok": True, "id": hit.get("id"), "name": hit.get("name")}
 
 
-def agent_heartbeat(token: str) -> dict:
-    """被控端每分钟心跳：更新在线时间。"""
+def agent_heartbeat(token: str, cmd_result: "dict | None" = None) -> dict:
+    """被控端每分钟心跳：更新在线时间；顺带下发待执行命令、回收执行回执。
+
+    命令通道（2026-10-08）：总控台把待执行命令写进设备记录的 pending_cmd，
+    心跳响应里带给设备端桌面助手；桌面助手执行完把结果随下一次心跳的
+    cmd_result 带回来，存进 agent.last_cmd 供管控页展示。
+    """
     devs = load_devices()
     hit = _find_by_agent_token(devs, token)
     if hit is None:
@@ -637,8 +644,46 @@ def agent_heartbeat(token: str) -> dict:
     if ag.get("status") != "installed":
         ag["status"] = "installed"
         ag.setdefault("installed_at", time.time())
+    if isinstance(cmd_result, dict) and cmd_result:
+        # 只保留最近一条命令回执（截断错误信息，防止把记录撑爆）
+        ag["last_cmd"] = {
+            "ts": time.time(),
+            "action": str(cmd_result.get("action") or "")[:32],
+            "ok": bool(cmd_result.get("ok")),
+            "error": str(cmd_result.get("error") or "")[:200],
+        }
     hit["agent"] = ag
     hit["last_seen"] = time.time()
+    cmd = hit.pop("pending_cmd", None)   # 取走即消费：只下发一次
+    save_devices(devs)
+    resp: dict = {"ok": True}
+    if cmd:
+        resp["cmd"] = cmd
+    return resp
+
+
+def queue_install_full(dev_id: str, base_url: str) -> dict:
+    """给设备排一条「远程安装完整版」命令，由设备上的桌面助手在下次心跳领取。
+
+    前提：设备已装桌面助手（有 agent token）且完整版尚未安装。
+    安装包用一次性报到票据下载，装完自动回总控台登记（auto-claim），无需人工。
+    """
+    devs = load_devices()
+    hit = next((d for d in devs if d.get("id") == dev_id), None)
+    if hit is None:
+        raise storage.StorageError("设备不存在")
+    if hit.get("full_server"):
+        return {"ok": True, "already": True}
+    ag = hit.get("agent") or {}
+    if not (ag.get("token") or hit.get("token")):
+        raise storage.StorageError("这台设备还没装桌面助手（轻量代理），无法远程安装；请先在设备上安装桌面助手，或用「下载安装包」方式安装")
+    tk = issue_full_ticket(base_url, str(hit.get("name") or ""))
+    hit["pending_cmd"] = {
+        "action": "install_full",
+        "ticket": tk.get("ticket", ""),
+        "base": (base_url or "").strip().rstrip("/"),
+        "ts": time.time(),
+    }
     save_devices(devs)
     return {"ok": True}
 
@@ -779,7 +824,8 @@ def auto_claim(payload: dict) -> dict:
     if hit is None:
         if str(rec.get("name") or "").strip():
             hostname = str(rec["name"]).strip()[:64]
-        dev_id = f"dev-{int(now)}"
+        # 拼随机后缀：多台新装机器同秒报到时避免 id 撞车（同 add_device）
+        dev_id = f"dev-{int(now)}{secrets.token_hex(3)}"
         ag = {"status": "installed", "token": agent_token, "last_checkin": now,
               "installed_at": now, "machine_id": machine, "info": info,
               "via": "full_bundle"}
@@ -940,7 +986,8 @@ def create_pairing(name: str | None = None) -> dict:
             ag["pairing_code"] = ""
             ag["pairing_expires"] = 0
             d["agent"] = ag
-    dev_id = f"dev-{int(time.time())}"
+    # 拼随机后缀：避免与同一秒内其它添加/报到/配对的设备 id 撞车
+    dev_id = f"dev-{int(time.time())}{secrets.token_hex(3)}"
     code = f"{secrets.randbelow(1000000):06d}"
     token = secrets.token_hex(8)
     ag = {
