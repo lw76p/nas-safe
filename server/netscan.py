@@ -36,7 +36,7 @@ VPN_IFACE_RE = re.compile(
     r"tailscale|wireguard|^wg|^zt|zerotier|^tun|^tap|^utun|vpn|nebula|nordlynx|easyvpn|openvpn|pptp|l2tp",
     re.I,
 )
-SKIP_IFACE_RE = re.compile(r"^lo|^docker|^br-|^veth|^virbr|^vmnet|^cni|^flannel|^kube", re.I)
+SKIP_IFACE_RE = re.compile(r"^lo|^docker|^br-|^veth|^virbr|^vmnet|^cni|^flannel|^kube|^lxc|^lxd|^qvsbr", re.I)
 
 
 # ---------------------------------------------------------------------------

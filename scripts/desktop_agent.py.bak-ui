@@ -56,7 +56,7 @@ _LEGACY_MARKERS = ["桌面助手.exe", "NASSafeAgent", "NAS Safe 桌面助手",
                    "nassafe-agent", "desktop_agent"]
 STOP_EVENT = threading.Event()
 LOCK = threading.Lock()
-AGENT_VER = "1.0.7.21"
+AGENT_VER = "1.0.6.17"
 
 # 托盘单例（通知气球用）
 _TRAY = None
@@ -84,55 +84,14 @@ def http_json(url, timeout=15, method="GET", body=None):
 # --------------------------------------------------------------------------
 # Windows 通知：优先走托盘气球（不调用 PowerShell，避免安全软件拦截）
 # --------------------------------------------------------------------------
-def _console_url(path: str = "") -> str:
-    """取总控台地址（配置里保存的 NAS / 总控台），没有就返回空串。"""
-    try:
-        cfg = load_config() or {}
-    except Exception:  # noqa: BLE001
-        cfg = {}
-    base = str(cfg.get("nas") or cfg.get("base") or "").strip().rstrip("/")
-    return (base + path) if base else ""
-
-
 def _open_inbox_window():
-    """点击气泡（或托盘）时打开未读提醒。
-
-    历史坑（务必不要再改回去）：这里原来先走 tkinter 本地弹窗，但 tkinter 在
-    Windows 上**只能在该进程创建解释器的主线程**使用，而本函数运行在气泡的 Win32
-    消息线程里 → 必然抛 RuntimeError；外面又是 except: pass，用户看到的现象是
-    「点了气泡毫无反应」，日志里只会多出一条空的「未读提醒：」气泡
-    （tkinter 失败后的兜底又弹了一个 toast）。代码注释里早就写明 tkinter 建窗不可
-    靠，但当时只把「气泡」换成了 Win32 自绘，**未读窗口还留在 tkinter 上**。
-
-    现在：优先用浏览器打开控制台的告警页（任何环境都有效）→ tkinter 次选 →
-    都不行才用消息框兜底；每一步都写 agent.log，便于事后定位。
-    """
+    """点击气泡（或托盘）时打开未读提醒界面；托盘不存在时也能直接打开。"""
     def _ref():
         if _TRAY is not None:
             _TRAY.update(len(load_unread()))
-
-    url = _console_url("/#/alerts")
-    if url:
-        try:
-            import webbrowser
-            webbrowser.open(url)
-            agent_log("open_inbox: 已用浏览器打开 %s" % url)
-            return
-        except Exception as exc:  # noqa: BLE001
-            agent_log("open_inbox: 浏览器打开失败：%s" % exc)
-
     try:
         show_inbox_window(_ref)
-        agent_log("open_inbox: 已请求本地未读窗口")
-        return
-    except Exception as exc:  # noqa: BLE001
-        agent_log("open_inbox: 本地窗口打开失败：%s（改用消息框兜底）" % exc)
-
-    items = load_unread()
-    text = "\n".join("· " + str(i.get("text", "")) for i in items[:10]) or "目前没有未读提醒"
-    try:
-        ToastManager._fallback("未读提醒", text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -323,8 +282,6 @@ class ToastManager:
             u32.SetTimer.restype = ctypes.c_size_t
             u32.PostQuitMessage.argtypes = [ctypes.c_int]
             u32.PostQuitMessage.restype = None
-            u32.GetParent.argtypes = [ctypes.c_void_p]
-            u32.GetParent.restype = ctypes.c_void_p
             g32.CreateSolidBrush.argtypes = [ctypes.c_uint32]
             g32.CreateSolidBrush.restype = ctypes.c_void_p
             g32.DeleteObject.argtypes = [ctypes.c_void_p]
@@ -392,32 +349,14 @@ class ToastManager:
                         except Exception:
                             pass
                         return int(manager._bg_brush)
-                    if msg == 0x0111:       # WM_COMMAND：SS_NOTIFY 的 Static 子控件被点击（STN_CLICKED）
-                        # 历史坑：卡片表面铺满 Static（图标/标题/正文/「点击查看详情」），
-                        # 不带 SS_NOTIFY 时系统 Static 会吞掉鼠标消息，点击文字全无反应，
-                        # 只有点到文字间空白才碰巧触发——用户体感「气泡点击详情无效」。
-                        # lparam 是控件 hwnd（64 位），& 0xFFFFFFFF 会截断 → GetParent 拿错句柄
-                        ctl = int(lparam) & 0xFFFFFFFFFFFFFFFF
-                        if ctl:
-                            parent = u32.GetParent(ctl)
-                            target = int(parent) if parent and int(parent) in manager._click else None
-                            if target is not None:
-                                cb = manager._click.pop(target, None)
-                                u32.DestroyWindow(parent)
-                                if cb:
-                                    threading.Thread(target=cb, daemon=True).start()
-                        return 0
                     if msg == 0x0113:       # WM_TIMER：到时自动销毁
                         u32.DestroyWindow(hwnd)
                         return 0
-                    if msg == 0x0201:       # WM_LBUTTONDOWN：点击触发回调（accent 条命中时映射到父卡片）
-                        target = hwnd if hwnd in manager._click else u32.GetParent(hwnd)
-                        target = int(target) if target else None
-                        if target is not None and target in manager._click:
-                            cb = manager._click.pop(target, None)
-                            u32.DestroyWindow(target)
-                            if cb:
-                                threading.Thread(target=cb, daemon=True).start()
+                    if msg == 0x0201:       # WM_LBUTTONDOWN：点击触发回调
+                        cb = manager._click.pop(hwnd, None)
+                        u32.DestroyWindow(hwnd)
+                        if cb:
+                            threading.Thread(target=cb, daemon=True).start()
                         return 0
                     if msg == 0x0002:       # WM_DESTROY
                         manager._click.pop(hwnd, None)
@@ -529,7 +468,7 @@ class ToastManager:
                     tx, tw = 58, w - 58 - 16
                     icon_w = u32.CreateWindowExW(
                         0, "Static", "",
-                        0x40000000 | 0x10000000 | 0x00000003 | 0x00000100,   # WS_CHILD|WS_VISIBLE|SS_ICON|SS_NOTIFY
+                        0x40000000 | 0x10000000 | 0x00000003,   # WS_CHILD|WS_VISIBLE|SS_ICON
                         16, 16, 32, 32, hwnd, None, self._hinst, None)
                     if icon_w:
                         u32.SendMessageW(icon_w, 0x0172, 1, hicon)   # STM_SETIMAGE
@@ -539,7 +478,7 @@ class ToastManager:
         # 标题；必须带 WS_VISIBLE，否则子控件永久隐藏（曾致气泡只有底板没文字）
         title_w = u32.CreateWindowExW(
             0, "Static", "",
-            0x40000000 | 0x10000000 | 0x00000100,       # WS_CHILD|WS_VISIBLE|SS_NOTIFY
+            0x40000000 | 0x10000000,                    # WS_CHILD | WS_VISIBLE
             tx, 14, tw, 24, hwnd, None, self._hinst, None)
         if title_w:
             self._colors[int(title_w)] = _TOAST_TITLE
@@ -549,7 +488,7 @@ class ToastManager:
         # 正文（常规浅色，自动换行）；同样必须 WS_VISIBLE
         body_w = u32.CreateWindowExW(
             0, "Static", "",
-            0x40000000 | 0x10000000 | 0x00000020 | 0x00000080 | 0x00000100,   # WS_CHILD|WS_VISIBLE|SS_WORDBREAK|SS_NOPREFIX|SS_NOTIFY
+            0x40000000 | 0x10000000 | 0x00000020 | 0x00000080,   # WS_CHILD|WS_VISIBLE|SS_WORDBREAK|SS_NOPREFIX
             tx, 42, tw, h - 42 - 30, hwnd, None, self._hinst, None)
         if body_w:
             self._colors[int(body_w)] = _TOAST_FG
@@ -560,7 +499,7 @@ class ToastManager:
         try:
             hint_w = u32.CreateWindowExW(
                 0, "Static", "",
-                0x40000000 | 0x10000000 | 0x00000100,   # WS_CHILD|WS_VISIBLE|SS_NOTIFY
+                0x40000000 | 0x10000000,
                 tx, h - 24, tw, 16, hwnd, None, self._hinst, None)
             if hint_w:
                 self._colors[int(hint_w)] = _TOAST_HINT
@@ -937,14 +876,12 @@ def _self_cmd():
     return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
 
 
-def ensure_autostart(base, interval, exe=None, token=""):
+def ensure_autostart(base, interval, exe=None):
     if os.name != "nt":
         return False
     try:
         import winreg
         cmd = (f'"{exe}"' if exe else _self_cmd()) + f' --nas "{base}" --interval {interval}'
-        if token:
-            cmd += f' --token "{token}"'
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                              r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
         winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, cmd)
@@ -1106,7 +1043,7 @@ def install_dir() -> str:
     return os.path.join(base or os.path.expanduser("~"), APP_DIR)
 
 
-def self_install_flow(base_hint="", token=""):
+def self_install_flow(base_hint=""):
     """双击下载的 EXE 时：把自己安装到固定目录并启动守护。
 
     步骤：确定 NAS 地址 → 停掉旧实例 → 复制自身 → 写开机自启与协议 →
@@ -1163,22 +1100,16 @@ def self_install_flow(base_hint="", token=""):
         return False
 
     # 4) 写配置 / 开机自启 / 协议（都指向安装后的副本）
-    cfg0 = load_config()
-    interval = int(cfg0.get("interval") or DEFAULT_INTERVAL)
-    cfg0.update({"nas": base, "interval": interval})
-    if token:
-        cfg0["agent_token"] = token
-    save_config(cfg0)
-    ensure_autostart(base, interval, exe=dst, token=token)
+    interval = int(load_config().get("interval") or DEFAULT_INTERVAL)
+    save_config({"nas": base, "interval": interval})
+    ensure_autostart(base, interval, exe=dst)
     register_protocol(exe=dst)
 
     # 5) 进度窗口 + 启动副本，自身退出
     install_progress(base)
     try:
-        cmd_extra = [dst, "--nas", base, "--interval", str(interval)]
-        if token:
-            cmd_extra += ["--token", token]
-        subprocess.Popen(cmd_extra, close_fds=True, creationflags=CREATE_NO_WINDOW)
+        subprocess.Popen([dst, "--nas", base, "--interval", str(interval)],
+                         close_fds=True, creationflags=CREATE_NO_WINDOW)
     except Exception as e:
         print("启动小助手失败：", e, file=sys.stderr)
         return False
@@ -1415,79 +1346,6 @@ def install_wizard(base_hint=""):
 
 
 # --------------------------------------------------------------------------
-# 傻瓜式配对：无令牌但有 NAS 地址时，提示输入 6 位配对码换取永久令牌
-# --------------------------------------------------------------------------
-
-def ask_pairing_code(base):
-    """配对码输入窗口：返回 6 位码或空字符串（取消/不可用）。"""
-    try:
-        import tkinter as tk
-    except Exception:
-        return ""
-    out = {"code": ""}
-
-    def build():
-        root, body = _modern_window("配对 NAS Safe 设备", 460, 312)
-        root.attributes("-topmost", True)
-        tk.Label(body, text="输入配对码", bg=BG, fg=TEXT, font=(FONT, 14, "bold")).pack(pady=(16, 2))
-        tk.Label(body, text="在控制台「功能设置 → 添加设备 → Windows 电脑」里\n点击「生成配对码」，把显示的 6 位数字填到这里",
-                 bg=BG, fg=TEXT2, font=(FONT, 9), justify="center").pack(pady=(2, 8))
-        box = tk.Entry(body, width=8, relief="flat", bg=CARD, fg=TEXT, font=(FONT, 24, "bold"),
-                       justify="center", highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
-        box.pack(pady=(2, 8))
-        box.focus_set()
-        err = tk.Label(body, text="", bg=BG, fg="#dc2626", font=(FONT, 9))
-        err.pack()
-        foot = tk.Frame(body, bg=BG)
-        foot.pack(fill="x", padx=20, pady=(4, 14))
-
-        def submit():
-            c = box.get().strip()
-            if len(c) != 6 or not c.isdigit():
-                err.configure(text="请输入 6 位数字")
-                return
-            out["code"] = c
-            try:
-                root.destroy()
-            except Exception:
-                pass
-
-        btn = _btn(foot, "配对并连接", primary=True, width=18, command=submit)
-        btn.pack(side="right")
-        box.bind("<Return>", lambda e: submit())
-        root.mainloop()
-
-    try:
-        build()
-    except Exception:
-        return ""
-    return out["code"]
-
-
-def pair_flow(base):
-    """用配对码换取永久令牌并落盘（带 UI）。返回 token 或空。"""
-    code = ask_pairing_code(base)
-    if not code:
-        return ""
-    try:
-        r = http_json(base.rstrip("/") + "/api/agent/pair", method="POST",
-                      body={"code": code,
-                            "hostname": os.environ.get("COMPUTERNAME") or socket.gethostname(),
-                            "os": "Windows"})
-    except Exception:
-        return ""
-    if r and r.get("ok"):
-        tok = r.get("token")
-        cfg = load_config()
-        cfg["nas"] = base.rstrip("/")
-        cfg["agent_token"] = tok
-        save_config(cfg)
-        ensure_autostart(base.rstrip("/"), int(cfg.get("interval") or DEFAULT_INTERVAL), token=tok)
-        return tok
-    return ""
-
-
-# --------------------------------------------------------------------------
 # 系统托盘图标（ctypes + Win32，纯标准库，零第三方依赖）
 #
 #   正常：产品蓝盾牌（与 NAS Safe 界面同色）；悬停提示「NAS Safe · 快照保护中」
@@ -1499,7 +1357,6 @@ class TrayIcon:
     WM_UPDATE = 0x0400 + 2      # 主线程通知托盘线程刷新图标
     WM_BALLOON = 0x0400 + 3     # 主线程通知托盘线程弹出气球
     ID_OPEN, ID_READ_ALL, ID_QUIT = 1001, 1002, 1003
-    ID_PAIR = 1004               # 右键菜单：输入配对码（把这台电脑纳管进总控台）
     NIF_ICON = 0x00000002
     NIF_TIP = 0x00000004
     NIF_INFO = 0x00000010
@@ -1511,12 +1368,11 @@ class TrayIcon:
     LR_LOADFROMFILE = 0x00000010
 
     def __init__(self, tip_normal="NAS Safe 桌面助手 · 快照保护中",
-                 on_open=None, on_read_all=None, on_quit=None, on_pair=None):
+                 on_open=None, on_read_all=None, on_quit=None):
         self.tip_normal = tip_normal
         self.on_open = on_open
         self.on_read_all = on_read_all
         self.on_quit = on_quit
-        self.on_pair = on_pair
         self.hwnd = None
         self.thread = None
         self._failed = False
@@ -1790,8 +1646,6 @@ class TrayIcon:
                             threading.Thread(target=self.on_open, daemon=True).start()
                         elif wparam == self.ID_READ_ALL and self.on_read_all:
                             self.on_read_all()
-                        elif wparam == self.ID_PAIR and self.on_pair:
-                            threading.Thread(target=self.on_pair, daemon=True).start()
                         elif wparam == self.ID_QUIT and self.on_quit:
                             self.on_quit()
                     elif msg == 0x0002:                     # WM_DESTROY
@@ -1862,7 +1716,6 @@ class TrayIcon:
             u32.AppendMenuW(menu, 0x00000800, 0, None)
             u32.AppendMenuW(menu, 0x00000000, self.ID_OPEN, f"查看未读提醒（{n}）")
             u32.AppendMenuW(menu, 0x00000000, self.ID_READ_ALL, "全部标记已读")
-            u32.AppendMenuW(menu, 0x00000000, self.ID_PAIR, "🔑 输入配对码…")
             u32.AppendMenuW(menu, 0x00000800, 0, None)          # MF_SEPARATOR
             u32.AppendMenuW(menu, 0x00000000, self.ID_QUIT, "退出小助手")
             u32.SetForegroundWindow(hwnd)
@@ -1874,8 +1727,6 @@ class TrayIcon:
                 threading.Thread(target=self.on_open, daemon=True).start()
             elif cmd == self.ID_READ_ALL and self.on_read_all:
                 self.on_read_all()
-            elif cmd == self.ID_PAIR and self.on_pair:
-                threading.Thread(target=self.on_pair, daemon=True).start()
             elif cmd == self.ID_QUIT and self.on_quit:
                 self.on_quit()
         except Exception:
@@ -2290,59 +2141,12 @@ def handle_protocol(raw):
     run_agent(base, interval, first=True)
 
 
-def _device_agent_loop(base, token):
-    """轻量代理心跳（与托盘 UI 一体）：注册一次，每 60s 心跳一次，静默重试。"""
-    def _post(path, obj):
-        try:
-            req = urllib.request.Request(base + path,
-                                         data=json.dumps(obj).encode("utf-8"),
-                                         method="POST",
-                                         headers={"Content-Type": "application/json"})
-            urllib.request.urlopen(req, timeout=10).read()
-            return True
-        except Exception:  # noqa: BLE001
-            return False
-    hostname = os.environ.get("COMPUTERNAME") or socket.gethostname()
-    osname = "Windows"
-    try:
-        _post("/api/agent/register", {"token": token, "hostname": hostname, "os": osname})
-    except Exception:
-        pass
-    while not STOP_EVENT.is_set():
-        if _post("/api/agent/heartbeat", {"token": token}):
-            agent_log("agent heartbeat ok")
-        else:
-            agent_log("agent heartbeat failed")
-        STOP_EVENT.wait(60)
-
-
-def run_agent(base, interval, first=False, once=False, no_ui=False, token=""):
+def run_agent(base, interval, first=False, once=False, no_ui=False):
     repair_protocol()  # 守护启动前自愈协议注册（重装/清理后指向可能错误）
     start_control_server()
     _TOAST.start()     # 启动 Win32 弹窗后台线程（与托盘同源，保证提醒可见）
     atexit.register(report_offline, base)  # 任何退出路径都上报离线，让 NAS 接管微信提醒
     report_online(base, force=True)
-    if token:
-        threading.Thread(target=_device_agent_loop, args=(base, token), daemon=True).start()
-
-    def _start_heartbeat(tok):
-        """配对成功后动态起心跳线程（防重复：已起过就不再起）。"""
-        if not tok or getattr(run_agent, "_hb_token", None) == tok:
-            return
-        run_agent._hb_token = tok
-        threading.Thread(target=_device_agent_loop, args=(base, tok), daemon=True).start()
-
-    def _pair_action():
-        """托盘菜单「输入配对码」：弹窗收码 → 换令牌 → 立即开始心跳。"""
-        tok = pair_flow(base)
-        if tok:
-            _start_heartbeat(tok)
-            notify(APP_NAME + " 配对成功",
-                   "这台电脑已登记进总控台并保持在线；以后开机也会自动连上。")
-            agent_log(f"pair ok via tray, token set ({tok[:4]}...)")
-        else:
-            agent_log("pair cancelled or failed via tray")
-
     seen = set()
     print(f"NAS Safe 小助手已启动：{base}（每 {interval}s 检查一次）")
     if once:
@@ -2362,8 +2166,7 @@ def run_agent(base, interval, first=False, once=False, no_ui=False, token=""):
 
         tray = TrayIcon(on_open=lambda: show_inbox_window(_refresh),
                         on_read_all=_read_all,
-                        on_quit=lambda: STOP_EVENT.set(),
-                        on_pair=_pair_action)
+                        on_quit=lambda: STOP_EVENT.set())
         if not tray.start():
             tray = None
         else:
@@ -2406,7 +2209,6 @@ def main():
     ap.add_argument("--install", action="store_true", help="一键安装：探测 NAS + 弹窗确认 + 开机自启")
     ap.add_argument("--protocol", default="", help=argparse.SUPPRESS)
     ap.add_argument("--no-ui", action="store_true", help="纯后台模式，不显示右下角图标")
-    ap.add_argument("--token", default="", help="设备轻量代理令牌（中控安装命令下发，带 UI 守护 + 代理心跳一体）")
     ap.add_argument("--once", action="store_true", help="只检测一次（调试用）")
     args = ap.parse_args()
 
@@ -2417,7 +2219,7 @@ def main():
     # 双击下载的 EXE：自己完成安装（复制到固定目录 + 开机自启 + 启动托盘副本）
     if getattr(sys, "frozen", False) and \
             os.path.abspath(os.path.dirname(sys.executable)) != os.path.abspath(install_dir()):
-        if self_install_flow(args.nas.rstrip("/"), token=args.token):
+        if self_install_flow(args.nas.rstrip("/")):
             return
 
     if agent_online():
@@ -2444,24 +2246,14 @@ def main():
         return
 
     interval = args.interval or int(cfg.get("interval") or DEFAULT_INTERVAL)
-    token = args.token or (cfg.get("agent_token") or "")
-    if not token and base and not args.no_ui and not args.once:
-        # 傻瓜式配对：没有令牌但有 NAS 地址 → 提示输入 6 位配对码换取令牌
-        paired = pair_flow(base)
-        if paired:
-            token = paired
     if args.install or first_run:
-        cfg2 = load_config()
-        cfg2.update({"nas": base, "interval": interval})
-        if token:
-            cfg2["agent_token"] = token
-        save_config(cfg2)
-        ensure_autostart(base, interval, token=token)
+        save_config({"nas": base, "interval": interval})
+        ensure_autostart(base, interval)
         register_protocol()
         if auto_install:
             install_progress(base)  # 只显示进度，不弹选择窗口
     run_agent(base, interval, first=args.install or first_run,
-              once=args.once, no_ui=args.no_ui, token=token)
+              once=args.once, no_ui=args.no_ui)
 
 
 if __name__ == "__main__":
