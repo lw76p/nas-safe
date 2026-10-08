@@ -216,10 +216,10 @@ def local_cidrs() -> list[dict]:
             continue
         net_int = ip_int & ((0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF)
         cidr = f"{_int_to_ip(net_int)}/{prefix}"
-        key = (cidr, iface)
-        if key in seen:
+        # 同一网段多块网卡（如 QTS 的 qvs0/1/2 同网段三 IP）：只保留第一个，避免重复扫 3 遍
+        if cidr in seen:
             continue
-        seen.add(key)
+        seen.add(cidr)
         kind = "vpn" if VPN_IFACE_RE.search(iface or "") else "lan"
         out.append({"cidr": cidr, "iface": iface, "kind": kind, "self_ip": ip})
     out.sort(key=lambda x: (x["kind"] != "vpn", x["cidr"]))
