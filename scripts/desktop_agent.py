@@ -323,6 +323,8 @@ class ToastManager:
             u32.SetTimer.restype = ctypes.c_size_t
             u32.PostQuitMessage.argtypes = [ctypes.c_int]
             u32.PostQuitMessage.restype = None
+            u32.GetParent.argtypes = [ctypes.c_void_p]
+            u32.GetParent.restype = ctypes.c_void_p
             g32.CreateSolidBrush.argtypes = [ctypes.c_uint32]
             g32.CreateSolidBrush.restype = ctypes.c_void_p
             g32.DeleteObject.argtypes = [ctypes.c_void_p]
@@ -390,14 +392,32 @@ class ToastManager:
                         except Exception:
                             pass
                         return int(manager._bg_brush)
+                    if msg == 0x0111:       # WM_COMMAND：SS_NOTIFY 的 Static 子控件被点击（STN_CLICKED）
+                        # 历史坑：卡片表面铺满 Static（图标/标题/正文/「点击查看详情」），
+                        # 不带 SS_NOTIFY 时系统 Static 会吞掉鼠标消息，点击文字全无反应，
+                        # 只有点到文字间空白才碰巧触发——用户体感「气泡点击详情无效」。
+                        # lparam 是控件 hwnd（64 位），& 0xFFFFFFFF 会截断 → GetParent 拿错句柄
+                        ctl = int(lparam) & 0xFFFFFFFFFFFFFFFF
+                        if ctl:
+                            parent = u32.GetParent(ctl)
+                            target = int(parent) if parent and int(parent) in manager._click else None
+                            if target is not None:
+                                cb = manager._click.pop(target, None)
+                                u32.DestroyWindow(parent)
+                                if cb:
+                                    threading.Thread(target=cb, daemon=True).start()
+                        return 0
                     if msg == 0x0113:       # WM_TIMER：到时自动销毁
                         u32.DestroyWindow(hwnd)
                         return 0
-                    if msg == 0x0201:       # WM_LBUTTONDOWN：点击触发回调
-                        cb = manager._click.pop(hwnd, None)
-                        u32.DestroyWindow(hwnd)
-                        if cb:
-                            threading.Thread(target=cb, daemon=True).start()
+                    if msg == 0x0201:       # WM_LBUTTONDOWN：点击触发回调（accent 条命中时映射到父卡片）
+                        target = hwnd if hwnd in manager._click else u32.GetParent(hwnd)
+                        target = int(target) if target else None
+                        if target is not None and target in manager._click:
+                            cb = manager._click.pop(target, None)
+                            u32.DestroyWindow(target)
+                            if cb:
+                                threading.Thread(target=cb, daemon=True).start()
                         return 0
                     if msg == 0x0002:       # WM_DESTROY
                         manager._click.pop(hwnd, None)
@@ -509,7 +529,7 @@ class ToastManager:
                     tx, tw = 58, w - 58 - 16
                     icon_w = u32.CreateWindowExW(
                         0, "Static", "",
-                        0x40000000 | 0x10000000 | 0x00000003,   # WS_CHILD|WS_VISIBLE|SS_ICON
+                        0x40000000 | 0x10000000 | 0x00000003 | 0x00000100,   # WS_CHILD|WS_VISIBLE|SS_ICON|SS_NOTIFY
                         16, 16, 32, 32, hwnd, None, self._hinst, None)
                     if icon_w:
                         u32.SendMessageW(icon_w, 0x0172, 1, hicon)   # STM_SETIMAGE
@@ -519,7 +539,7 @@ class ToastManager:
         # 标题；必须带 WS_VISIBLE，否则子控件永久隐藏（曾致气泡只有底板没文字）
         title_w = u32.CreateWindowExW(
             0, "Static", "",
-            0x40000000 | 0x10000000,                    # WS_CHILD | WS_VISIBLE
+            0x40000000 | 0x10000000 | 0x00000100,       # WS_CHILD|WS_VISIBLE|SS_NOTIFY
             tx, 14, tw, 24, hwnd, None, self._hinst, None)
         if title_w:
             self._colors[int(title_w)] = _TOAST_TITLE
@@ -529,7 +549,7 @@ class ToastManager:
         # 正文（常规浅色，自动换行）；同样必须 WS_VISIBLE
         body_w = u32.CreateWindowExW(
             0, "Static", "",
-            0x40000000 | 0x10000000 | 0x00000020 | 0x00000080,   # WS_CHILD|WS_VISIBLE|SS_WORDBREAK|SS_NOPREFIX
+            0x40000000 | 0x10000000 | 0x00000020 | 0x00000080 | 0x00000100,   # WS_CHILD|WS_VISIBLE|SS_WORDBREAK|SS_NOPREFIX|SS_NOTIFY
             tx, 42, tw, h - 42 - 30, hwnd, None, self._hinst, None)
         if body_w:
             self._colors[int(body_w)] = _TOAST_FG
@@ -540,7 +560,7 @@ class ToastManager:
         try:
             hint_w = u32.CreateWindowExW(
                 0, "Static", "",
-                0x40000000 | 0x10000000,
+                0x40000000 | 0x10000000 | 0x00000100,   # WS_CHILD|WS_VISIBLE|SS_NOTIFY
                 tx, h - 24, tw, 16, hwnd, None, self._hinst, None)
             if hint_w:
                 self._colors[int(hint_w)] = _TOAST_HINT
