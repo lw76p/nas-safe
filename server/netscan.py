@@ -413,6 +413,11 @@ def _rule_identify(fp: dict) -> dict:
     out = {"device_type": "unknown", "brand_label": "", "suggest_name": "",
            "suggest_group": "", "confidence": 0.3, "by": "rule"}
     host = (fp.get("hostname") or "").lower()
+    # 软路由 / 网关（iStoreOS、OpenWrt、ImmortalWrt、X-Wrt 等）常开 80/443/22，
+    # 也可能跑 Samba 暴露 139/445，若放在 Windows 规则前面优先识别，避免误判。
+    soft_router_markers = ("istoreos", "openwrt", "immortalwrt", "x-wrt", "lede", "padavan", "openwrt-")
+    is_soft_router = any(m in host for m in soft_router_markers) or any(m in low for m in soft_router_markers)
+    is_router_host = any(w in host for w in ("router", "gateway", "gw-", "rt-", "gt-"))
     if 8848 in ports:
         out.update({"device_type": "nas_safe", "brand_label": "TS Safe", "confidence": 0.9})
     elif 7000 in ports:
@@ -430,18 +435,26 @@ def _rule_identify(fp: dict) -> dict:
             out.update({"device_type": "unknown", "brand_label": "", "confidence": 0.3})
     elif "qnap" in low or (8080 in ports and 443 in ports):
         out.update({"device_type": "nas", "brand_label": "威联通 NAS", "confidence": 0.6})
-    elif 3389 in ports or 445 in ports or "win" in host:
+    elif is_soft_router:
+        _brand = "iStoreOS 软路由" if "istoreos" in low else "OpenWrt 软路由" if "openwrt" in low else "软路由"
+        out.update({"device_type": "router", "brand_label": _brand, "confidence": 0.8})
+    elif 3389 in ports or (445 in ports and 139 in ports and ("windows" in low or "win10" in low or "win11" in low or "microsoft" in low)) or ("win" in host and 445 in ports):
+        # Windows：必须有 RDP(3389) 或同时出现 SMB(139/445)+Windows 字样；
+        # 单靠 445 太容易被 Linux/Samba 误伤（如 iStoreOS 软路由）。
         out.update({"device_type": "pc", "brand_label": "Windows 电脑", "confidence": 0.6})
     elif 5900 in ports or 548 in ports or 88 in ports or "macbook" in host or "mac-" in host:
         out.update({"device_type": "pc", "brand_label": "macOS 电脑", "confidence": 0.5})
+    elif 23 in ports or "switch" in host:
+        # 可管理交换机常见 Telnet(23)；SSH(22) 也可能是交换机
+        out.update({"device_type": "router", "brand_label": "交换机/网关", "confidence": 0.5})
     elif 22 in ports or "ubuntu" in low or "debian" in low:
         out.update({"device_type": "server", "brand_label": "Linux 服务器", "confidence": 0.45})
     elif 554 in ports or "camera" in low or "hikvision" in low or "dahua" in low:
         out.update({"device_type": "camera", "brand_label": "摄像头", "confidence": 0.55})
     elif "espressif" in low:
         out.update({"device_type": "iot", "brand_label": "IoT 设备", "confidence": 0.7})
-    elif "rt-" in host or "gt-" in host or "asus" in low:
-        out.update({"device_type": "router", "brand_label": "华硕路由器", "confidence": 0.7})
+    elif is_router_host or "asus" in low:
+        out.update({"device_type": "router", "brand_label": "华硕路由器" if "asus" in low else "路由器/网关", "confidence": 0.65})
     elif 80 in ports or 443 in ports:
         out.update({"device_type": "unknown", "brand_label": "网络设备", "confidence": 0.3})
     if not out["brand_label"] and not ports:
