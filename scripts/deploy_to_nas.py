@@ -3,38 +3,22 @@ import os, sys, paramiko
 HOST = os.environ.get("NASSAFE_HOST", "192.168.8.62")
 USER = os.environ.get("NASSAFE_USER", "lw76p")
 PASS = os.environ.get("NASSAFE_PASS", "")
-DOCKER = "/share/CE_CACHEDEV1_DATA/.qpkg/container-station/bin/docker"
+DOCKER = "/share/CE_CACHEDEV1_DATA/.qpkg/container-station/usr/bin/docker"
 TARGET = "nassafe"
-BASE = r"C:\Users\aa\WorkBuddy\2026-09-29-16-08-29\nassafe"
+BASE = os.environ.get("NASSAFE_SRC", r"D:\TSafe\NAS-Safe-Windows-Full")
 HOST_TMP = "/share/CE_CACHEDEV1_DATA/nassafe_deploy"
 
 FILES = [
-    ("server/ai.py", "/app/server/ai.py"),
-    ("server/integrity.py", "/app/server/integrity.py"),
-    ("server/behavior.py", "/app/server/behavior.py"),
-    ("server/notify.py", "/app/server/notify.py"),
-    ("server/anomalies.py", "/app/server/anomalies.py"),
-    ("server/metrics.py", "/app/server/metrics.py"),
-    ("server/qnap.py", "/app/server/qnap.py"),
-    ("server/storage.py", "/app/server/storage.py"),
-    ("server/duplicates.py", "/app/server/duplicates.py"),
-    ("server/junk.py", "/app/server/junk.py"),
-    ("server/daily_report.py", "/app/server/daily_report.py"),
-    ("server/smartd.py", "/app/server/smartd.py"),
-    ("server/brands.py", "/app/server/brands.py"),
-    ("server/devices.py", "/app/server/devices.py"),
-    ("server/migrate.py", "/app/server/migrate.py"),
     ("server/app.py", "/app/server/app.py"),
-    ("scripts/desktop_agent.py", "/app/scripts/desktop_agent.py"),
-    ("web/app.js", "/app/web/app.js"),
-    ("web/app-20261002f.js", "/app/web/app-20261002f.js"),
+    ("server/devices.py", "/app/server/devices.py"),
+    ("server/netscan.py", "/app/server/netscan.py"),
+    ("server/editions.py", "/app/server/editions.py"),
+    ("server/pcctl.py", "/app/server/pcctl.py"),
+    ("server/test_pcctl_mock.py", "/app/server/test_pcctl_mock.py"),
+    ("server/test_pc_e2e.py", "/app/server/test_pc_e2e.py"),
     ("web/index.html", "/app/web/index.html"),
-    ("web/style.css", "/app/web/style.css"),
-    ("web/style-20261002f.css", "/app/web/style-20261002f.css"),
-    ("agent/桌面助手.exe", "/app/agent/桌面助手.exe"),
-    ("agent/NASSafeAgent.exe", "/app/agent/NASSafeAgent.exe"),
-    ("agent/nassafe_agent.ico", "/app/agent/nassafe_agent.ico"),
-    ("agent/nassafe_agent_alert.ico", "/app/agent/nassafe_agent_alert.ico"),
+    ("web/app-20261014a.js", "/app/web/app-20261014a.js"),
+    ("web/style-20261014a.css", "/app/web/style-20261014a.css"),
 ]
 
 c = paramiko.SSHClient()
