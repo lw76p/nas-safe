@@ -45,15 +45,26 @@ crpi-aoopmmoq9zfqyus5.cn-hangzhou.personal.cr.aliyuncs.com/lw76p/nas-safe
 
 ## 三、NAS 安装命令（威联通 SSH 实测）
 
-### 1. 一键安装（推荐：拉镜像 + 自动选最大存储卷 + 启动，一条命令装完）
+### 1. 一键安装（推荐：一条命令，从零到装完）
+
+★ 零依赖版（NAS 上什么都不用准备，SSH 进去直接粘贴，自动下载脚本 → 拉镜像 → 装完）：
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/lw76p/nas-safe@main/install_nas_safe.sh -o install.sh && sudo bash install.sh
+```
+
+（jsdelivr 不通时的备选源：把中间网址换成 `https://raw.githubusercontent.com/lw76p/nas-safe/main/install_nas_safe.sh`）
+
+★ 脚本已在手时（离线安装 / 指定数据目录）：
 
 ```bash
 sudo bash install_nas_safe.sh                      # 自动选剩余空间最大的卷
 sudo bash install_nas_safe.sh /share/我的目录       # 或自己指定数据目录
 ```
 
-- 脚本随安装包提供（见随附「程序」文件夹里的 `install_nas_safe.sh`）；
-- 控制台已装好的机器也可在线获取：
+脚本会自动：找 docker（含威联通 Container Station 路径）→ 选剩余空间最大的存储卷 → **拉镜像（不用提前 docker pull）** → 起容器 → 健康检查 → 打印控制台地址。
+
+- 控制台已装好的机器也可在线获取脚本：
   `curl -fsSL http://<NAS的IP>:8848/api/downloads/install_nas_safe.sh -o install.sh`
 - 重跑同一脚本即可升级（自动检测并替换旧容器，数据目录保留）。
 

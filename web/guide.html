@@ -46,10 +46,12 @@
 
   <h2>二、NAS 安装（一条命令装完）</h2>
   <div class="card">
-    <p><b>一键安装</b>（自动拉镜像 + 自动选剩余空间最大的存储卷 + 启动）：</p>
+    <p><b>★ 零依赖一条命令</b>（NAS 上什么都不用准备，SSH 进去直接粘贴——自动下载脚本 → 拉镜像 → 装完）：</p>
+    <pre><code>curl -fsSL https://cdn.jsdelivr.net/gh/lw76p/nas-safe@main/install_nas_safe.sh -o install.sh &amp;&amp; sudo bash install.sh</code></pre>
+    <p><b>脚本已在手时</b>（离线安装 / 指定数据目录）：</p>
     <pre><code>sudo bash install_nas_safe.sh                      # 自动选最大的卷
 sudo bash install_nas_safe.sh /share/我的目录       # 或自己指定数据目录</code></pre>
-    <p>脚本随安装包提供（<code>install_nas_safe.sh</code>）；控制台已装好的机器也可在线获取：</p>
+    <p>脚本会自动：找 docker → 选剩余空间最大的存储卷 → <b>拉镜像（不用提前 docker pull）</b> → 起容器 → 健康检查 → 打印控制台地址。控制台已装好的机器也可在线获取脚本：</p>
     <pre><code>curl -fsSL http://&lt;NAS的IP&gt;:8848/api/downloads/install_nas_safe.sh -o install.sh</code></pre>
     <p><b>手动方式</b>（想一步步来时用）：</p>
     <pre><code>docker run -d --name nassafe \
