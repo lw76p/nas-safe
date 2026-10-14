@@ -5046,6 +5046,13 @@ async function loadSettings() {
       $("notifyType").value = window.__relayAvailable ? "relay" : "email";
     }
     applyNotifyTypeLimits(nc.allowed_types, ch.type);
+    // 厂商邮件代发未开通时，直接藏掉「邮件（填邮箱就能收）」选项：
+    // 它依赖服务端 NASSAFE_RELAY_APIKEY，用户选了填邮箱也发不出去（死路）。
+    // 历史配置恰好是 relay 时保持可见，避免回显错乱；此时默认值已兜底到自备邮箱。
+    if (!window.__relayAvailable && $("notifyType").value !== "relay") {
+      const ro = document.querySelector('#notifyType option[value="relay"]');
+      if (ro) { ro.hidden = true; ro.style.display = "none"; ro.disabled = true; }
+    }
     renderNotifyFields($("notifyType").value);
   } catch (e) { /* 忽略 */ }
 
