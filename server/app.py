@@ -852,14 +852,32 @@ def _gen_enable_winrm_ps1(console_host: str) -> str:
 #       让 NAS 上的 TS Safe 可以远程管控这台电脑。
 # 说明：用的是 Windows 官方能力，不需要安装任何 TS Safe 软件。
 #
-# 用法：右键本文件 → 使用 PowerShell 运行（会弹管理员确认，点是）
+# 用法：右键本文件 → 使用 PowerShell 运行
+#       会自动弹出管理员授权窗口(UAC)，点「是」即可，无需手动找管理员入口。
 # ============================================================
-#requires -RunAsAdministrator
 
 $ErrorActionPreference = "Stop"
 
+# ---- 0/5 管理员自检：普通权限运行时自动弹 UAC 提权重开（小白无感）----
+$id = [Security.Principal.WindowsIdentity]::GetCurrent()
+$isAdmin = (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+  Write-Host ""
+  Write-Host "==> 需要管理员权限，正在弹出授权窗口(UAC)..." -ForegroundColor Cyan
+  try {
+    Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"{0}"' -f $PSCommandPath))
+    Write-Host "    请在弹出的确认框点「是」；之后的进度看新开的蓝色窗口。" -ForegroundColor Yellow
+  } catch {
+    Write-Host "    已取消或被拦截。请右键本文件 → 使用 PowerShell 运行，并在弹窗点「是」。" -ForegroundColor Red
+  }
+  Read-Host "    按回车键关闭本窗口"
+  exit
+}
+
+try {
+
 Write-Host ""
-Write-Host "==> 1/4 启动 WinRM 服务并设为开机自动..." -ForegroundColor Cyan
+Write-Host "==> 1/5 启动 WinRM 服务并设为开机自动..." -ForegroundColor Cyan
 Enable-PSRemoting -Force -SkipNetworkProfileCheck | Out-Null
 Set-Service WinRM -StartMode Automatic
 Start-Service WinRM
@@ -902,7 +920,16 @@ Write-Host " 设置 → 账户 → 其他用户，新建一个【本地管理员
 Write-Host ""
 Write-Host " 另外：管理员账户必须有开机密码，否则远程登录会被拒绝。" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
+
+} catch {
+  Write-Host ""
+  Write-Host "[出错了] $($_.Exception.Message)" -ForegroundColor Red
+  Write-Host "常见原因：杀毒软件拦截（360/火绒会拦这类系统改动，可先退出再重试）、" -ForegroundColor Yellow
+  Write-Host "或系统版本过旧。请把本窗口截图发给管理员。" -ForegroundColor Yellow
+}
+
 Write-Host ""
+Read-Host "全部结束。按回车键关闭窗口"
 """.replace("__SCOPE__", scope)
 
 
