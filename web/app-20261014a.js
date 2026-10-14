@@ -3781,7 +3781,7 @@ function setAiChatMode(mode) {
   const inp = $("aiChatInput");
   const hint = $("aiModeHint");
   const kbRow = $("aiKbRow");
-  const isFree = window.__tssafeEdition === "free";
+  const kbEnabled = (window.__tssafeCaps || {}).knowledge !== false;
   if (askBtn) askBtn.classList.toggle("primary", aiChatMode === "ask");
   if (askBtn) askBtn.classList.toggle("ghost", aiChatMode !== "ask");
   if (butlerBtn) butlerBtn.classList.toggle("primary", aiChatMode === "butler");
@@ -3794,10 +3794,10 @@ function setAiChatMode(mode) {
   if (hint) {
     hint.textContent = aiChatMode === "butler"
       ? "管家模式：AI 可调用本地工具执行建快照、列存储单元、查异常改动、搜文件、看健康。"
-      : (isFree ? "问答模式：AI 根据当前系统状态和告警回答。" : "问答模式：AI 根据当前系统状态和告警回答，可勾选下方「结合知识库」。");
+      : (kbEnabled ? "问答模式：AI 根据当前系统状态和告警回答，可勾选下方「结合知识库」。" : "问答模式：AI 根据当前系统状态和告警回答。");
   }
   if (kbRow) {
-    kbRow.style.display = (aiChatMode === "butler" || isFree) ? "none" : "";
+    kbRow.style.display = (aiChatMode === "butler" || !kbEnabled) ? "none" : "";
   }
 }
 
@@ -3805,17 +3805,17 @@ async function aiAsk(mode = "ask") {
   aiChatHistory = []; // 每次打开开新会话；会话内多轮共享上下文
   aiChatMode = mode === "butler" ? "butler" : "ask";
   const title = aiChatMode === "butler" ? "🤖 AI 管家" : "🤖 问 AI";
-  const edition = await ensureEditionCache().catch(() => "free");
-  const isFree = edition === "free";
+  await ensureEditionCache().catch(() => "free");
+  const kbEnabled = (window.__tssafeCaps || {}).knowledge !== false;
   openModal(
     title,
     `<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
        <button id="aiModeAsk" class="btn ${aiChatMode === "ask" ? "primary" : "ghost"}" onclick="setAiChatMode('ask')">问答模式</button>
        <button id="aiModeButler" class="btn ${aiChatMode === "butler" ? "primary" : "ghost"}" onclick="setAiChatMode('butler')">管家模式</button>
-       <span id="aiModeHint" class="muted" style="font-size:12px;flex:1">${aiChatMode === "butler" ? "管家模式：AI 可调用本地工具执行建快照、列存储单元、查异常改动、搜文件、看健康。" : (isFree ? "问答模式：AI 根据当前系统状态和告警回答。" : "问答模式：AI 根据当前系统状态和告警回答，可勾选下方「结合知识库」。")}</span>
+       <span id="aiModeHint" class="muted" style="font-size:12px;flex:1">${aiChatMode === "butler" ? "管家模式：AI 可调用本地工具执行建快照、列存储单元、查异常改动、搜文件、看健康。" : (kbEnabled ? "问答模式：AI 根据当前系统状态和告警回答，可勾选下方「结合知识库」。" : "问答模式：AI 根据当前系统状态和告警回答。")}</span>
      </div>
      <div id="aiChatLog" style="flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 2px 10px;margin-bottom:10px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;justify-content:flex-start"></div>
-     <label id="aiKbRow" class="chk-inline" style="display:${isFree || aiChatMode === "butler" ? "none" : ""};margin:8px 0 0"><input type="checkbox" id="aiKbChk"> 结合知识库回答（文档在「设置 → 知识库」管理）</label>
+     <label id="aiKbRow" class="chk-inline" style="display:${aiChatMode === "butler" || !kbEnabled ? "none" : ""};margin:8px 0 0"><input type="checkbox" id="aiKbChk"> 结合知识库回答（文档在「设置 → 知识库」管理）</label>
      <textarea id="aiChatInput" class="text-input" rows="3" style="display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:86px;line-height:1.6;flex:none"
        placeholder="${aiChatMode === "butler" ? "直接下指令或提问，例如：帮我建一张快照 / 看看有没有异常改动 / 搜一下简历 / 硬盘健康吗？" : "输入问题，回车发送（Shift+回车换行）。AI 答完可继续追问或补充信息。"}"></textarea>
      <p class="muted" style="margin:8px 0 0">回答基于当前系统状态与告警，仅供参考；关键操作请以人工判断为准。</p>`,
@@ -4348,6 +4348,12 @@ function ensureEditionCache() {
   if (window.__tssafeEditionPromise) return window.__tssafeEditionPromise;
   window.__tssafeEditionPromise = api("/api/license").then((d) => {
     window.__tssafeEdition = d.edition || "free";
+    // 能力开关缓存：全功能开源免费后按能力判断入口显隐，不再按版本名判断
+    window.__tssafeCaps = {
+      knowledge: d.knowledge !== false,
+      photo_search: d.photo_search === true,
+      emergency: d.emergency === true,
+    };
     applyEditionUI();
     return window.__tssafeEdition;
   }).catch(() => "free");
@@ -4355,16 +4361,20 @@ function ensureEditionCache() {
 }
 
 function applyEditionUI() {
-  const ed = window.__tssafeEdition || "free";
+  // 全功能开源免费：入口显隐一律按能力开关（window.__tssafeCaps），不再按版本名
+  const caps = window.__tssafeCaps || {};
   const photoBtn = document.querySelector('.settings-tab[data-tab="photo"]');
-  if (photoBtn) photoBtn.style.display = ed === "business" ? "" : "none";
+  if (photoBtn) photoBtn.style.display = caps.photo_search ? "" : "none";
   const kbRow = $("aiKbRow");
   if (kbRow) {
-    const isFree = ed === "free";
+    const kbEnabled = caps.knowledge !== false;
     const inButler = typeof aiChatMode !== "undefined" && aiChatMode === "butler";
-    kbRow.style.display = (isFree || inButler) ? "none" : "";
+    kbRow.style.display = (!kbEnabled || inButler) ? "none" : "";
   }
 }
+
+// 启动即拉一次能力开关：照片搜索页签默认 display:none，必须在这里解开
+ensureEditionCache();
 
 function toggleVssCleanBtn(vol) {
   const vb = $("vssCleanBtn");

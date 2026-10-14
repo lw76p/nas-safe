@@ -46,7 +46,13 @@ def _build_free_all() -> dict:
             elif isinstance(v, bool):
                 merged[k] = merged[k] or v
             elif isinstance(v, (int, float)):
-                merged[k] = max(merged[k], v)
+                # 数量类合并：UNLIMITED(-1) 代表不限，必须压过任何正数。
+                # 旧实现直接 max()，-1 反而输给免费档的正数（如 ai_cloud_sources
+                # 被算成 3，把 zhipu/qiniu 裁掉了）——这正是残留门槛的根源。
+                if v == UNLIMITED or merged[k] == UNLIMITED:
+                    merged[k] = UNLIMITED
+                else:
+                    merged[k] = max(merged[k], v)
             else:
                 merged[k] = v
     merged.update({
@@ -56,6 +62,7 @@ def _build_free_all() -> dict:
         "max_snapshots": UNLIMITED,
         "ai_quota": UNLIMITED,
         "kb_quota": UNLIMITED,
+        "ai_cloud_sources": UNLIMITED,          # 云端 AI 全量放行（防合并遗漏）
         "console": "full",
         "remote_devices": True,
         "migrate": True,

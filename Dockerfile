@@ -1,42 +1,32 @@
-# NAS Safe — 容器镜像
-#
-# 基础镜像选 python:3.12-slim（Debian），与飞牛/绿联/OMV 同为 Debian 系
-# 镜像内不含 btrfs-progs 的实际二进制依赖 —— 我们调用的是宿主机命令
-
-FROM python:3.12-slim
-
-LABEL org.opencontainers.image.title="NAS Safe"
-LABEL org.opencontainers.image.description="NAS 防勒索快照管理 —— 锁住快照，时间轴一键回滚"
-LABEL org.opencontainers.image.version="1.0.0"
-
-# 时区 + 基础工具（zfsutils 在部分 slim 源缺失，按可选装：容器实际调用的是宿主机命令）
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      tzdata \
-      btrfs-progs \
-      ca-certificates \
- && (apt-get install -y --no-install-recommends zfsutils-linux || echo "zfsutils-linux skipped") \
- && rm -rf /var/lib/apt/lists/*
+# TS Safe — 全功能开源免费版
+# 构建：docker build -t nas-safe:latest .
+# 运行：docker run -d --name nassafe --network host \
+#         -v /share/CE_CACHEDEV1_DATA/nassafe_state:/app/state \
+#         --restart unless-stopped nas-safe:latest
+# 基础镜像走 DaoCloud 中转（国内可拉；与官方 python:3.12-slim 同源）
+FROM docker.m.daocloud.io/library/python:3.12-slim
 
 WORKDIR /app
 
-# 知识库文档解析依赖（pdf/docx）；csv/txt/md 走标准库
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# 依赖：仅知识库文档解析用（pdf/docx）；基础服务全走标准库
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server/ /app/server/
-COPY web/ /app/web/
+# 程序与前端（含 /guide.html 使用指南）
+COPY server/ ./server/
+COPY web/ ./web/
+COPY docs/ ./docs/
+COPY 首次使用指南.txt ./
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    NASSAFE_HOST=0.0.0.0 \
-    NASSAFE_PORT=8848 \
-    NASSAFE_WEB_DIR=/app/web \
-    TZ=Asia/Shanghai
+ENV NASSAFE_PORT=8848 \
+    NASSAFE_BIND_HOST=0.0.0.0 \
+    PYTHONUNBUFFERED=1
+
+# 账号/设备/配置/快照记录全在这里，挂出来升级不丢
+VOLUME ["/app/state"]
 
 EXPOSE 8848
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
+  CMD python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8848/api/health',timeout=4)" || exit 1
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8848/api/health',timeout=3)"
-
-CMD ["python3", "/app/server/app.py"]
+CMD ["python3", "server/app.py"]

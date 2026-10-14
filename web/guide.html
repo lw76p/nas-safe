@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TS Safe 使用指南</title>
+<style>
+  :root { --ink:#1c2330; --mut:#68738a; --line:#e3e7ef; --bg:#f6f8fc; --card:#fff; --blue:#2f6fed; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif; color:var(--ink); background:var(--bg); line-height:1.75; }
+  .wrap { max-width:860px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:26px; margin:6px 0 4px; }
+  .sub { color:var(--mut); margin:0 0 18px; }
+  h2 { font-size:19px; margin:30px 0 10px; padding-left:10px; border-left:4px solid var(--blue); }
+  h3 { font-size:16px; margin:18px 0 6px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 20px; margin:12px 0; }
+  code, pre { font-family:Consolas,Menlo,monospace; font-size:13px; }
+  code { background:#eef2fb; border-radius:5px; padding:1px 6px; }
+  pre { background:#0f1724; color:#dbe6ff; padding:12px 14px; border-radius:10px; overflow-x:auto; }
+  pre code { background:none; color:inherit; padding:0; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:14px; }
+  th, td { border:1px solid var(--line); padding:7px 10px; text-align:left; }
+  th { background:#eef2fb; }
+  .tip { background:#f0f7ff; border:1px solid #cfe0ff; border-radius:10px; padding:10px 14px; margin:10px 0; font-size:14px; }
+  .warn { background:#fff7ec; border:1px solid #ffd9a3; border-radius:10px; padding:10px 14px; margin:10px 0; font-size:14px; }
+  ol li, ul li { margin:4px 0; }
+  a { color:var(--blue); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>TS Safe 使用指南</h1>
+  <p class="sub">全功能开源免费 · NAS / Windows 电脑 / Mac / Linux / 摄像头 / 路由器统一管控 · 本文档随镜像内置，离线可看</p>
+
+  <h2>一、这是什么</h2>
+  <div class="card">
+    <p>TS Safe 是装在 NAS 上的<b>数据安全总控台</b>，主打「防勒索 + 快照 + 取回还原」，附带重复文件清理、磁盘清理、换机迁移、日报、AI 管家。设备数、AI 额度、迁移、知识库全部<b>不设限、不收费</b>。</p>
+    <ul>
+      <li><b>NAS（本机）</b>：装它的这台，功能全开，是总控台。</li>
+      <li><b>Windows 电脑</b>：零安装接入，可远程执行 / 重启 / 关机。</li>
+      <li><b>Mac / Linux 电脑</b>：装完整版 TS Safe 后主动报到，看完整指标。</li>
+      <li><b>摄像头</b>：只做在线检测（ping）。</li>
+      <li><b>路由器 / 软路由</b>：仅监控，显示在线 / 离线。</li>
+    </ul>
+  </div>
+
+  <h2>二、NAS 安装（Docker，host 网络）</h2>
+  <div class="card">
+    <pre><code>docker pull &lt;镜像仓库地址&gt;/nas-safe:latest
+
+docker run -d --name nassafe \
+  --network host \
+  -v /share/CE_CACHEDEV1_DATA/nassafe_state:/app/state \
+  --restart unless-stopped \
+  &lt;镜像仓库地址&gt;/nas-safe:latest</code></pre>
+    <p>装完打开 <code>http://&lt;NAS的IP&gt;:8848</code>，首次进入会要求注册管理员账号。</p>
+    <div class="tip">数据（账号 / 设备 / 快照记录 / 配置）全部落在挂载的 <code>/app/state</code> 目录，升级或换容器不丢。</div>
+  </div>
+
+  <h2>三、接入 Windows 电脑（零安装）</h2>
+  <div class="card">
+    <ol>
+      <li>在电脑浏览器打开 <code>http://&lt;NAS的IP&gt;:8848/api/downloads/enable-winrm.ps1</code>，下载「一键开启」脚本。</li>
+      <li>右键脚本 → <b>使用 PowerShell 运行</b> → UAC 点「是」。脚本做 5 件事：起 WinRM、放行防火墙、开 Basic 认证、解除 UAC 远程令牌降权、把当前账户加进远程管理组。</li>
+      <li>NAS 控制台 → 设置 → ＋添加设备 → 添加电脑，填电脑 IP + 管理员账号密码。</li>
+    </ol>
+    <div class="warn">⚠️ WinRM 基本认证只认<b>本地账户</b>。如果这台电脑用微软 / Azure AD 账户登录，请先建一个本地管理员账户（设置 → 账户 → 其他用户），用那个账户接入。</div>
+    <p>多台 Windows 电脑 = 每台各跑一次脚本。脚本只是打开 Windows 自带开关，不是装软件。</p>
+  </div>
+
+  <h2>四、接入 Mac / Linux 电脑</h2>
+  <div class="card">
+    <p>不装任何脚本，直接装 TS Safe 完整版：控制台 → 点设备卡片 → 「⬇ 下载完整版安装包」→ 拷到目标机解压：</p>
+    <pre><code># Linux（systemd 开机自启，需 root；Python ≥ 3.10）
+sudo bash install_service.sh
+
+# macOS（launchd 开机自启，免 sudo）
+bash install_service.sh</code></pre>
+    <p>装完自动向总控台报到（60 秒心跳），控制台里即显示在线与完整指标。</p>
+  </div>
+
+  <h2>五、AI 与知识库</h2>
+  <div class="card">
+    <ul>
+      <li><b>AI 配置</b>：设置 → AI 配置，填任意一家云端 AI 的 API Key（推荐 DeepSeek），或填本地 Ollama 地址。调用次数<b>不限量</b>。</li>
+      <li><b>知识库</b>：设置 → 知识库，上传 txt / md / pdf / docx 等文档，之后「问 AI」可勾选「结合知识库回答」。额度<b>不限量</b>。</li>
+      <li><b>照片语义搜索</b>：设置 → 照片搜索，建立索引后用自然语言找图。</li>
+    </ul>
+  </div>
+
+  <h2>六、常见问题</h2>
+  <div class="card">
+    <table>
+      <tr><th>现象</th><th>原因 / 处理</th></tr>
+      <tr><td>添加电脑后显示离线</td><td>① 电脑没跑一键脚本；② 用了微软账户登录（见上方警告）；③ 防火墙拦了 5985 端口</td></tr>
+      <tr><td>路由器 / 摄像头显示离线</td><td>仅监控设备按探活判定：确认 IP 正确、设备允许 ping / 管理端口开放</td></tr>
+      <tr><td>AI 回答失败</td><td>设置 → AI 配置里填好 API Key 并启用；本地 Ollama 需先在本机跑起来</td></tr>
+      <tr><td>忘了管理员密码</td><td>在 NAS 上执行 <code>docker exec -it nassafe python3 server/reset_admin.py 用户名 新密码</code></td></tr>
+      <tr><td>快照在哪里</td><td>由存储卷的快照能力决定（btrfs / zfs / VSS / APFS），控制台「快照」页可查看与取回</td></tr>
+    </table>
+  </div>
+
+  <p class="sub" style="margin-top:26px">TS Safe · 全功能开源免费版 · 本指南随镜像分发，版本与程序一致</p>
+</div>
+</body>
+</html>
