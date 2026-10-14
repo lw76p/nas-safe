@@ -8,14 +8,14 @@
 #      bash install_nas_safe.sh /volume2
 #
 #  可选环境变量（一般不用管）：
-#      NASSAFE_IMAGE   镜像地址（默认阿里云 lw76p/nas-safe:latest）
+#      NASSAFE_IMAGE   镜像地址（默认阿里云 lw76p/nassafe:latest）
 #      NASSAFE_NAME    容器名（默认 nassafe）
 #      NASSAFE_PORT    端口（默认 8848）
 #      NASSAFE_DRY_RUN=1   只打印将执行的命令，不真装
 # ============================================================
 set -u
 
-IMAGE="${NASSAFE_IMAGE:-crpi-aoopmmoq9zfqyus5.cn-hangzhou.personal.cr.aliyuncs.com/lw76p/nas-safe:latest}"
+IMAGE="${NASSAFE_IMAGE:-crpi-aoopmmoq9zfqyus5.cn-hangzhou.personal.cr.aliyuncs.com/lw76p/nassafe:latest}"
 NAME="${NASSAFE_NAME:-nassafe}"
 PORT="${NASSAFE_PORT:-8848}"
 DRY="${NASSAFE_DRY_RUN:-0}"
