@@ -49,6 +49,7 @@ import re
 import time
 import shutil
 import sys
+import threading
 import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -832,8 +833,11 @@ def _pc_guard(fn, dev, *args, **kwargs):
 def _gen_enable_winrm_ps1(console_host: str) -> str:
     """生成电脑端「一键开启」脚本（用户右键管理员运行一次）。
 
-    做四件事：开 WinRM 服务并设为自动；放行防火墙（本子网 + 总控台地址）；
-    允许 Basic 认证（局域网方案）；最后把本机 IP 打出来让用户填到网页里。
+    做五件事：开 WinRM 服务并设为自动；放行防火墙（本子网 + 总控台地址）；
+    允许 Basic 认证（局域网方案）；设置 LocalAccountTokenFilterPolicy=1
+    （工作组/非域机器远程管理员令牌过滤的开关，不设为 1 则本地管理员远程
+    只能拿到被 UAC 降权的普通令牌，无法创建远程 shell，表现为
+    "ActionNotSupported/资源 URI 不支持 Invoke 操作"）；最后把本机 IP 打出。
     """
     nas_ip = ""
     if console_host:
@@ -860,16 +864,26 @@ Enable-PSRemoting -Force -SkipNetworkProfileCheck | Out-Null
 Set-Service WinRM -StartMode Automatic
 Start-Service WinRM
 
-Write-Host "==> 2/4 放行防火墙（仅本子网和总控台地址）..." -ForegroundColor Cyan
-Get-NetFirewallRule -Direction Inbound -Name "WINRM*" -ErrorAction SilentlyContinue |
+Write-Host "==> 2/5 放行防火墙（仅本子网和总控台地址）..." -ForegroundColor Cyan
+# 注意：Get-NetFirewallRule 不能同时用 -Direction 与 -Name（会报「无法解析参数集」），
+# 先按名称取回再按方向过滤。
+Get-NetFirewallRule -Name "WINRM*" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Direction -eq "Inbound" } |
     ForEach-Object { Set-NetFirewallRule -Name $_.Name -RemoteAddress "__SCOPE__" }
 
-Write-Host "==> 3/4 允许 Basic 认证（局域网一次性方案）..." -ForegroundColor Cyan
+Write-Host "==> 3/5 允许 Basic 认证（局域网一次性方案）..." -ForegroundColor Cyan
 winrm set winrm/config/service/auth '@{Basic="true"}' | Out-Null
 winrm set winrm/config/service '@{AllowUnencrypted="true"}' | Out-Null
 
-Write-Host "==> 4/4 检查管理员账户..." -ForegroundColor Cyan
+Write-Host "==> 4/5 允许远程管理员完整令牌（工作组/非域机器必需）..." -ForegroundColor Cyan
+# 工作组或 Azure AD 加入的机器，本地管理员远程(Basic)登录默认被 UAC 令牌过滤
+# 降为普通用户令牌，导致无法创建远程 shell（ActionNotSupported）。设为 1 后给完整令牌。
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f | Out-Null
+
+Write-Host "==> 5/5 加入远程管理用户组并检查账户..." -ForegroundColor Cyan
 $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+# 把当前用户加入「Remote Management Users」组（远程 WinRM 标准授权组）
+net localgroup "Remote Management Users" "$env:USERNAME" /add 2>$null | Out-Null
 Write-Host "    当前账户：$me"
 
 Write-Host ""
@@ -880,10 +894,13 @@ Get-NetIPAddress -AddressFamily IPv4 |
     ForEach-Object { Write-Host "   $($_.IPAddress)" -ForegroundColor Yellow }
 Write-Host ""
 Write-Host " 下一步：打开 NAS 的 TS Safe 网页 → 设备管理 → 添加电脑，" -ForegroundColor Green
-Write-Host " 把上面的 IP 填进去，账号密码用管理员账户的登录密码。" -ForegroundColor Green
+Write-Host " 把上面的 IP 填进去，账号用本机管理员用户名，密码用它的登录密码。" -ForegroundColor Green
 Write-Host ""
-Write-Host " 注意：如果管理员账户没有设置开机密码，请先在 Windows" -ForegroundColor Green
-Write-Host " 设置里加一个密码，否则远程登录会被拒绝。" -ForegroundColor Green
+Write-Host " 重要：如果这台电脑是用【Microsoft 账户 / 公司或学校账户】登录的，" -ForegroundColor Yellow
+Write-Host " 那种账户属于 Azure AD，无法用于 WinRM 的 Basic 认证。请先到 Windows" -ForegroundColor Yellow
+Write-Host " 设置 → 账户 → 其他用户，新建一个【本地管理员】账户，再用它来填写。" -ForegroundColor Yellow
+Write-Host ""
+Write-Host " 另外：管理员账户必须有开机密码，否则远程登录会被拒绝。" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ""
 """.replace("__SCOPE__", scope)
@@ -1122,9 +1139,11 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     force = bool(query.get("force"))
                     data = metrics.collect(force=force)
-                    # 叠加 SMART 健康摘要（失败不影响指标主数据）
+                    # 叠加 SMART 健康摘要；smartd 首页冷缓存会同步跑 smartctl 扫描，
+                    # 可能很慢——用线程 + 超时守卫，最多等 2s，超时先留空、后台补齐，
+                    # 保证本接口永不因 SMART 慢采集而超时。
                     try:
-                        data["smart"] = smartd.collect(force=force)
+                        data["smart"] = _collect_smart_safe(force)
                     except Exception:  # noqa: BLE001
                         data["smart"] = {"available": False, "disks": []}
                     self._send_json({"ok": True, "metrics": data})
@@ -2344,6 +2363,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": f"服务内部错误: {exc}"}, 500)
 
 
+def _collect_smart_safe(force: bool) -> dict:
+    """带超时守卫的 SMART 采集：smartd 首页冷缓存会同步跑 smartctl 扫描，可能很慢。
+
+    用后台线程跑采集、主线程最多等 2s；超时则先返回「不可用」占位，smartd 内部
+    缓存会在后台补齐，下次轮询即正常。避免 /api/system/metrics 因 SMART 慢而超时。"""
+    box: dict = {}
+
+    def _run() -> None:
+        try:
+            box["data"] = smartd.collect(force=force)
+        except Exception:  # noqa: BLE001
+            box["data"] = {"available": False, "disks": []}
+
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    th.join(timeout=2.0)
+    return box.get("data", {"available": False, "disks": []})
+
+
 def main() -> None:
     profile = storage.probe_system()
     print("=" * 58)
@@ -2396,6 +2434,12 @@ def main() -> None:
     try:
         # 告警历史扫描：持续把本机告警落盘，供「告警信息」页展示历史记录
         alertlog.start_scanner(int(os.environ.get("NASSAFE_ALERTLOG_INTERVAL", "120")))
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    try:
+        # 系统指标后台刷新：采集可能很慢（内核块层读取间歇变慢），放到守护线程
+        # 定时刷新缓存，控制台接口只从缓存即时返回，永不因采集慢而超时。
+        metrics.start_refresh()
     except Exception:  # noqa: BLE001
         traceback.print_exc()
     try:

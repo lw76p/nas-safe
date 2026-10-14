@@ -280,7 +280,7 @@
 
     <div class="settings-layout">
       <nav class="settings-menu">
-        <button class="settings-tab" data-tab="license">版本与升级</button>
+
         <button class="settings-tab active" data-tab="notify">通知</button>
         <button class="settings-tab" data-tab="autosnap">自动快照</button>
         <button class="settings-tab" data-tab="daily">日报</button>
@@ -300,22 +300,6 @@
       </nav>
 
       <div class="settings-body">
-        <!-- 版本与升级 -->
-        <div class="settings-pane" data-pane="license">
-          <h3 class="sub-h">版本与升级</h3>
-          <div class="set-row"><span class="set-label">当前版本</span><span id="licEdition">—</span></div>
-          <div class="set-row"><span class="set-label">本机机器码</span><span id="licFp" style="font-family:monospace">—</span>
-            <button class="btn ghost" id="licCopyFp" style="margin-left:8px">复制</button></div>
-          <div id="licStatus" class="notice" style="display:none"></div>
-          <p class="muted" style="margin:8px 0 6px;line-height:1.8">本项目开源，免费版永久免费：管理2台设备，所有数据保护功能全开、消息通知为邮件 + 微信推送、可设置3 种云端 AI。家庭版：可管 5 台设备、一键备份并迁移换机、全部常见云端 AI+。专业版：联机管控设备无限制、增加管控异地组网设备、增加自定义通知和 AI 接口。具体区别可见下面内容</p>
-          <div id="licCompare" class="lic-compare"></div>
-          <div class="set-row" style="margin-top:12px"><span class="set-label">激活码</span>
-            <input id="licKey" class="text-input" type="text" placeholder="粘贴厂商给你的激活码" style="flex:1"></div>
-          <div class="set-actions">
-            <button class="btn primary" id="licActivateBtn">激活</button>
-          </div>
-        </div>
-
         <!-- 通知 -->
         <div class="settings-pane active" data-pane="notify">
           <h3 class="sub-h">通知通道</h3>
@@ -500,9 +484,9 @@
           <div id="psResults" style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px"></div>
         </div>
         <div class="settings-pane" data-pane="kb">
-          <h3 class="sub-h">知识库（RAG，家庭版起）</h3>
+          <h3 class="sub-h">知识库（RAG）</h3>
           <p class="muted" style="line-height:1.8">把产品说明书、运维笔记、常见问题等文档喂给 AI，之后用自然语言提问，AI 会结合这些文档作答。文档只在「本机」摄入，不会外传；提问可在任意页面用「问 AI」时勾选「结合知识库」。教程：① 准备 txt/md/srt/csv/pdf/docx 文档；② 在下方「摄入文档」上传或粘贴；③ 到任意页面的「问 AI」里勾选结合知识库后提问。</p>
-          <div id="kbFreeTip" class="notice" style="display:none">📌 知识库是 <b>家庭版起</b> 的功能，当前是免费版。升级后这里可以上传产品说明书、运维笔记等文档，AI 会照着这些文档回答问题。到「版本与升级」页可查看对比与升级。</div>
+
           <div id="kbPaneBody">
           <div class="kb-block" style="border:1px solid var(--border);border-radius:10px;padding:10px;margin:8px 0">
             <div style="font-weight:600;margin-bottom:6px">① 摄入文档（后台录入，仅本机）</div>

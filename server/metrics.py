@@ -20,6 +20,7 @@ TS Safe — 系统指标采集（仪表盘数据源，仅标准库）
 from __future__ import annotations
 
 import sys
+import threading
 import time
 
 # 结果缓存
@@ -142,6 +143,16 @@ def space_alerts(vols: list, trends: list | None = None) -> list:
 
 
 _BATCH = r"""
+# 超时安全读取：容器一般有 timeout，裸机 NAS 可能无，两者都兼容。
+# 目的：个别块设备（尤其卷/快照抽象设备 fbdisk*/fbsnap*）的 device/model 或 stat
+# 读取会陷入内核不可中断等待，拖死整段采集（曾致 BLK/DISKSTAT 各 5s+，控制台超时）。
+catf() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 2 cat "$1" 2>/dev/null
+  else
+    cat "$1" 2>/dev/null
+  fi
+}
 echo "#STAT"
 head -1 /proc/stat 2>/dev/null
 sleep 0.5
@@ -155,22 +166,30 @@ head -8 /proc/meminfo 2>/dev/null
 echo "#NET"
 cat /proc/net/dev 2>/dev/null
 echo "#DF"
-df -kP 2>/dev/null
+df -kP -x fuse -x fuseblk -x fuse.hdsfusemnt -x fusectl -x cifs -x smb -x nfs -x nfs4 -x tmpfs -x overlay -x overlayfs -x devtmpfs -x ecryptfs -x ramfs -x autofs 2>/dev/null
 echo "#BLK"
 for d in /sys/block/*; do
   n=$(basename "$d")
-  case "$n" in loop*|ram*|zram*|dm-*|md*|sr*|drbd*|nbd*) continue ;; esac
+  # 只保留真实物理盘；其余（dm/loop/ram/nbd/md/drbd/sr/fbdisk/fbsnap 等抽象/虚拟设备）
+  # 一律跳过——它们数量庞大且 device/model 读取极慢，拖垮整段采集且对用户无意义。
+  case "$n" in
+    sd*|hd*|nvme*|mmc*|vd*) : ;;
+    *) continue ;;
+  esac
   [ -e "$d" ] || continue
-  m=$(cat "$d/device/model" 2>/dev/null)
-  [ -n "$m" ] || m=$(cat "$d/device/name" 2>/dev/null)
-  echo "$n|$(cat "$d/size" 2>/dev/null)|$(echo "$m" | tr -d '\\t')"
+  m=$(catf "$d/device/model")
+  [ -n "$m" ] || m=$(catf "$d/device/name")
+  echo "$n|$(catf "$d/size")|$(echo "$m" | tr -d '\\t')"
 done
 echo "#DISKSTAT"
 for d in /sys/block/*; do
   n=$(basename "$d")
-  case "$n" in loop*|ram*|zram*|dm-*|md*|sr*|drbd*|nbd*) continue ;; esac
+  case "$n" in
+    sd*|hd*|nvme*|mmc*|vd*) : ;;
+    *) continue ;;
+  esac
   [ -e "$d" ] || continue
-  echo "$n|$(cat "$d/stat" 2>/dev/null)"
+  echo "$n|$(catf "$d/stat")"
 done
 echo "#TEMP"
 for h in /sys/class/hwmon/hwmon*; do
@@ -189,19 +208,27 @@ echo "#END"
 
 
 def _run_cmd(script: str) -> str:
-    """执行一条只读 shell 命令：复用 qnap 客户端通道（SSH 远程或本地均由其处理）。"""
-    try:
-        from qnap import default_client
+    """执行一条只读 shell 命令（本地 subprocess，最快且无 SSH 回环开销）。
 
-        return default_client().run_shell(script)
-    except Exception:
-        pass
+    NAS 部署为 host 网络容器，/proc、/sys、df 等均为宿主机视图；磁盘卷经
+    /share:ro 挂载进容器后本地 df 即可见，无需再经 SSH 回环到本机（此前
+    NASSAFE_HOST=0.0.0.0 被误当 SSH 目标，每次采集都 14s+ 回连自身导致控制台超时）。
+    仅当本地 shell 不可用（极少数非 Linux 场景）才回落 qnap 通道。"""
     import subprocess
 
-    proc = subprocess.run(
-        ["/bin/sh", "-c", script], capture_output=True, text=True, timeout=60
-    )
-    return (proc.stdout or "") + (proc.stderr or "")
+    try:
+        proc = subprocess.run(
+            ["/bin/sh", "-c", script], capture_output=True, text=True, timeout=60
+        )
+        return (proc.stdout or "") + (proc.stderr or "")
+    except (FileNotFoundError, OSError):
+        # 无本地 shell（如 Windows）：回落 qnap 通道
+        try:
+            from qnap import default_client
+
+            return default_client().run_shell(script)
+        except Exception:
+            return ""
 
 
 def _run_batch() -> str:
@@ -458,16 +485,19 @@ def _collect_windows() -> dict:
     }
 
 
-def collect(force: bool = False) -> dict:
-    """采集系统指标（带缓存）。返回可直接 JSON 化的 dict。"""
+def _do_collect() -> dict:
+    """执行一次真实采集（可能较慢，受内核块层读取间歇性变慢影响可达十几秒）。
+
+    由后台刷新线程周期性调用，或首启 bootstrap 调用；调用方负责加 _collect_lock。
+    更新全局缓存并返回可直接 JSON 化的 dict。请求路径不直接调用本函数，
+    而是从缓存即时返回，从而保证控制台接口永不因采集慢而超时。"""
     global _last, _net_prev, _io_prev
     now = time.time()
-    if not force and _last and now - _last["ts"] < _CACHE_TTL:
-        return _last["data"]
 
     if sys.platform == "win32":
         data = _collect_windows()
-        _last = {"ts": now, "data": data}
+        with _collect_lock:
+            _last = {"ts": now, "data": data}
         return data
 
     raw = _run_batch()
@@ -569,5 +599,79 @@ def collect(force: bool = False) -> dict:
             "fan": bool(fan and (fan.get("fan_rpm") or fan.get("cpu_fan_rpm"))),
         },
     }
-    _last = {"ts": now, "data": data}
+    with _collect_lock:
+        _last = {"ts": now, "data": data}
     return data
+
+
+# ---------------------------------------------------------------------------
+# 后台刷新：采集可能很慢（QNAP 内核块层读取间歇性变慢，单次可达十几秒），但
+# 控制台接口必须即时响应。因此采集全部在后台线程完成，HTTP 请求只从缓存
+# 即时读取——锁仅保护 _last 的交接（写/读各一瞬），慢采集过程不加锁。
+# ---------------------------------------------------------------------------
+_collect_lock = threading.Lock()
+_refresh_thread = None
+_refresh_interval = 10.0
+_refresh_now = threading.Event()
+
+
+def _empty() -> dict:
+    """缓存尚未就绪时返回的安全空结构（字段齐全，capabilities 全 False），
+    前端按能力渲染不会报错。"""
+    return {
+        "hostname": "NAS",
+        "uptime_s": 0,
+        "uptime": {"days": 0, "hours": 0, "minutes": 0},
+        "cpu": {"percent": None, "load1": None, "temp_c": None},
+        "mem": None,
+        "net": {"rx_bps": None, "tx_bps": None, "ifaces": []},
+        "volumes": [],
+        "trends": [],
+        "disks": [],
+        "fan": None,
+        "capabilities": {
+            "cpu_percent": False, "cpu_temp": False, "mem": False,
+            "net": False, "volumes": False, "disks": False, "disk_io": False,
+            "disk_temp": False, "fan": False,
+        },
+    }
+
+
+def collect(force: bool = False) -> dict:
+    """公开采集接口：永远从缓存即时返回，绝不阻塞 HTTP 请求。
+
+    - 缓存已就绪且非 force：直接返回（亚毫秒级）。
+    - 缓存未就绪（首启/后台首次采集进行中）：返回安全空结构，后台线程填充。
+    - force=True：触发一次即时后台刷新并返回当前缓存（不阻塞本请求）。
+    真正耗时的采集由 _refresh_loop 在后台完成，控制台因此永不超时。"""
+    global _last
+    start_refresh()  # 确保后台线程在跑（幂等）
+    with _collect_lock:
+        if _last is not None and not force:
+            return _last["data"]
+    if force:
+        _refresh_now.set()  # 唤醒后台线程立即刷新
+    with _collect_lock:
+        if _last is not None:
+            return _last["data"]
+    return _empty()
+
+
+def _refresh_loop() -> None:
+    # _do_collect 仅由本线程调用，无需为慢采集加锁；锁只保护 _last 的交接。
+    while True:
+        try:
+            _do_collect()
+        except Exception:  # noqa: BLE001 采集异常不致命，下一轮再试
+            pass
+        _refresh_now.wait(_refresh_interval)
+        _refresh_now.clear()
+
+
+def start_refresh() -> None:
+    """启动/确保采集后台线程存活（幂等）。应在服务启动时调用一次。"""
+    global _refresh_thread
+    if _refresh_thread is None or not _refresh_thread.is_alive():
+        _refresh_thread = threading.Thread(
+            target=_refresh_loop, name="metrics-refresh", daemon=True)
+        _refresh_thread.start()

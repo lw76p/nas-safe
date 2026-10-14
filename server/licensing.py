@@ -321,6 +321,12 @@ def info() -> dict:
         "max_devices": lim.get("max_devices", editions.UNLIMITED),
         "can_migrate": bool(lim.get("migrate")),
         "max_snapshots": lim.get("max_snapshots", editions.UNLIMITED),
+        # 能力开关：前端按「能力」判断，而不是按版本名判断
+        # （全功能免费后 edition 恒为 free，只有这些开关能表达真实能力）
+        "knowledge": bool(lim.get("knowledge")),
+        "photo_search": bool(lim.get("photo_search")),
+        "emergency": bool(lim.get("emergency")),
+        "migrate": bool(lim.get("migrate")),
     }
     if record:
         out["activated_at"] = record.get("activated_at")

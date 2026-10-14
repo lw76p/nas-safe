@@ -31,6 +31,7 @@ import json
 import re
 import ssl
 import time
+import uuid
 import urllib.error
 import urllib.request
 from xml.sax.saxutils import escape
@@ -40,14 +41,17 @@ from xml.sax.saxutils import escape
 # ---------------------------------------------------------------------------
 
 _SHELL_URI = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd"
-_A_CREATE = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/create"
+# 注意：WinRM 的「开/关 shell」用的是 WS-Transfer 的 Create/Delete 动作 URI，
+# 而 Command/Receive/Signal 才用 microsoft.com 的 shell 命名空间。
+# 用错命名空间会导致「资源 URI 不支持 Invoke 操作」(2150858801)。
+_A_CREATE = "http://schemas.xmlsoap.org/ws/2004/09/transfer/Create"
 _A_COMMAND = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Command"
 _A_RECEIVE = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Receive"
-_A_DELETE = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Delete"
+_A_DELETE = "http://schemas.xmlsoap.org/ws/2004/09/transfer/Delete"
 _A_SIGNAL = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Signal"
 
 _NS = {
-    "s": "http://www.w3.org/2003/09/soap-envelope",
+    "s": "http://www.w3.org/2003/05/soap-envelope",
     "w": "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd",
     "rsp": "http://schemas.microsoft.com/wbem/wsman/1/windows/shell",
 }
@@ -66,7 +70,7 @@ class PcCtlError(Exception):
 def _envelope(header: str, body: str) -> bytes:
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        '<s:Envelope xmlns:s="%(s)s" xmlns:w="%(w)s" xmlns:rsp="%(rsp)s">'
+        '<s:Envelope xmlns:s="%(s)s" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:w="%(w)s" xmlns:rsp="%(rsp)s">'
         "<s:Header>%(h)s</s:Header>"
         "<s:Body>%(b)s</s:Body>"
         "</s:Envelope>"
@@ -78,10 +82,23 @@ def _iso_timeout(seconds: float) -> str:
     return "PT%dS" % max(1, int(seconds))
 
 
-def _create_env(timeout: float) -> bytes:
+def _addr(to: str) -> str:
+    """WS-Addressing 头：To / ReplyTo(匿名) / MessageID（WinRM 必需）。"""
+    msgid = "uuid:" + str(uuid.uuid4())
+    return (
+        '<a:To s:mustUnderstand="true">%s</a:To>'
+        '<a:ReplyTo><a:Address s:mustUnderstand="true">'
+        "http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous"
+        "</a:Address></a:ReplyTo>"
+        "<a:MessageID>%s</a:MessageID>"
+    ) % (escape(to), msgid)
+
+
+def _create_env(timeout: float, to: str) -> bytes:
     header = (
+        _addr(to) +
         '<w:ResourceURI s:mustUnderstand="true">%s</w:ResourceURI>'
-        '<w:Action s:mustUnderstand="true">%s</w:Action>'
+        '<a:Action s:mustUnderstand="true">%s</a:Action>'
         '<w:MaxEnvelopeSize s:mustUnderstand="true">512000</w:MaxEnvelopeSize>'
         '<w:OperationTimeout s:mustUnderstand="true">%s</w:OperationTimeout>'
         "<w:OptionSet>"
@@ -98,46 +115,52 @@ def _create_env(timeout: float) -> bytes:
     return _envelope(header, body)
 
 
-def _command_env(shell_id: str, args: list, timeout: float) -> bytes:
+def _command_env(shell_id: str, args: list, timeout: float, to: str) -> bytes:
     header = (
+        _addr(to) +
         '<w:ResourceURI s:mustUnderstand="true">%s</w:ResourceURI>'
-        '<w:Action s:mustUnderstand="true">%s</w:Action>'
+        '<a:Action s:mustUnderstand="true">%s</a:Action>'
         '<w:OperationTimeout s:mustUnderstand="true">%s</w:OperationTimeout>'
         '<w:SelectorSet><w:Selector Name="ShellId">%s</w:Selector></w:SelectorSet>'
     ) % (_SHELL_URI, _A_COMMAND, _iso_timeout(timeout), escape(shell_id))
-    body = '<rsp:CommandLine CommandId=""><rsp:Command>powershell</rsp:Command>'
-    body += "".join("<rsp:Arguments>%s</rsp:Arguments>" % escape(str(a)) for a in args)
-    body += "</rsp:CommandLine>"
+    # 所有参数合并进【一个】<rsp:Arguments> 节点（空格分隔），与 pywinrm 一致。
+    # 不能把脚本拆成多个 <rsp:Arguments>：脚本含换行/特殊字符时，多 token 会让
+    # powershell 的 -Command 收不到值（报「A command must follow -Command」）。
+    args_str = " ".join(escape(str(a)) for a in args)
+    body = ('<rsp:CommandLine><rsp:Command>powershell</rsp:Command>'
+            '<rsp:Arguments>%s</rsp:Arguments></rsp:CommandLine>') % args_str
     return _envelope(header, body)
 
 
-def _receive_env(shell_id: str, command_id: str) -> bytes:
+def _receive_env(shell_id: str, command_id: str, to: str) -> bytes:
     header = (
+        _addr(to) +
         '<w:ResourceURI s:mustUnderstand="true">%s</w:ResourceURI>'
-        '<w:Action s:mustUnderstand="true">%s</w:Action>'
+        '<a:Action s:mustUnderstand="true">%s</a:Action>'
         '<w:SelectorSet><w:Selector Name="ShellId">%s</w:Selector></w:SelectorSet>'
     ) % (_SHELL_URI, _A_RECEIVE, escape(shell_id))
-    body = "<rsp:Receive>"
-    for stream in ("stdout", "stderr"):
-        body += '<rsp:DesiredStream CommandId="%s">%s</rsp:DesiredStream>' % (
-            escape(command_id), stream)
-    body += "</rsp:Receive>"
+    # 注意：必须用一个 <rsp:DesiredStream> 节点、文本为 "stdout stderr"；
+    # 拆成两个 DesiredStream 节点会触发 w:SchemaValidationError（无效 Receive 元素）。
+    body = ('<rsp:Receive><rsp:DesiredStream CommandId="%s">stdout stderr'
+            '</rsp:DesiredStream></rsp:Receive>') % escape(command_id)
     return _envelope(header, body)
 
 
-def _delete_env(shell_id: str) -> bytes:
+def _delete_env(shell_id: str, to: str) -> bytes:
     header = (
+        _addr(to) +
         '<w:ResourceURI s:mustUnderstand="true">%s</w:ResourceURI>'
-        '<w:Action s:mustUnderstand="true">%s</w:Action>'
+        '<a:Action s:mustUnderstand="true">%s</a:Action>'
         '<w:SelectorSet><w:Selector Name="ShellId">%s</w:Selector></w:SelectorSet>'
     ) % (_SHELL_URI, _A_DELETE, escape(shell_id))
     return _envelope(header, "")
 
 
-def _signal_env(shell_id: str, command_id: str, code: str = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/signal/terminate") -> bytes:
+def _signal_env(shell_id: str, command_id: str, to: str, code: str = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/signal/terminate") -> bytes:
     header = (
+        _addr(to) +
         '<w:ResourceURI s:mustUnderstand="true">%s</w:ResourceURI>'
-        '<w:Action s:mustUnderstand="true">%s</w:Action>'
+        '<a:Action s:mustUnderstand="true">%s</a:Action>'
         '<w:SelectorSet><w:Selector Name="ShellId">%s</w:Selector></w:SelectorSet>'
     ) % (_SHELL_URI, _A_SIGNAL, escape(shell_id))
     body = (
@@ -217,8 +240,11 @@ def _extract_fault(xml_text: str) -> str:
     if not m:
         return ""
     block = m.group(0)
-    for pat in (r"<faultstring[^>]*>(.*?)</faultstring>",
+    # 优先取具体故障信息：WSManFault/Message、Reason/Text、faultstring
+    for pat in (r"<f:Message>(.*?)</f:Message>",
                 r"<wsman:Message>(.*?)</wsman:Message>",
+                r"<s:Text[^>]*>(.*?)</s:Text>",
+                r"<faultstring[^>]*>(.*?)</faultstring>",
                 r"<Message>(.*?)</Message>"):
         mm = re.search(pat, block, re.S)
         if mm:
@@ -268,38 +294,74 @@ def _find(xml_text: str, path: str) -> object:
 # 协议流程：create shell → command → receive 循环 → delete
 # ---------------------------------------------------------------------------
 
+def _clean_clixml(text: str) -> str:
+    """去掉 PowerShell 混进 stderr/stdout 的 CLIXML 噪音。
+
+    Windows 的 powershell 在首次加载模块时会把一段进度记录以
+    `#< CLIXML` 开头的 XML 写到 stderr，它不是真正的报错，
+    但会让「命令失败」误判、也会污染展示。这里整段剔除。
+    """
+    if not text:
+        return ""
+    out = text
+    while True:
+        i = out.find("#< CLIXML")
+        if i < 0:
+            break
+        # CLIXML 段以 <Objs 开始、</Objs> 结束；找不到结束标记就截到末尾
+        end = out.find("</Objs>", i)
+        if end < 0:
+            out = out[:i]
+        else:
+            out = out[:i] + out[end + len("</Objs>"):]
+    return out.strip("\r\n")
+
+
 def run(dev: dict, script: str, timeout: float = 60.0) -> dict:
     """在电脑上执行 PowerShell 脚本，返回 {ok, exit, stdout, stderr, ms}。"""
     timeout = min(max(float(timeout), 5), 1800)
+    # 必须去掉首尾空白（尤其开头的换行）：脚本以 \n 开头会让
+    # `powershell -Command` 收到空行，报「A command must follow -Command」。
+    script = (script or "").strip("\r\n\t ").strip()
+    # 用 -EncodedCommand（UTF-16LE base64）传脚本：脚本里含 | & < > 等 shell
+    # 元字符时，若走 -Command 会被 WinRM 启动的 shell 当成管道/重定向解释，
+    # 导致脚本被截断、输出为空。base64 后内容全是安全字符，彻底规避。
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     endpoint = _endpoint(dev)
     auth = _auth_header(dev)
     t0 = time.time()
 
     # 1) 创建 shell
-    raw = _post(endpoint, _create_env(timeout + 30), auth, timeout + 30)
-    shell_id = _find(raw, "Envelope/Body/Shell/@ShellId")
-    if not shell_id:
+    raw = _post(endpoint, _create_env(timeout + 30, to=endpoint), auth, timeout + 30)
+    # 注意：WinRM CreateResponse 的 ShellId 是 <rsp:ShellId> 子元素，不是属性
+    # 重要：Python 3.13 起「无子元素的 Element」bool 为假，故不能用 `if not`，必须 is None
+    shell_id = _find(raw, "Envelope/Body/Shell/ShellId")
+    if shell_id is None:
         raise PcCtlError("电脑没有返回 ShellId，WinRM 可能未开启或端口不对")
+    shell_id = (shell_id.text or "").strip()
 
     try:
-        # 2) 下发命令
+        # 2) 下发命令（脚本已 base64 编码，作为 -EncodedCommand 的参数）
         args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                "-Command", script]
-        raw = _post(endpoint, _command_env(shell_id, args, timeout), auth, timeout + 10)
-        command_id = _find(raw, "Envelope/Body/CommandResponse/@CommandId")
-        if not command_id:
+                "-EncodedCommand", encoded]
+        raw = _post(endpoint, _command_env(shell_id, args, timeout, to=endpoint), auth, timeout + 10)
+        # CommandId 也是 <rsp:CommandId> 子元素，不是属性
+        command_id = _find(raw, "Envelope/Body/CommandResponse/CommandId")
+        if command_id is None:
             raise PcCtlError("电脑没有接受命令（CommandId 缺失）")
+        command_id = (command_id.text or "").strip()
 
         # 3) 接收循环直到 CommandState=Done
         out_buf, err_buf = [], []
         exit_code = None
         deadline = time.time() + timeout + 20
         while time.time() < deadline:
-            raw = _post(endpoint, _receive_env(shell_id, command_id), auth,
+            raw = _post(endpoint, _receive_env(shell_id, command_id, to=endpoint), auth,
                         min(60, max(10, deadline - time.time())))
             # 注意：不能用 `_find(...) or []`——ElementTree 里无子元素的 Element
             # （如自闭合的 CommandState/Stream）bool 值为 False，会被 or 吞掉。
-            streams = _find(raw, "Envelope/Body/Receive/Stream")
+            # 注意：Receive 的【响应】根元素是 <rsp:ReceiveResponse>（不是 Receive）
+            streams = _find(raw, "Envelope/Body/ReceiveResponse/Stream")
             if streams is None:
                 streams = []
             elif not isinstance(streams, list):
@@ -317,7 +379,7 @@ def run(dev: dict, script: str, timeout: float = 60.0) -> dict:
                     err_buf.append(data)
                 else:
                     out_buf.append(data)
-            states = _find(raw, "Envelope/Body/Receive/CommandState")
+            states = _find(raw, "Envelope/Body/ReceiveResponse/CommandState")
             if states is None:
                 states = []
             elif not isinstance(states, list):
@@ -334,21 +396,23 @@ def run(dev: dict, script: str, timeout: float = 60.0) -> dict:
         else:
             # 超时：发 terminate 信号，按失败返回已有输出
             try:
-                _post(endpoint, _signal_env(shell_id, command_id), auth, 15)
+                _post(endpoint, _signal_env(shell_id, command_id, to=endpoint), auth, 15)
             except PcCtlError:
                 pass
             return {"ok": False, "exit": -1,
-                    "stdout": "".join(out_buf), "stderr": "".join(err_buf),
+                    "stdout": _clean_clixml("".join(out_buf)),
+                    "stderr": _clean_clixml("".join(err_buf)),
                     "error": "命令执行超时（%ds）" % timeout,
                     "ms": int((time.time() - t0) * 1000)}
 
         return {"ok": (exit_code or 0) == 0, "exit": exit_code or 0,
-                "stdout": "".join(out_buf), "stderr": "".join(err_buf),
+                "stdout": _clean_clixml("".join(out_buf)),
+                "stderr": _clean_clixml("".join(err_buf)),
                 "ms": int((time.time() - t0) * 1000)}
     finally:
         # 4) 关 shell（失败不影响主结果）
         try:
-            _post(endpoint, _delete_env(shell_id), auth, 20)
+            _post(endpoint, _delete_env(shell_id, to=endpoint), auth, 20)
         except PcCtlError:
             pass
 

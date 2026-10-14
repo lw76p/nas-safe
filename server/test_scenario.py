@@ -44,10 +44,34 @@ def check(label, cond, detail=""):
         print(f"  {RED}[失败]{RESET} {label} {detail}")
 
 
+def _ensure_fixture():
+    """模拟存储不存在时自动构造（以前要求手工建目录，导致换机器就跑不了）。
+
+    结构：
+      volume1/docs/report.txt          生产文件（内容含「误改」）
+      volume1/.nassafe/snapshots/snap-20260929-160000/docs/report.txt   快照原版（含「原始内容」）
+      volume1/.nassafe/snapshots/snap-20260929-160000/docs/contract.txt 快照里另一个文件
+    """
+    snap_root = os.path.join(FAKE_ROOT, ".nassafe", "snapshots", "snap-20260929-160000")
+    prod = os.path.join(FAKE_ROOT, "docs", "report.txt")
+    if os.path.isfile(prod) and os.path.isfile(os.path.join(snap_root, "docs", "report.txt")):
+        return
+    os.makedirs(os.path.join(FAKE_ROOT, "docs"), exist_ok=True)
+    os.makedirs(os.path.join(snap_root, "docs"), exist_ok=True)
+    with open(prod, "w", encoding="utf-8") as f:
+        f.write("这是被误改后的内容 v2\n")
+    with open(os.path.join(snap_root, "docs", "report.txt"), "w", encoding="utf-8") as f:
+        f.write("这是原始内容 v1\n")
+    with open(os.path.join(snap_root, "docs", "contract.txt"), "w", encoding="utf-8") as f:
+        f.write("合同正文，快照保留。\n")
+
+
 def main():
     print("=" * 62)
     print("  真实场景验证：误改文档 → 从快照取回")
     print("=" * 62)
+
+    _ensure_fixture()
 
     if not os.path.isdir(FAKE_ROOT):
         print(f"  {RED}模拟目录不存在：{FAKE_ROOT}{RESET}")

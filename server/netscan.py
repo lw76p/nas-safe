@@ -338,23 +338,82 @@ def _grab_banner(ip: str, port: int, timeout: float = 1.6) -> str:
         return ""
 
 
-def _icmp_alive(ip: str, timeout: float = 1.0) -> bool:
+# TCP 兜底探活用的常见管理端口：路由器/软路由/交换机必然开着其中几个
+_TCP_FALLBACK_PORTS = (80, 443, 22, 53, 8080, 8848, 8443)
+
+
+def _tcp_alive(ip: str, timeout: float = 1.0, src: str | None = None,
+               ports=tuple(_TCP_FALLBACK_PORTS)) -> bool:
+    """TCP 兜底探活：逐个连常见管理端口，任一连上即算在线。
+
+    为什么需要：QNAP 的容器镜像精简，`ping` 二进制可能不存在（实测 nassafe
+    容器里就没有），subprocess 直接 FileNotFoundError，导致所有「仅监控」
+    设备（路由器 / 交换机 / 摄像头）被永远判成离线。路由器这类设备必然开着
+    80/443/22/53 之一，TCP 能连上本身就是「在线」的可靠信号。
+
+    src：可选源 IP（仅 IPv4 字面量生效），用于多网段场景绑定出口；
+    接口名（如 eth1）对 TCP 无意义，忽略。
+    """
+    src_ip = None
+    if src and re.match(r"^\d{1,3}(\.\d{1,3}){3}$", src.strip()):
+        src_ip = src.strip()
+    for p in ports:
+        s = None
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            if src_ip:
+                try:
+                    s.bind((src_ip, 0))
+                except OSError:
+                    pass  # 绑不上就走默认路由，别让兜底探测本身失败
+            s.settimeout(max(timeout, 0.3))
+            s.connect((ip, p))
+            return True
+        except OSError:
+            continue
+        finally:
+            if s is not None:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+    return False
+
+
+def _icmp_alive(ip: str, timeout: float = 1.0, src: str | None = None) -> bool:
     """ICMP 探活兜底。
 
     很多电脑（尤其是开着防火墙的 Windows）一个对外端口都不开，
     只按端口采指纹会把它判成「不存在」，用户就会觉得「扫不到我的电脑」。
     这里 ping 一次确认在线；ping 不通就当不存在，不影响其它逻辑。
+
+    src：可选「探测出口」。当 NAS 有多个网口、目标与默认路由不在同一段时
+    （例如摄像头在光猫段 192.168.1.x、NAS 主服务在 192.168.8.x，NAS 另接一根
+    网线到光猫段），可指定从哪个接口/源 IP 出去：
+      - Linux：``ping -I <src>``（src 可是接口名如 eth1，或源 IP 如 192.168.1.50）
+      - Windows：``ping -S <src>``（src 为源 IP）
+    留空则走系统路由表（Linux 对直连网段会自动走对应网口，无需手填）。
     """
     try:
         if platform.system().lower().startswith("win"):
             cmd = ["ping", "-n", "1", "-w", str(max(1, int(timeout * 1000))), ip]
+            if src:
+                cmd = ["ping", "-n", "1", "-w", str(max(1, int(timeout * 1000))),
+                       "-S", src, ip]
         else:
             cmd = ["ping", "-c", "1", "-W", str(max(1, int(timeout))), ip]
+            if src:
+                cmd = ["ping", "-c", "1", "-W", str(max(1, int(timeout))),
+                       "-I", src, ip]
         r = subprocess.run(cmd, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=timeout + 3)
-        return r.returncode == 0
-    except Exception:  # noqa: BLE001 无 ping 权限 / 超时都当不在线
-        return False
+        if r.returncode == 0:
+            return True
+    except Exception:  # noqa: BLE001 无 ping 权限 / 命令不存在 / 超时
+        pass
+    # ping 不可用或不通时的 TCP 兜底：容器镜像常没有 ping 命令，
+    # 而路由器/软路由/摄像头管理口几乎总是开着，TCP 连通即是在线。
+    return _tcp_alive(ip, timeout=timeout, src=src)
 
 
 def fingerprint(ip: str, ports: list | None = None, timeout: float = CONNECT_TIMEOUT) -> dict:

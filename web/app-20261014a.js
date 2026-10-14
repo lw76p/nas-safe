@@ -188,7 +188,7 @@ async function api(path, options = {}, timeoutMs = 60000) {
     }
     if (!data.ok) {
       // 服务端卡点（设备数/迁移等）返回 upgrade:true——这正是展示升级页的时机
-      if (data.upgrade && !window.__suppressUpgradeJump && typeof openUpgradeModal === "function") openUpgradeModal();
+      // 全功能开源免费：不再弹升级页
       throw new Error(data.error || "未知错误");
     }
     return data;
@@ -2728,6 +2728,10 @@ async function renderManage() {
       // 摄像头：只检测在线状态，不做任何远程操作
       badge = `<span class="mg-agent">📷 摄像头</span>`;
       body = `<p class="muted" style="margin:0;font-size:12px">只检测在线状态（支持跨网段，如光猫网段），不做远程操作。</p>`;
+      if (offline) {
+        body += `<p style="margin:6px 0 0;font-size:12px;color:#b26a00">⚠️ 与 NAS 不在同一网段时显示「离线」属正常（NAS 默认探不到光猫段设备）。</p>`;
+      }
+      body += `<p style="margin:6px 0 0"><a href="cross_segment_camera.html" target="_blank" rel="noopener" style="font-size:12px;color:#1565c0">📖 跨网段探测设置教程（进阶）</a></p>`;
     } else if (kind === "pc") {
       // 电脑：WinRM 转控（状态 / 扫描 / 重启 / 关机 / 执行）
       badge = `<span class="mg-agent full">🖥️ 电脑</span>`;
@@ -2995,7 +2999,8 @@ function openAddCameraModal() {
       <label class="scan-row"><span>名称</span><input id="camName" class="text-input" placeholder="如 大门摄像头" maxlength="24"></label>
       <label class="scan-row wide"><span>IP 地址</span><input id="camHost" class="text-input" placeholder="如 192.168.1.64" inputmode="decimal"></label>
     </div></div>
-    <p class="muted" style="margin:8px 0 0">只显示在线 / 离线，不做远程操作。跨网段（如光猫段）也可以。</p>`,
+    <p class="muted" style="margin:8px 0 0">只显示在线 / 离线，不做远程操作。跨网段（如光猫段）也可以。</p>
+     <p class="muted" style="margin:6px 0 0;font-size:12px">若摄像头与 NAS 不在同一网段，控制台可能显示「离线」属正常（NAS 默认探不到光猫段设备）。进阶用户可点设备卡片里的 <a href="cross_segment_camera.html" target="_blank" rel="noopener" style="color:#1565c0">📖 跨网段探测设置教程</a> 打通。</p>`,
     `<button class="btn ghost" data-act="close">取消</button>
      <button class="btn primary" data-act="save">保存</button>`,
     { save: saveCameraDevice }
@@ -3873,11 +3878,7 @@ async function sendAiChat() {
     aiChatHistory.push({ role: "assistant", content: ans || "（AI 没有返回内容，请换个问法重试，或点「新话题」重开）" });
   } catch (e) {
     let msg = "❌ 回答失败：" + e.message;
-    if (/次数已用完|升级家庭版/.test(e.message)) {
-      msg += `\n<button class="btn primary" style="margin-top:8px" onclick="openUpgradeModal();document.querySelector('#modalFoot button[data-act=\\'close\\']')?.click();">升级家庭版，AI 不限量</button>`;
-    } else {
-      msg += "\n若提示 AI 未配置，请到「设置 → AI 配置」先启用。";
-    }
+    msg += "\n若提示 AI 未配置，请到「设置 → AI 配置」先启用。";
     aiChatHistory.push({ role: "assistant", content: msg });
   } finally {
     renderAiChat();
@@ -4954,7 +4955,7 @@ function applyAiProviderLimits(list, current) {
     const names = Array.from(sel.options)
       .filter((o) => list.indexOf(o.value) >= 0)
       .map((o) => o.getAttribute("data-label") || o.textContent).join("、");
-    hint.textContent = `当前版本可用：${names}。升级到家庭版后，其余云端 AI 和本地 AI 会自动加进列表。`;
+    hint.textContent = `可用接口：${names}。`;
   }
 }
 
@@ -4982,7 +4983,7 @@ function applyNotifyTypeLimits(list, current) {
     const names = Array.from(sel.options)
       .filter((o) => o.value && list.indexOf(o.value) >= 0)
       .map((o) => o.getAttribute("data-label") || o.textContent).join("、");
-    hint.textContent = `当前版本可用：${names}。升级到专业版后，会自动出现飞书、群机器人、手机推送、Telegram 等更多方式。`;
+    hint.textContent = `可用通道：${names}。`;
   }
 }
 
@@ -5219,7 +5220,7 @@ function initKbPane() {
   }
   // 免费版没有知识库（家庭版起）：显示升级提示、隐藏功能框，避免填了才被后端拒绝。
   api("/api/license").then((d) => {
-    const free = (d.edition || "free") === "free";
+    const free = d.knowledge === false;   // 全功能免费版：按能力开关判断
     const tip = $("kbFreeTip");
     if (tip) tip.style.display = free ? "" : "none";
     document.querySelectorAll("#kbPaneBody .kb-block").forEach((el) => { el.style.display = free ? "none" : ""; });
@@ -5939,262 +5940,11 @@ loadDaily();
 $("dailySaveBtn").onclick = saveDaily;
 $("dailyRunBtn").onclick = runDaily;
 
-// ---- 版本与激活 ----
-const UPGRADE_ROWS = [
-  ["可管理设备", "2 台（含本机）", "5 台 + 轻量代理", "不限 + 异地组网设备"],
-  ["一键备份 / 换机迁移", "—", "✅", "✅"],
-  ["跨设备控制台", "—", "✅", "✅"],
-  ["消息通知", "邮件 + 微信服务号", "邮件 + 微信服务号", "+ 群机器人 / 飞书 / 手机推送 / Telegram"],
-  ["AI 接口", "3 种云端", "全部常见云端 + 本地模型", "自定义 API 随意接"],
-  ["自动快照 / 日报 / 清理", "全有", "全有", "全有"],
-  ["防勒索 / 快照 / 取回", "全有", "全有", "全有"],
-];
-
-// 升级入口：跳到「版本与升级」pane 看三档对比；若指定版本则直接弹微信支付
-function openUpgradeModal(edition) {
-  showSettingsTab("license");
-  if (edition === "home" || edition === "business") {
-    const price = LIC_PRICES[edition] || 0;
-    const name = { home: "家庭版", business: "专业版" }[edition] || edition;
-    openWeChatPayModal(edition, price, name);
-  }
-}
-
-// ---- 版本与升级 ----
-// 三档能力对照表（与后端 editions.py 同步；价格由 /api/license/prices 实时覆盖）
-const LIC_MATRIX = {
-  rows: [
-    { label: "可管理设备数", free: "2 台", home: "5 台", business: "不限" },
-    { label: "数据保护功能", free: "全开", home: "全开", business: "全开" },
-    { label: "消息通知", free: "邮件 + 微信", home: "邮件 + 微信", business: "邮件 + 微信 + 自定义" },
-    { label: "云端 AI", free: "3 种", home: "全部常见 + 本地", business: "全部 + 自定义接口" },
-    { label: "换机迁移", free: "—", home: "✓", business: "✓" },
-    { label: "异地组网设备", free: "—", home: "—", business: "✓" },
-    { label: "知识库 (RAG)", free: "—", home: "✓", business: "✓（不限）" },
-    { label: "应急响应自动化", free: "—", home: "—", business: "✓" },
-    { label: "照片语义搜索", free: "—", home: "—", business: "✓" },
-  ],
-  cols: [["free", "免费版"], ["home", "家庭版"], ["business", "专业版"]],
-  level: { free: 0, home: 1, business: 2 },
-};
-let LIC_PRICES = { home: 8, business: 18 };
-
-function loadLicense() {
-  Promise.all([api("/api/license"), api("/api/license/prices")]).then(([d, p]) => {
-    if (!d || !d.ok) return;
-    window.__lic = d;
-    window.__licIssueDemo = !!d.issue_demo;
-    window.__licPayUrl = (d.pay_url || "").trim();
-    if (p && p.ok && p.prices) LIC_PRICES = p.prices;
-    $("licFp").textContent = d.fingerprint || "—";
-    let label = d.label || d.edition || "—";
-    if (d.licensed) label += d.permanent ? "（永久有效）" : "（已激活）";
-    $("licEdition").textContent = label;
-    renderLicenseCompare(d.edition || "free");
-  }).catch(() => {});
-}
-
-function renderLicenseCompare(current) {
-  const box = $("licCompare");
-  if (!box) return;
-  const cols = LIC_MATRIX.cols;
-  const cls = { free: "c0", home: "c1", business: "c2" };
-  // 表头：版本名 + 价格 + 当前版本标记 + 升级按钮
-  let head = `<div class="lc-row lc-head"><div class="lc-cell lc-feat">功能区别</div>`;
-  for (const [key, name] of cols) {
-    const isCur = key === current;
-    const lv = LIC_MATRIX.level[key], clv = LIC_MATRIX.level[current];
-    let btn = "";
-    if (isCur) btn = `<button class="up-btn cur" disabled>当前版本</button>`;
-    else if (lv > clv) btn = `<button class="up-btn" data-up="${key}">升级 ¥${LIC_PRICES[key] || 0}</button>`;
-    else btn = `<span class="up-btn na">—</span>`;
-    head += `<div class="lc-cell lc-col ${cls[key]}${isCur ? " cur" : ""}"><div class="lc-colname">${name}</div>${isCur ? '<div class="lc-curtag">当前</div>' : ""}${btn}</div>`;
-  }
-  head += `</div>`;
-  // 数据行（隔行变色）
-  let rows = LIC_MATRIX.rows.map((r, i) => {
-    const cls2 = i % 2 ? " odd" : "";
-    let cells = `<div class="lc-cell lc-feat${cls2}">${r.label}</div>`;
-    for (const [key] of cols) {
-      const v = r[key];
-      const mark = (v === "✓") ? " ok" : (v === "—" ? " no" : "");
-      cells += `<div class="lc-cell lc-col ${cls[key]}${cls2}${key === current ? " cur" : ""}"><span class="lc-val${mark}">${v}</span></div>`;
-    }
-    return `<div class="lc-row${cls2}">${cells}</div>`;
-  }).join("");
-  box.innerHTML = `<div class="lc-table">${head}${rows}</div>`;
-  box.querySelectorAll("button[data-up]").forEach((b) => {
-    b.onclick = () => upgradeTo(b.dataset.up);
-  });
-}
-
-function upgradeTo(edition) {
-  const price = LIC_PRICES[edition] || 0;
-  const name = { home: "家庭版", business: "专业版" }[edition] || edition;
-  const base = (window.__licPayUrl || "").trim();
-  if (base) startRealPay(base, edition, price, name);
-  else openWeChatPayModal(edition, price, name);
-}
-
-// 真实微信支付：发卡网关下单 → 展示二维码 → 轮询订单 → 支付成功自动填入激活码。
-// 网关不可达（如域名解析未恢复）时自动回落到线下购买引导。
-async function startRealPay(base, edition, price, name) {
-  const fp = ($("licFp").textContent || "").trim();
-  const api = base.replace(/\/$/, "");
-  let d = null;
-  try {
-    const r = await fetch(api + "/order", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ product_id: "ts_" + edition, machine_code: fp })
-    });
-    d = await r.json();
-    if (!d || !d.ok || !d.code_url) throw new Error((d && d.error) || "下单失败");
-  } catch (e) {
-    toast("在线支付暂不可用，已切换线下购买方式", "warn");
-    openWeChatPayModal(edition, price, name);
-    return;
-  }
-  const orderId = d.order_id;
-  openModal(
-    "微信支付 · 升级到" + name,
-    `<div class="wx-pay">
-       <div class="wx-pay-head"><span class="wx-logo">💚</span> 微信扫码支付</div>
-       <div class="wx-amount">¥${price}<small> .00</small></div>
-       <div class="wx-qrtitle">请用微信「扫一扫」付款</div>
-       <div class="wx-qr" id="wxQr"></div>
-       <p class="muted" id="wxPayState" style="font-size:12px;margin:8px 0 0">等待支付中…支付成功会自动填入激活码（本窗可关，激活码也可稍后到「版本与升级」页粘贴）。</p>
-       <div class="wx-machine">本机机器码：<code>${escapeHtml(fp)}</code></div>
-     </div>`,
-    `<button class="btn ghost" data-act="close">关闭</button>`,
-    {}
-  );
-  const qrEl = $("wxQr");
-  if (qrEl) {
-    try {
-      const q = qrcode(0, "M");
-      q.addData(d.code_url);
-      q.make();
-      qrEl.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2 });
-    } catch (_) { qrEl.textContent = d.code_url; }
-  }
-  const box = $("modalBox");
-  if (box) box.style.maxWidth = "420px";
-  let tries = 0;
-  const timer = setInterval(async () => {
-    tries++;
-    if (tries > 240 || !$("wxQr")) { clearInterval(timer); return; }
-    try {
-      const st = await fetch(api + "/order/" + orderId);
-      const sd = await st.json();
-      if (sd && sd.ok && sd.status === "paid" && sd.license_key) {
-        clearInterval(timer);
-        closeModal();
-        $("licKey").value = sd.license_key;
-        const el = $("licStatus");
-        if (el) { el.style.display = "block"; el.className = "notice ok"; el.textContent = "支付成功！激活码已填入，点下方「激活」完成升级。"; }
-        toast("支付成功，已获取激活码", "ok");
-      }
-    } catch (_) { /* 网络抖动忽略，下轮再试 */ }
-  }, 2500);
-}
-
-// 模拟微信支付窗口：真实项目里这里会展示由发卡端生成的微信支付二维码；
-// 本机演示版点「我已支付」后由服务端按本机机器码实时签一张激活码，自动填入激活框。
-function openWeChatPayModal(edition, price, name) {
-  const fp = ($("licFp").textContent || "").trim();
-  const demo = !!window.__licIssueDemo;
-  // 在线支付未接（默认）：不展示假二维码与「我已支付」，改为引导线下购买；
-  // 演示环境（NASSAFE_ISSUE_DEMO=1）保持原模拟支付流程。
-  const bodyHtml = demo
-    ? `<div class="wx-pay-head"><span class="wx-logo">💚</span> 微信支付</div>
-       <div class="wx-amount">¥${price}<small> .00</small></div>
-       <div class="wx-qrtitle">请使用微信扫码支付（演示）</div>
-       <div class="wx-qr" id="wxQr"></div>
-       <div class="wx-scanline"></div>
-       <p class="muted" style="font-size:12px;margin:8px 0 0">本项目开源，付费用于持续开发与专属服务。<br>演示环境点「我已支付」即可模拟支付成功。</p>
-       <div class="wx-machine">本机机器码：<code>${escapeHtml(fp)}</code></div>`
-    : `<div class="wx-pay-head"><span class="wx-logo">💚</span> 升级到${name}</div>
-       <div class="wx-amount">¥${price}<small> .00</small></div>
-       <p style="line-height:1.9;margin:10px 0 4px">在线支付即将开通。开通前购买方式：<br>
-         ① 把下面的<b>机器码</b>发给卖家（复制按钮在下方）；<br>
-         ② 微信转账 ¥${price} 并注明版本（${name}）；<br>
-         ③ 卖家签发激活码，粘贴到「版本与升级」页的激活框点「激活」。</p>
-       <div class="wx-machine" style="font-size:14px">本机机器码：<code>${escapeHtml(fp)}</code></div>`;
-  openModal(
-    (demo ? "微信支付 · " : "升级 · ") + name,
-    `<div class="wx-pay">${bodyHtml}</div>`,
-    demo
-      ? `<button class="btn ghost" data-act="close">取消</button>
-         <button class="btn primary" data-act="paid">我已支付</button>`
-      : `<button class="btn ghost" data-act="close">关闭</button>
-         <button class="btn primary" data-act="copyfp">复制机器码</button>`,
-    demo
-      ? {
-          paid: async () => {
-            try {
-              const r = await api("/api/license/issue", { method: "POST", body: JSON.stringify({ edition }) });
-              if (!r || !r.ok) { toast("发码失败：" + (r && r.error || ""), "err"); return; }
-              closeModal();
-              $("licKey").value = r.code;
-              toast(`已获取 ${name} 授权码，点击「激活」完成升级`, "ok");
-              const st = $("licStatus");
-              if (st) { st.style.display = "block"; st.className = "notice"; st.textContent = `已自动填入 ${name} 授权码，点击下方「激活」即可升级。`; }
-            } catch (e) { toast("支付/发码失败：" + (e.message || e), "err"); }
-          },
-        }
-      : {
-          copyfp: () => {
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-              navigator.clipboard.writeText(fp).then(() => toast("机器码已复制，发给卖家即可", "ok")).catch(() => {});
-            } else {
-              const ta = document.createElement("textarea");
-              ta.value = fp; document.body.appendChild(ta); ta.select();
-              document.execCommand("copy"); ta.remove(); toast("机器码已复制，发给卖家即可", "ok");
-            }
-          },
-        }
-  );
-  // 演示模式画一个装饰性二维码（非真实可扫）
-  const qr = $("wxQr");
-  if (qr) {
-    let cells = "";
-    for (let i = 0; i < 169; i++) cells += `<i class="${Math.random() > 0.5 ? "on" : ""}"></i>`;
-    qr.innerHTML = cells;
-  }
-  const box = $("modalBox");
-  if (box) { box.style.maxWidth = "420px"; }
-}
-$("licCopyFp").onclick = () => {
-  const fp = $("licFp").textContent || "";
-  if (!fp || fp === "—") return;
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(fp).then(() => toast("机器码已复制", "ok")).catch(() => {});
-  } else {
-    const ta = document.createElement("textarea");
-    ta.value = fp; document.body.appendChild(ta); ta.select();
-    document.execCommand("copy"); ta.remove(); toast("机器码已复制", "ok");
-  }
-};
-$("licActivateBtn").onclick = () => {
-  const key = ($("licKey").value || "").trim();
-  if (!key) { toast("先把激活码粘贴进来", "warn"); return; }
-  const st = $("licStatus");
-  st.style.display = "block";
-  api("/api/license/activate", { method: "POST", body: JSON.stringify({ key }) })
-    .then((d) => {
-      st.className = "notice ok";
-      st.textContent = d.message || "激活成功";
-      $("licKey").value = "";
-      loadLicense();
-      toast(d.message || "激活成功", "ok");
-    })
-    .catch((e) => {
-      st.className = "notice warn";
-      st.textContent = e.message || "激活失败";
-      toast("激活失败：" + (e.message || e), "err");
-    });
-};
-loadLicense();
+// ---- 版本与升级（已移除）----
+// 本项目全功能开源免费：设备数、AI 额度、迁移、知识库等一律不设限，
+// 设置页不再提供「版本与升级」入口。这里保留一个空函数，
+// 是为了让历史代码里的 openUpgradeModal() 调用不至于报错。
+function openUpgradeModal() { /* 全功能免费版：无升级入口 */ }
 
 // ---- 设置页菜单切换 ----
 // 所有子菜单都在设置页右侧 pane 内显示（含工具类：重复文件/磁盘清理/换机迁移），

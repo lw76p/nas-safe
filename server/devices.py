@@ -1138,7 +1138,14 @@ def _online_status(dev: dict) -> str:
             return "unknown"
         try:
             import netscan as _ns  # noqa: PLC0415
-            return "online" if _ns._icmp_alive(h, timeout=1.2) else "offline"
+            src = dev.get("probe_src") or None
+            # ICMP 优先；运营商摄像头常禁 ping，失败再试常见端口 TCP 探测
+            if _ns._icmp_alive(h, timeout=1.2, src=src):
+                return "online"
+            for p in (80, 443, 554, 8080, 8000, 37777, 34567):
+                if _ns._tcp_open(h, p, 1.0):
+                    return "online"
+            return "offline"
         except Exception:  # noqa: BLE001
             return "offline"
     # 电脑（WinRM 接入）：探 WinRM 端口通不通即在线，不打全量 SOAP
@@ -1383,6 +1390,8 @@ def add_camera_device(payload: dict) -> dict:
         hit["type"] = "camera"
         if payload.get("name"):
             hit["name"] = str(payload.get("name")).strip()
+        if "probe_src" in payload:
+            hit["probe_src"] = (payload.get("probe_src") or "").strip() or None
         hit["enabled"] = True
         save_devices(devs)
         return {"ok": True, "id": hit.get("id"), "updated": True}
@@ -1397,6 +1406,7 @@ def add_camera_device(payload: dict) -> dict:
         "host": host,
         "port": 0,
         "enabled": True,
+        "probe_src": (payload.get("probe_src") or "").strip() or None,
         "note": (payload.get("note") or "").strip(),
     })
     save_devices(devs)

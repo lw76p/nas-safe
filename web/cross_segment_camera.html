@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>跨网段摄像头探测（进阶教程）</title>
+<style>
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:840px;margin:24px auto;padding:0 18px;color:#1f2733;line-height:1.75;font-size:15px}
+  h1{font-size:22px;margin:0 0 4px}
+  h2{font-size:17px;margin:30px 0 8px;border-left:4px solid #1565c0;padding-left:10px}
+  code{background:#f1f4f8;padding:2px 6px;border-radius:4px;font-size:13px}
+  pre{background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;overflow:auto;font-size:13px}
+  pre code{background:none;color:inherit;padding:0}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+  th,td{border:1px solid #d6dce5;padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f1f4f8}
+  .warn{background:#fff7e6;border:1px solid #ffd591;padding:12px 14px;border-radius:8px;margin:14px 0}
+  .note{color:#5a6678;font-size:13px}
+  a{color:#1565c0}
+</style>
+</head>
+<body>
+<h1>跨网段摄像头探测（进阶教程）</h1>
+<p class="note">适用：摄像头和 NAS <b>不在同一个网段</b> 时，TS Safe 控制台显示摄像头「离线」的解决办法。
+如果你家所有设备都在同一个网段（例如都是 <code>192.168.8.x</code>），<b>你不需要做任何事</b>，直接忽略本文。</p>
+
+<div class="warn">
+<b>为什么控制台显示「离线」？</b><br>
+这不是摄像头坏了，也不是软件问题，而是家庭网络拓扑决定的：摄像头接在运营商光猫下（<code>192.168.1.x</code>），
+NAS 接在主路由下（<code>192.168.8.x</code>）。NAS 发往摄像头的包能到主路由，但摄像头回包时，光猫<b>不认识</b>
+NAS 所在的 <code>192.168.8.x</code> 网段，包回不来，于是 NAS 探不到摄像头，控制台显示「离线」。<br><br>
+TS Safe 已做「尽力探测」：先 ping，不通再试常见端口（80/443/554/8080/8000/37777/34567）。
+网络能通就显示在线；通不了就诚实显示离线，而不是假装在线或误报故障。
+</div>
+
+<h2>原理（一句话）</h2>
+<p>让<b>主路由</b>对「从 NAS 网段发往摄像头网段」的流量做一次 <b>源地址转换（SNAT / MASQUERADE）</b>。
+摄像头回包先回到主路由（同 <code>192.168.1.x</code> 段，光猫认识），再由主路由转给 NAS。
+<b>光猫全程无感知，也不需要你有光猫的管理权限。</b> NAS 本身不用接任何多余的线。</p>
+
+<h2>操作步骤（以华硕路由器为例）</h2>
+<p class="note">以下以 <b>华硕 RT-BE88U（固件 3.0.0.6.x，原厂 AsusWrt）</b> 为例，其它品牌思路完全一致。</p>
+
+<h3>1. 开启 SSH 与脚本持久化</h3>
+<ol>
+  <li>登录路由器管理页（通常 <code>http://192.168.8.1</code>）。</li>
+  <li>进入 <b>系统管理 → 系统设置</b>。</li>
+  <li>设置：
+    <ul>
+      <li><b>启用 SSH</b>：<code>是</code>（连接方式选 <code>LAN only</code> 即可）</li>
+      <li><b>启用 JFFS 自定义脚本和配置</b>：<code>是</code></li>
+    </ul>
+  </li>
+  <li>点击 <b>应用本页面设置</b>。</li>
+</ol>
+
+<h3>2. 登录路由器并先测试规则</h3>
+<pre><code>ssh admin@192.168.8.1     # 密码是你路由器的管理密码
+
+# 先手动加一条规则测试（确认有效再固化，免得无效时难排查）：
+iptables -t nat -A POSTROUTING -s 192.168.8.0/24 -d 192.168.1.0/24 -o wan0 -j MASQUERADE</code></pre>
+<table>
+  <tr><th>参数</th><th>含义</th><th>示例</th></tr>
+  <tr><td><code>-s 192.168.8.0/24</code></td><td>NAS / 电脑所在网段</td><td>你家主路由 LAN 段</td></tr>
+  <tr><td><code>-d 192.168.1.0/24</code></td><td>摄像头所在网段</td><td>你家光猫段</td></tr>
+  <tr><td><code>-o wan0</code></td><td>华硕 WAN 接口名</td><td>若不同，用 <code>ip addr</code> 看拿到光猫段 IP 的接口</td></tr>
+</table>
+
+<h3>3. 在 NAS 上验证</h3>
+<pre><code>ping 192.168.1.240     # 换成你摄像头的真实 IP</code></pre>
+<p>能通 → 跨网段探测已打通。回到 TS Safe 控制台刷新或重新检测该摄像头，就会显示「在线」。</p>
+
+<h3>4. 固化规则（重启不丢）</h3>
+<pre><code>cat > /jffs/scripts/nat-start <<'EOF'
+#!/bin/sh
+iptables -t nat -A POSTROUTING -s 192.168.8.0/24 -d 192.168.1.0/24 -o wan0 -j MASQUERADE
+EOF
+chmod +x /jffs/scripts/nat-start</code></pre>
+<p>路由器每次开机 / 重建 NAT 会自动执行该脚本，规则永久保留。重启后再 <code>ping</code> 一次确认即可。</p>
+
+<h2>如果第 3 步 ping 不通，按顺序排查</h2>
+<ol>
+  <li><b>防火墙拦截 LAN→Intranet</b>：路由器 <b>防火墙 → 一般设置</b> 若有「阻止 LAN 访问 WAN 上的私有网络」之类开关，先关掉；或加一条允许转发：
+    <pre><code>iptables -I FORWARD -s 192.168.8.0/24 -d 192.168.1.0/24 -j ACCEPT</code></pre>
+  </li>
+  <li><b>确认主路由 WAN 在摄像头网段</b>：路由器 <b>网络地图 / 外部网络(WAN)</b> 里 WAN IP 应为 <code>192.168.1.x</code>。
+    若不是（如光猫桥接 + 主路由 PPPoE 拨号），WAN 侧没有摄像头网段直连路由，需先调整上网方式。</li>
+  <li><b>新固件 nftables 兼容</b>：3.0.0.6.x 底层是 nftables，极少数情况 <code>iptables</code> 规则不生效。
+    可把 <code>wan0</code> 换成实际接口（<code>ip addr</code> 查看），或改用 <code>nft</code> 命令。</li>
+</ol>
+
+<h2>其它品牌 / 不想动路由器怎么办</h2>
+<ul>
+  <li><b>其它智能路由</b>（OpenWrt / 爱快 / 小米 / 华为企业级等）：思路一致，对该段流量加 SNAT / MASQUERADE 即可，仅命令与界面不同。</li>
+  <li><b>不想动路由器</b>：用一对 <b>电力猫（电力线适配器）</b> 把光猫 LAN 口延伸到 NAS 旁，给 NAS 接第二网口并配摄像头网段静态 IP（<b>网关留空</b>），NAS 与摄像头同二层，无需改路由器。</li>
+  <li><b>摄像头可迁移</b>：未来换可自管摄像头（海康 / TP-Link 普通款），接主路由下与 NAS 同网段，开箱即用。</li>
+</ul>
+
+<h2>小结</h2>
+<table>
+  <tr><th>情形</th><th>需要做什么</th></tr>
+  <tr><td>摄像头与 NAS 同网段</td><td>什么都不用做，TS Safe 直接探测在线</td></tr>
+  <tr><td>摄像头在光猫独立网段</td><td>默认显示离线属正常；进阶用户按本文在主路由加一条 SNAT 规则即可看到在线</td></tr>
+  <tr><td>完全不想碰路由器</td><td>用电力猫延伸光猫 LAN 到 NAS 旁，或换可自管网段的摄像头</td></tr>
+</table>
+</body>
+</html>
