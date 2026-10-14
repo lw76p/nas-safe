@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server/ ./server/
 COPY web/ ./web/
 COPY docs/ ./docs/
-COPY 首次使用指南.txt ./
+COPY 首次使用指南.txt install_nas_safe.sh install_service.sh ./
 
 ENV NASSAFE_PORT=8848 \
     NASSAFE_BIND_HOST=0.0.0.0 \

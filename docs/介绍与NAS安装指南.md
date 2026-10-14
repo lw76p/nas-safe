@@ -45,15 +45,23 @@ crpi-aoopmmoq9zfqyus5.cn-hangzhou.personal.cr.aliyuncs.com/lw76p/nas-safe
 
 ## 三、NAS 安装命令（威联通 SSH 实测）
 
-### 1. 拉镜像
+### 1. 一键安装（推荐：拉镜像 + 自动选最大存储卷 + 启动，一条命令装完）
+
+```bash
+sudo bash install_nas_safe.sh                      # 自动选剩余空间最大的卷
+sudo bash install_nas_safe.sh /share/我的目录       # 或自己指定数据目录
+```
+
+- 脚本随安装包提供（见随附「程序」文件夹里的 `install_nas_safe.sh`）；
+- 控制台已装好的机器也可在线获取：
+  `curl -fsSL http://<NAS的IP>:8848/api/downloads/install_nas_safe.sh -o install.sh`
+- 重跑同一脚本即可升级（自动检测并替换旧容器，数据目录保留）。
+
+### 2. 手动安装（想一步步来时用）
 
 ```bash
 docker pull crpi-aoopmmoq9zfqyus5.cn-hangzhou.personal.cr.aliyuncs.com/lw76p/nas-safe:latest
-```
 
-### 2. 启动（host 网络，QNAP 推荐写法）
-
-```bash
 docker run -d --name nassafe \
   --network host \
   -v /share/CE_CACHEDEV1_DATA/nassafe_state:/app/state \
@@ -79,13 +87,16 @@ curl http://<NAS的IP>:8848/api/health      # 200 即正常
 ### 5. 升级 / 回滚
 
 ```bash
-# 升级
-docker pull crpi-aoopmmoq9zfqyus5.cn-hangzhou.personal.cr.aliyuncs.com/lw76p/nas-safe:latest
-docker rm -f nassafe
-docker run -d --name nassafe --network host \
-  -v /share/CE_CACHEDEV1_DATA/nassafe_state:/app/state \
-  --restart unless-stopped \
-  crpi-aoopmmoq9zfqyus5.cn-hangzhou.personal.cr.aliyuncs.com/lw76p/nas-safe:latest
+# 升级：重跑一键脚本即可（自动检测并替换旧容器，数据目录保留）
+sudo bash install_nas_safe.sh
+
+# 或手动升级：
+# docker pull crpi-aoopmmoq9zfqyus5.cn-hangzhou.personal.cr.aliyuncs.com/lw76p/nas-safe:latest
+# docker rm -f nassafe
+# docker run -d --name nassafe --network host \
+#   -v /share/CE_CACHEDEV1_DATA/nassafe_state:/app/state \
+#   --restart unless-stopped \
+#   crpi-aoopmmoq9zfqyus5.cn-hangzhou.personal.cr.aliyuncs.com/lw76p/nas-safe:latest
 
 # 回滚（指定旧版本 tag 即可）
 docker run -d --name nassafe ... crpi-...aliyuncs.com/lw76p/nas-safe:v20261014

@@ -44,16 +44,20 @@
     </ul>
   </div>
 
-  <h2>二、NAS 安装（Docker，host 网络）</h2>
+  <h2>二、NAS 安装（一条命令装完）</h2>
   <div class="card">
-    <pre><code>docker pull &lt;镜像仓库地址&gt;/nas-safe:latest
-
-docker run -d --name nassafe \
+    <p><b>一键安装</b>（自动拉镜像 + 自动选剩余空间最大的存储卷 + 启动）：</p>
+    <pre><code>sudo bash install_nas_safe.sh                      # 自动选最大的卷
+sudo bash install_nas_safe.sh /share/我的目录       # 或自己指定数据目录</code></pre>
+    <p>脚本随安装包提供（<code>install_nas_safe.sh</code>）；控制台已装好的机器也可在线获取：</p>
+    <pre><code>curl -fsSL http://&lt;NAS的IP&gt;:8848/api/downloads/install_nas_safe.sh -o install.sh</code></pre>
+    <p><b>手动方式</b>（想一步步来时用）：</p>
+    <pre><code>docker run -d --name nassafe \
   --network host \
   -v /share/CE_CACHEDEV1_DATA/nassafe_state:/app/state \
   --restart unless-stopped \
   &lt;镜像仓库地址&gt;/nas-safe:latest</code></pre>
-    <p>装完打开 <code>http://&lt;NAS的IP&gt;:8848</code>，首次进入会要求注册管理员账号。</p>
+    <p>装完打开 <code>http://&lt;NAS的IP&gt;:8848</code>，首次进入会要求注册管理员账号。接入 Windows 电脑用的「一键开启脚本」，在控制台<b>设备页有下载按钮</b>，「添加电脑」弹窗里也可直接下载。</p>
     <div class="tip">数据（账号 / 设备 / 快照记录 / 配置）全部落在挂载的 <code>/app/state</code> 目录，升级或换容器不丢。</div>
   </div>
 

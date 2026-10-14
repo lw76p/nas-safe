@@ -1376,6 +1376,29 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(data)
+            elif route == "/api/downloads/install_nas_safe.sh":
+                # NAS 一键安装脚本：拉镜像 + 自动选最大存储卷 + 启动一条龙。
+                # 在任意能访问本控制台的机器上：
+                #   curl -fsSL http://<本机IP>:8848/api/downloads/install_nas_safe.sh -o install.sh
+                #   sudo bash install_nas_safe.sh
+                _p = os.path.join(os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__))), "install_nas_safe.sh")
+                try:
+                    with open(_p, "rb") as fh:
+                        data = fh.read()
+                except OSError:
+                    self._send_json({"ok": False, "error": "安装脚本缺失"}, 404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type",
+                                 "application/x-shellscript; charset=utf-8")
+                self.send_header(
+                    "Content-Disposition",
+                    'attachment; filename="install_nas_safe.sh"')
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
             elif route.startswith("/agent/"):
                 # 桌面小助手分发：py 脚本静态下载；setup.bat 按当前 Host 动态生成
                 name = route[len("/agent/"):]
