@@ -1128,9 +1128,27 @@ def _online_status(dev: dict) -> str:
     却显示离线」。
     """
     ag = dev.get("agent") or {}
+    kind = kind_of(dev)
     if dev.get("type") == "local":
         return "online"
-    # 仅监控设备：对端没有 TS Safe 服务，ping 一次判在线即可
+    # 摄像头：只 ping 判在线（跨网段也行，走系统路由到光猫段）
+    if kind == "camera":
+        h = (dev.get("host") or "").strip()
+        if not h:
+            return "unknown"
+        try:
+            import netscan as _ns  # noqa: PLC0415
+            return "online" if _ns._icmp_alive(h, timeout=1.2) else "offline"
+        except Exception:  # noqa: BLE001
+            return "offline"
+    # 电脑（WinRM 接入）：探 WinRM 端口通不通即在线，不打全量 SOAP
+    if kind == "pc":
+        h = (dev.get("host") or "").strip()
+        p = int(dev.get("port") or 5985)
+        if not h:
+            return "unknown"
+        return "online" if _tcp_alive(h, p, 1.5) else "offline"
+    # 仅监控设备（旧）：对端没有 TS Safe 服务，ping 一次判在线即可
     if dev.get("monitor_only"):
         h = (dev.get("host") or "").strip()
         if not h:
@@ -1177,6 +1195,7 @@ def get_manage() -> dict:
             "id": d.get("id"),
             "name": d.get("name") or "设备",
             "type": d.get("type") or "remote",
+            "kind": kind_of(d),
             "brand": d.get("brand") or "generic_linux",
             "brand_label": d.get("brand_label") or brandmod.BRAND_LABELS.get(d.get("brand") or "", d.get("brand") or ""),
             "host": d.get("host", ""),
@@ -1244,3 +1263,141 @@ def _http_post(url: str, headers: dict, body: dict, timeout: int = 5):
                                 headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "ignore"))
+
+
+# ---------------------------------------------------------------------------
+# 三设备形态（2026-10-14 收敛）：NAS / 电脑(WinRM) / 摄像头(仅在线检测)
+# 桌面助手（托盘/气泡/配对/心跳命令通道）整体退场，这里只保留最小登记面。
+# ---------------------------------------------------------------------------
+
+KIND_NAS = "nas"
+KIND_PC = "pc"
+KIND_CAMERA = "camera"
+
+
+def kind_of(dev: dict) -> str:
+    """推断设备形态。显式 kind 优先；旧设备按历史字段映射。"""
+    k = (dev.get("kind") or "").strip()
+    if k in (KIND_NAS, KIND_PC, KIND_CAMERA):
+        return k
+    if dev.get("type") == "local" or dev.get("id") == LOCAL_ID:
+        return KIND_NAS
+    if dev.get("full_server"):
+        return KIND_NAS
+    if dev.get("monitor_only"):
+        # 旧「仅监控」设备（路由器/交换机等）：沿用 monitor 展示，不冒充电脑
+        return "monitor"
+    return KIND_NAS
+
+
+def _tcp_alive(host: str, port: int, timeout: float = 1.5) -> bool:
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _find_same_addr(devs: list, host: str, port: int):
+    for d in devs:
+        if (d.get("host") or "").strip() == host and int(d.get("port") or 0) == port:
+            return d
+    return None
+
+
+def add_pc_device(payload: dict) -> dict:
+    """登记一台 Windows 电脑（WinRM 接入）。保存后立即做一次连通测试，
+    不通也保存（电脑可能还没开），但把警告带回前端提示。"""
+    if not isinstance(payload, dict):
+        raise storage.StorageError("参数格式错误")
+    host = (payload.get("host") or "").strip()
+    if not host:
+        raise storage.StorageError("请填写电脑的 IP 地址")
+    user = (payload.get("winrm_user") or "").strip()
+    pwd = (payload.get("winrm_pass") or "").strip()
+    if not user or not pwd:
+        raise storage.StorageError("请填写电脑的管理员账号和密码（WinRM 登录用）")
+    port = int(payload.get("port") or 5985)
+    devs = load_devices()
+
+    hit = _find_same_addr(devs, host, port)
+    if hit is not None:
+        hit["kind"] = KIND_PC
+        hit["type"] = "pc"
+        hit["winrm_user"] = user
+        hit["winrm_pass"] = pwd
+        hit["https"] = bool(payload.get("https"))
+        if payload.get("name"):
+            hit["name"] = str(payload.get("name")).strip()
+        hit["enabled"] = True
+        save_devices(devs)
+        return {"ok": True, "id": hit.get("id"), "updated": True,
+                "warn": _pc_probe_warning(hit)}
+
+    dev_id = "pc-%d%s" % (int(time.time()), secrets.token_hex(3))
+    dev = {
+        "id": dev_id,
+        "name": (payload.get("name") or f"电脑 {host}").strip(),
+        "group": "电脑",
+        "kind": KIND_PC,
+        "type": "pc",
+        "host": host,
+        "port": port,
+        "https": bool(payload.get("https")),
+        "winrm_user": user,
+        # WinRM 密码与 token 同等对待：只落状态目录（ProgramData，系统权限）
+        "winrm_pass": pwd,
+        "enabled": True,
+        "note": (payload.get("note") or "").strip(),
+    }
+    devs.append(dev)
+    save_devices(devs)
+    return {"ok": True, "id": dev_id, "warn": _pc_probe_warning(dev)}
+
+
+def _pc_probe_warning(dev: dict) -> str:
+    """登记时探一次 WinRM，不通给出可操作的提示（不阻塞保存）。"""
+    try:
+        import pcctl  # noqa: PLC0415
+        r = pcctl.test(dev)
+        if r.get("ok"):
+            return ""
+        return "电脑暂时连不上：%s" % (r.get("error") or "未知原因")
+    except Exception as e:  # noqa: BLE001
+        return "电脑暂时连不上：%s" % e
+
+
+def add_camera_device(payload: dict) -> dict:
+    """登记一台摄像头（只做在线检测，不做任何远程操作）。"""
+    if not isinstance(payload, dict):
+        raise storage.StorageError("参数格式错误")
+    host = (payload.get("host") or "").strip()
+    if not host:
+        raise storage.StorageError("请填写摄像头的 IP 地址")
+    devs = load_devices()
+
+    hit = _find_same_addr(devs, host, 0)
+    if hit is not None:
+        hit["kind"] = KIND_CAMERA
+        hit["type"] = "camera"
+        if payload.get("name"):
+            hit["name"] = str(payload.get("name")).strip()
+        hit["enabled"] = True
+        save_devices(devs)
+        return {"ok": True, "id": hit.get("id"), "updated": True}
+
+    dev_id = "cam-%d%s" % (int(time.time()), secrets.token_hex(3))
+    devs.append({
+        "id": dev_id,
+        "name": (payload.get("name") or f"摄像头 {host}").strip(),
+        "group": "摄像头",
+        "kind": KIND_CAMERA,
+        "type": "camera",
+        "host": host,
+        "port": 0,
+        "enabled": True,
+        "note": (payload.get("note") or "").strip(),
+    })
+    save_devices(devs)
+    return {"ok": True, "id": dev_id}

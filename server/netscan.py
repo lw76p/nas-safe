@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import platform
 import re
 import socket
@@ -570,6 +571,51 @@ def _ai_identify(fps: list[dict], timeout_s: float = 25.0) -> dict:
 # 扫描入口
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 多网段持久化（2026-10-14）：光猫一段 + 主路由一段的家庭场景，
+# 额外网段存 state/netscan.json，扫描时自动合并，不用每次手填。
+# ---------------------------------------------------------------------------
+
+NETSCAN_CFG_FILE = "netscan.json"
+_CIDR_RE = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$")
+
+
+def valid_cidr(c: str) -> bool:
+    m = _CIDR_RE.match(str(c).strip())
+    if not m:
+        return False
+    octets = [int(m.group(i)) for i in range(1, 5)]
+    prefix = int(m.group(5))
+    return all(0 <= o <= 255 for o in octets) and 0 <= prefix <= 32
+
+
+def load_nets() -> list:
+    """读取持久化的额外扫描网段。"""
+    import storage  # noqa: PLC0415
+    try:
+        with open(os.path.join(storage.state_dir(), NETSCAN_CFG_FILE),
+                  encoding="utf-8") as f:
+            data = json.load(f)
+        return [str(c).strip() for c in (data.get("cidrs") or []) if str(c).strip()]
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+
+
+def save_nets(cidrs) -> list:
+    """保存额外扫描网段（去重 + 形态校验），返回生效列表。"""
+    clean = []
+    for c in (cidrs or []):
+        c = str(c).strip()
+        if c and valid_cidr(c) and c not in clean:
+            clean.append(c)
+    import storage  # noqa: PLC0415
+    os.makedirs(storage.state_dir(), exist_ok=True)
+    with open(os.path.join(storage.state_dir(), NETSCAN_CFG_FILE),
+              "w", encoding="utf-8") as f:
+        json.dump({"cidrs": clean}, f, ensure_ascii=False, indent=2)
+    return clean
+
+
 def scan(payload: dict | None = None) -> dict:
     p = payload if isinstance(payload, dict) else {}
     ports = [int(x) for x in (p.get("ports") or DEFAULT_PORTS) if str(x).strip()]
@@ -592,7 +638,13 @@ def scan(payload: dict | None = None) -> dict:
     extra = p.get("cidrs")
     if isinstance(extra, str):
         extra = [x.strip() for x in re.split(r"[,\s]+", extra) if x.strip()]
-    for c in (extra or []):
+    # 请求里带的 + 持久化的额外网段，合并去重（家庭双网段：光猫段 + 主路由段）
+    merged = []
+    for c in list(extra or []) + load_nets():
+        c = str(c).strip()
+        if c and valid_cidr(c) and c not in merged:
+            merged.append(c)
+    for c in merged:
         nets.append({"cidr": c, "iface": "手动填写", "kind": "manual", "self_ip": ""})
 
     self_ips = {n.get("self_ip", "") for n in nets if n.get("self_ip")}

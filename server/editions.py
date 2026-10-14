@@ -25,6 +25,53 @@ import os
 # -1 表示不限制
 UNLIMITED = -1
 
+# ---------------------------------------------------------------------------
+# 2026-10-14 涛哥定调：全功能开源免费，取消收费模式。
+# 商业化体系（版本门槛/设备数限制/AI 额度/升级引导）整体关闭。
+# 做法：合并所有档位能力为「开源免费版」，调用点一行不改。
+# 将来若恢复收费，把这个开关改回 False 即可，档位矩阵原样保留。
+# ---------------------------------------------------------------------------
+OPEN_SOURCE_FREE = True
+
+
+def _build_free_all() -> dict:
+    """合并所有档位：布尔取或、数量取最大，再强制解除全部限制。"""
+    merged: dict = {}
+    for ed in EDITIONS.values():
+        for k, v in ed.items():
+            if k in ("label", "price"):
+                continue
+            if k not in merged:
+                merged[k] = v
+            elif isinstance(v, bool):
+                merged[k] = merged[k] or v
+            elif isinstance(v, (int, float)):
+                merged[k] = max(merged[k], v)
+            else:
+                merged[k] = v
+    merged.update({
+        "label": "开源免费版",
+        "price": 0,
+        "max_devices": UNLIMITED,
+        "max_snapshots": UNLIMITED,
+        "ai_quota": UNLIMITED,
+        "kb_quota": UNLIMITED,
+        "console": "full",
+        "remote_devices": True,
+        "migrate": True,
+        "custom_alerts": True,
+        "ai_local": True,
+        "ai_custom_key": True,
+        "knowledge": True,
+        "emergency": True,
+        "photo_search": True,
+        "ransomware_detect": True,
+        "snapshot": True,
+        "restore": True,
+    })
+    return merged
+
+
 EDITIONS: dict = {
     # ------------------------------------------------------------------
     # 免费版（0 元）：本机功能全开，可管 2 台设备（本机 + 1 台，尝到总控台甜头）
@@ -117,6 +164,8 @@ DEFAULT_EDITION = "free"
 
 _LICENSE_FILE = "license.json"
 
+FREE_ALL = _build_free_all()
+
 
 def _state_dir() -> str:
     try:
@@ -128,6 +177,8 @@ def _state_dir() -> str:
 
 def get_edition() -> str:
     """当前生效的版本。读不到授权文件时回落到默认版本。"""
+    if OPEN_SOURCE_FREE:
+        return DEFAULT_EDITION  # 开源免费：不读授权文件
     path = os.path.join(_state_dir(), _LICENSE_FILE)
     try:
         with open(path, encoding="utf-8") as fh:
@@ -142,6 +193,8 @@ def get_edition() -> str:
 
 def limits(edition: str = "") -> dict:
     """取某版本（默认当前版本）的能力字典。"""
+    if OPEN_SOURCE_FREE:
+        return FREE_ALL
     return EDITIONS.get(edition or get_edition(), EDITIONS[DEFAULT_EDITION])
 
 

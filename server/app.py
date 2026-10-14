@@ -75,6 +75,7 @@ import junk  # noqa: E402  磁盘垃圾清理（回收站/缩略图/Docker缓存
 import daily_report  # noqa: E402  每日健康日报（定时聚合快照/告警/空间/硬盘，复用通知链路推送）
 import smartd  # noqa: E402  硬盘 SMART 健康采集（跨品牌，smartctl 多路径探测 + QTS 包兜底）
 import devices  # noqa: E402
+import pcctl  # noqa: E402  电脑远程管控通道（纯标准库 WinRM 客户端）
 import centerlink  # noqa: E402  完整版自动向来源总控台报到 + 心跳（跨公网/内网可达性）
 import agentdiag  # noqa: E402  桌面小助手本机诊断 / 直接拉起（绕开浏览器协议）
 import alertlog  # noqa: E402  告警历史记录（本机告警落盘，供「告警信息」页展示历史）
@@ -807,6 +808,87 @@ def do_restore_file(snapshot_path: str, relative_file: str, destination: str) ->
 # HTTP 处理
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 电脑远程管控（WinRM）辅助
+# ---------------------------------------------------------------------------
+
+def _find_device(dev_id: str):
+    for d in devices.load_devices():
+        if d.get("id") == dev_id:
+            return d
+    return None
+
+
+def _pc_guard(fn, dev, *args, **kwargs):
+    """把 PcCtlError 转成前端友好的 {ok:False, error}，不炸 500。"""
+    try:
+        return fn(dev, *args, **kwargs)
+    except pcctl.PcCtlError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": "管控失败: %s" % exc}
+
+
+def _gen_enable_winrm_ps1(console_host: str) -> str:
+    """生成电脑端「一键开启」脚本（用户右键管理员运行一次）。
+
+    做四件事：开 WinRM 服务并设为自动；放行防火墙（本子网 + 总控台地址）；
+    允许 Basic 认证（局域网方案）；最后把本机 IP 打出来让用户填到网页里。
+    """
+    nas_ip = ""
+    if console_host:
+        nas_ip = console_host.split(":")[0].strip()
+    scope = "LocalSubnet"
+    if nas_ip:
+        scope = "LocalSubnet,%s" % nas_ip
+    return r"""# ============================================================
+# TS Safe 电脑端一键开启（只需要运行一次）
+#
+# 作用：打开 Windows 自带的远程管理(WinRM)，
+#       让 NAS 上的 TS Safe 可以远程管控这台电脑。
+# 说明：用的是 Windows 官方能力，不需要安装任何 TS Safe 软件。
+#
+# 用法：右键本文件 → 使用 PowerShell 运行（会弹管理员确认，点是）
+# ============================================================
+#requires -RunAsAdministrator
+
+$ErrorActionPreference = "Stop"
+
+Write-Host ""
+Write-Host "==> 1/4 启动 WinRM 服务并设为开机自动..." -ForegroundColor Cyan
+Enable-PSRemoting -Force -SkipNetworkProfileCheck | Out-Null
+Set-Service WinRM -StartMode Automatic
+Start-Service WinRM
+
+Write-Host "==> 2/4 放行防火墙（仅本子网和总控台地址）..." -ForegroundColor Cyan
+Get-NetFirewallRule -Direction Inbound -Name "WINRM*" -ErrorAction SilentlyContinue |
+    ForEach-Object { Set-NetFirewallRule -Name $_.Name -RemoteAddress "__SCOPE__" }
+
+Write-Host "==> 3/4 允许 Basic 认证（局域网一次性方案）..." -ForegroundColor Cyan
+winrm set winrm/config/service/auth '@{Basic="true"}' | Out-Null
+winrm set winrm/config/service '@{AllowUnencrypted="true"}' | Out-Null
+
+Write-Host "==> 4/4 检查管理员账户..." -ForegroundColor Cyan
+$me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+Write-Host "    当前账户：$me"
+
+Write-Host ""
+Write-Host "============================================================" -ForegroundColor Green
+Write-Host " 开启完成！这台电脑的 IP 地址是：" -ForegroundColor Green
+Get-NetIPAddress -AddressFamily IPv4 |
+    Where-Object { $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -ne "127.0.0.1" } |
+    ForEach-Object { Write-Host "   $($_.IPAddress)" -ForegroundColor Yellow }
+Write-Host ""
+Write-Host " 下一步：打开 NAS 的 TS Safe 网页 → 设备管理 → 添加电脑，" -ForegroundColor Green
+Write-Host " 把上面的 IP 填进去，账号密码用管理员账户的登录密码。" -ForegroundColor Green
+Write-Host ""
+Write-Host " 注意：如果管理员账户没有设置开机密码，请先在 Windows" -ForegroundColor Green
+Write-Host " 设置里加一个密码，否则远程登录会被拒绝。" -ForegroundColor Green
+Write-Host "============================================================" -ForegroundColor Green
+Write-Host ""
+""".replace("__SCOPE__", scope)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "TS Safe/1.0"
     # HTTP/1.1 + keep-alive：浏览器复用连接、且每条响应必须带 Content-Length，
@@ -1254,6 +1336,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header(
                     "Content-Disposition",
                     'attachment; filename="NAS-Safe-Windows-Full.zip"')
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+            elif route == "/api/netscan/nets":
+                # 多网段：当前生效的额外扫描网段（光猫段/主路由段等）
+                self._send_json({"ok": True, "cidrs": netscan.load_nets()})
+            elif route == "/api/downloads/enable-winrm.ps1":
+                # 电脑端「一键开启」脚本：在电脑上右键管理员运行一次，
+                # 之后 NAS 即可通过 WinRM 远程管控这台电脑（零安装）。
+                _nas = (self.headers.get("Host") or "").strip()
+                data = _gen_enable_winrm_ps1(_nas).encode("utf-8-sig")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header(
+                    "Content-Disposition",
+                    'attachment; filename="enable-winrm.ps1"')
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
@@ -2114,6 +2213,52 @@ class Handler(BaseHTTPRequestHandler):
                 # 注意：do_POST 里没有 method 变量（只有 do_GET/do_POST 两套独立路由链），
                 # 这里走到就一定是 POST，别再判断 method，否则 NameError 直接 500。
                 self._send_json({**devices.set_manage(payload)})
+
+            # ---------- 多网段扫描（2026-10-14） ----------
+            elif route == "/api/netscan/nets":
+                _cidrs = payload.get("cidrs")
+                if not isinstance(_cidrs, list):
+                    raise StorageError("cidrs 必须是数组")
+                _bad = [c for c in _cidrs if not netscan.valid_cidr(c)]
+                if _bad:
+                    raise StorageError("网段格式不正确：%s（示例 192.168.1.0/24）"
+                                       % ", ".join(map(str, _bad[:3])))
+                self._send_json({"ok": True, "cidrs": netscan.save_nets(_cidrs)})
+
+            # ---------- 电脑 / 摄像头（三设备形态，2026-10-14） ----------
+            elif route == "/api/devices/pc/add":
+                # 登记一台 Windows 电脑（WinRM 接入），返回 warn=暂连不上时的提示
+                self._send_json({**devices.add_pc_device(payload)})
+            elif route == "/api/devices/camera/add":
+                # 登记一台摄像头（只做在线检测）
+                self._send_json({**devices.add_camera_device(payload)})
+            elif route.startswith("/api/devices/pc/") and route.count("/") == 5:
+                # 电脑转控：/api/devices/pc/<id>/<test|status|exec|power|scan>
+                _parts = route.split("/")
+                _dev = _find_device(_parts[4])
+                if _dev is None:
+                    raise StorageError("设备不存在或已删除")
+                if devices.kind_of(_dev) != "pc":
+                    raise StorageError("这台设备不是电脑（WinRM 设备）")
+                _act = _parts[5]
+                if _act == "test":
+                    self._send_json(_pc_guard(pcctl.test, _dev))
+                elif _act == "status":
+                    self._send_json(_pc_guard(pcctl.status, _dev))
+                elif _act == "exec":
+                    _script = (payload.get("script") or "").strip()
+                    if not _script:
+                        raise StorageError("请填写要执行的 PowerShell 命令")
+                    _to = min(max(float(payload.get("timeout") or 60), 5), 1800)
+                    self._send_json(_pc_guard(pcctl.run, _dev, _script, _to))
+                elif _act == "power":
+                    self._send_json(_pc_guard(
+                        pcctl.power, _dev, (payload.get("action") or "").strip()))
+                elif _act == "scan":
+                    self._send_json(_pc_guard(
+                        pcctl.scan, _dev, payload.get("paths") or []))
+                else:
+                    raise StorageError("不支持的操作: %s" % _act)
 
             # ---------- 换机迁移 ----------
             elif route == "/api/migrate/preview":
